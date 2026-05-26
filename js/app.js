@@ -114,9 +114,48 @@
       throw lastError || new Error("API request failed");
     },
     async login(role, identity, password) {
-      return this.call("login", { role, identity, email: identity, username: identity, password, pin: password }, {
-        endpoints: [`${API_BASE}/login`, `${API_BASE}/auth/login`, `${API_BASE}?action=login`, API_BASE]
-      });
+      const staffPayload = {
+        role,
+        identity,
+        login_id: identity,
+        loginId: identity,
+        staff_id: identity,
+        staffId: identity,
+        email: identity
+      };
+      const adminPayload = {
+        ...staffPayload,
+        admin_id: identity,
+        adminId: identity,
+        username: identity,
+        password,
+        pin: password
+      };
+      const actions = role === "admin"
+        ? ["adminLogin", "loginAdmin", "admin_login", "validateAdmin", "authenticateAdmin"]
+        : ["staffLogin", "loginStaff", "staff_login", "validateStaff", "authenticateStaff"];
+      let lastError;
+      for (const action of actions) {
+        try {
+          const data = await this.call(action, role === "admin" ? adminPayload : staffPayload, { endpoints: [API_BASE] });
+          if (data?.error && /invalid action/i.test(String(data.error))) {
+            lastError = new Error(data.error);
+            continue;
+          }
+          if (data?.message && /invalid action/i.test(String(data.message))) {
+            lastError = new Error(data.message);
+            continue;
+          }
+          return data;
+        } catch (error) {
+          if (/invalid action/i.test(String(error.message))) {
+            lastError = error;
+            continue;
+          }
+          throw error;
+        }
+      }
+      throw lastError || new Error("Login action is not available");
     },
     async dashboard(role) {
       return this.call(role === "admin" ? "adminDashboard" : "staffDashboard", { role });
@@ -199,6 +238,7 @@
         role = tab.dataset.role;
         document.querySelectorAll(".tab-btn").forEach((item) => item.classList.toggle("active", item === tab));
         title.textContent = role === "admin" ? "Admin Login" : "Staff Login";
+        syncLoginFields(role);
       });
     });
 
@@ -228,6 +268,20 @@
         btn.disabled = false;
       }
     });
+
+    syncLoginFields(role);
+  };
+
+  const syncLoginFields = (role) => {
+    const passwordField = document.getElementById("password");
+    const passwordLabel = passwordField?.closest(".field");
+    const identityField = document.getElementById("identity");
+    if (!passwordField || !passwordLabel || !identityField) return;
+    const isAdmin = role === "admin";
+    passwordLabel.hidden = !isAdmin;
+    passwordField.required = isAdmin;
+    passwordField.disabled = !isAdmin;
+    identityField.placeholder = isAdmin ? "Admin login ID" : "Login ID or email";
   };
 
   window.Portal = {

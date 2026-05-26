@@ -163,6 +163,7 @@ h1, h2, p { margin-top: 0; }
 .login-form h2 { font-size: 2rem; margin-bottom: 0; }
 
 .field { display: grid; gap: 8px; color: #c9d7e2; }
+.field[hidden] { display: none !important; }
 .field input, .search-input, .control-textarea {
   width: 100%;
   border: 1px solid var(--stroke);

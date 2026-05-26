@@ -10,6 +10,12 @@
     try { return JSON.parse(text); } catch (error) { return { ok: response.ok, raw: text }; }
   };
 
+  const withTimeout = (ms) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    return { controller, timer };
+  };
+
   const normalizeArray = (value) => {
     if (Array.isArray(value)) return value;
     if (!value || typeof value !== "object") return [];
@@ -88,14 +94,17 @@
       ];
       let lastError;
       for (const url of endpoints) {
+        const timeout = withTimeout(options.timeoutMs || 15000);
         try {
           const response = await fetch(url, {
             method: options.method || "POST",
             headers: buildHeaders(session),
             body: (options.method || "POST") === "GET" ? undefined : JSON.stringify(body),
             cache: "no-store",
-            credentials: "omit"
+            credentials: "omit",
+            signal: timeout.controller.signal
           });
+          clearTimeout(timeout.timer);
           const data = await safeJson(response);
           if (response.status === 401 || response.status === 403) {
             Portal.clearSession();
@@ -107,13 +116,28 @@
           }
           lastError = new Error(data.message || data.error || `API ${response.status}`);
         } catch (error) {
+          clearTimeout(timeout.timer);
           lastError = error;
         }
       }
       setStatus(false, "API offline");
       throw lastError || new Error("API request failed");
     },
-    async login(role, identity, password) {
+    async detectIp() {
+      const actions = ["clientIp", "getClientIp", "ipStatus", "checkIp", "getIp"];
+      for (const action of actions) {
+        try {
+          const data = await this.call(action, {}, { endpoints: [API_BASE], timeoutMs: 3500 });
+          const ip = pick(data?.data || data, ["ip", "clientIp", "client_ip", "requestIp", "request_ip", "address", "ipAddress"], "");
+          if (ip && !/invalid action/i.test(String(data?.message || data?.error || ""))) return ip;
+        } catch (error) {
+          if (/abort/i.test(String(error.message))) break;
+          if (!/invalid action/i.test(String(error.message))) break;
+        }
+      }
+      return "";
+    },
+    async login(role, identity, password, attemptedIp = "") {
       const staffPayload = {
         role,
         identity,
@@ -121,7 +145,10 @@
         loginId: identity,
         staff_id: identity,
         staffId: identity,
-        email: identity
+        email: identity,
+        attempted_ip: attemptedIp,
+        client_ip: attemptedIp,
+        ip_address: attemptedIp
       };
       const adminPayload = {
         ...staffPayload,
@@ -252,17 +279,19 @@
       alert.hidden = true;
       btn.classList.add("loading");
       btn.disabled = true;
+      let attemptedIp = "";
       try {
         const identity = document.getElementById("identity").value.trim();
         const password = document.getElementById("password").value;
-        const data = await api.login(role, identity, password);
+        attemptedIp = await api.detectIp();
+        const data = await api.login(role, identity, password, attemptedIp);
         const ok = data.ok !== false && data.success !== false && !data.error;
-        if (!ok) throw new Error(data.message || data.error || "Login failed");
+        if (!ok) throw new Error(formatLoginError(data, attemptedIp));
         saveSession(normalizeSession(role, identity, data), remember.checked);
         location.href = role === "admin" ? "admin.html" : "staff.html";
       } catch (error) {
         alert.hidden = false;
-        alert.textContent = error.message || "Unable to sign in. Check credentials and try again.";
+        alert.textContent = formatLoginError(error, attemptedIp);
       } finally {
         btn.classList.remove("loading");
         btn.disabled = false;
@@ -272,9 +301,17 @@
     syncLoginFields(role);
   };
 
+  const formatLoginError = (source, fallbackIp = "") => {
+    const data = source?.data || source;
+    const message = pick(data, ["message", "error"], source?.message || "Unable to sign in. Check credentials and try again.");
+    const ip = pick(data, ["ip", "clientIp", "client_ip", "requestIp", "request_ip", "attemptedIp", "attempted_ip", "ipAddress"], fallbackIp);
+    if (/ip not allowed|not allowed/i.test(String(message)) && ip) return `${message}. Trying IP: ${ip}`;
+    return message;
+  };
+
   const syncLoginFields = (role) => {
     const passwordField = document.getElementById("password");
-    const passwordLabel = passwordField?.closest(".field");
+    const passwordLabel = document.getElementById("passwordField") || passwordField?.closest(".field");
     const identityField = document.getElementById("identity");
     if (!passwordField || !passwordLabel || !identityField) return;
     const isAdmin = role === "admin";

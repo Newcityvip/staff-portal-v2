@@ -36,12 +36,12 @@
 
         <label class="field">
           <span>User ID or Email</span>
-          <input id="identity" name="identity" autocomplete="username" required placeholder="Enter your ID">
+          <input id="identity" name="identity" autocomplete="username" required placeholder="Login ID or email">
         </label>
 
-        <label class="field">
+        <label class="field" id="passwordField" hidden>
           <span>Password or PIN</span>
-          <input id="password" name="password" type="password" autocomplete="current-password" required placeholder="Enter password">
+          <input id="password" name="password" type="password" autocomplete="current-password" disabled placeholder="Enter password">
         </label>
 
         <div class="form-row">
@@ -62,6 +62,6 @@
     </section>
   </main>
 
-  <script src="js/app.js"></script>
+  <script src="js/app.js?v=20260526-login2"></script>
 </body>
 </html>

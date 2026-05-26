@@ -213,7 +213,7 @@
     },
     async dashboard(role, extraPayload = {}) {
       const actions = role === "admin"
-        ? ["get_admin_dashboard"]
+        ? ["get_admin_dashboard_full", "get_admin_dashboard"]
         : ["get_staff_dashboard"];
       const session = Portal.getSession(false);
       const ip = await this.detectIp();

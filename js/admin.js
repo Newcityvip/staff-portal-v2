@@ -11,37 +11,53 @@
 
   const normalizeDashboard = (data) => {
     const root = data.data || data.dashboard || data;
-    const summary = root.today_summary || {};
+    const summary = root.summary || root.today_summary || {};
+    const staffList = Portal.normalizeArray(root.staff_list || root.staff || root.staffList || root.users || root.staff_rows);
+    const scheduleList = Portal.normalizeArray(root.schedule_list || root.schedules || root.schedule || root.schedule_rows);
+    const attendanceEvents = Portal.normalizeArray(root.attendance_events || root.attendanceBoard || root.attendance || root.onlineStaff);
+    const kpiList = Portal.normalizeArray(root.kpi_list || root.kpis || root.kpi || root.monthlyKpi || root.kpi_rows);
+    const quarterScores = Portal.normalizeArray(root.quarter_scores || root.quarterScores || root.quarter);
+    const dailyScores = Portal.normalizeArray(root.daily_scores || root.dailyScores);
+    const auditLogs = Portal.normalizeArray(root.audit_logs || root.auditLogs || root.audit);
+    const telegramLogs = Portal.normalizeArray(root.telegram_logs || root.telegramLogs);
+    const ipAllowlist = root.ip_allowlist || root.ipAllowlist || root.allowlist || [];
+    const rankingRows = Portal.normalizeArray(root.topPerformers || root.leaderboard || root.rankings || quarterScores || kpiList);
+    const worstRows = Portal.normalizeArray(root.worstPerformers || root.lowPerformers || root.needsCoaching);
+    const sortedWorst = worstRows.length
+      ? worstRows
+      : rankingRows.slice().sort((a, b) => Number(Portal.pick(a, ["final_score", "kpi_score_out_of_5", "score", "kpi"], 0)) - Number(Portal.pick(b, ["final_score", "kpi_score_out_of_5", "score", "kpi"], 0)));
     return {
-      stats: root.stats || root.summary || root.counters || {
-        totalStaff: root.staff_count,
-        onlineStaff: summary.currently_working,
+      stats: root.stats || root.counters || {
+        totalStaff: root.staff_count || summary.total_staff || staffList.length,
+        onlineStaff: summary.currently_working || summary.online_staff,
         checkedInToday: summary.checked_in,
         onBreak: summary.on_break,
         lateStaff: summary.late_staff,
-        missingCheckout: Math.max(Number(summary.checked_in || 0) - Number(summary.checked_out || 0), 0)
+        missingCheckout: summary.missing_checkout || Math.max(Number(summary.checked_in || 0) - Number(summary.checked_out || 0), 0)
       },
-      attendance: Portal.normalizeArray(root.attendanceBoard || root.attendance || root.onlineStaff),
-      breaks: Portal.normalizeArray(root.breakBoard || root.breaks),
-      staff: Portal.normalizeArray(root.staff || root.staffList || root.users || root.staff_rows),
-      schedules: Portal.normalizeArray(root.schedules || root.schedule || root.schedule_rows),
-      kpis: Portal.normalizeArray(root.kpis || root.kpi || root.monthlyKpi || root.kpi_rows),
-      top: Portal.normalizeArray(root.topPerformers || root.leaderboard || root.rankings),
-      worst: Portal.normalizeArray(root.worstPerformers || root.lowPerformers || root.needsCoaching),
-      dailyLogs: Portal.normalizeArray(root.dailyLogs || root.daily_logs || root.logs),
-      telegramLogs: Portal.normalizeArray(root.telegramLogs || root.telegram_logs),
-      auditLogs: Portal.normalizeArray(root.auditLogs || root.audit_logs || root.audit),
-      ipAllowlist: root.ipAllowlist || root.ip_allowlist || root.allowlist || []
+      attendance: attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() !== "BREAK_START"),
+      breaks: Portal.normalizeArray(root.breakBoard || root.breaks).length
+        ? Portal.normalizeArray(root.breakBoard || root.breaks)
+        : attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() === "BREAK_START"),
+      staff: staffList,
+      schedules: scheduleList,
+      kpis: kpiList,
+      top: rankingRows,
+      worst: sortedWorst,
+      dailyLogs: Portal.normalizeArray(root.dailyLogs || root.logs).length ? Portal.normalizeArray(root.dailyLogs || root.logs) : attendanceEvents.concat(dailyScores),
+      telegramLogs,
+      auditLogs,
+      ipAllowlist
     };
   };
 
   const renderStats = (stats) => {
     Portal.setText("totalStaff", Portal.pick(stats, ["totalStaff", "staffTotal", "total"], dashboard.staff.length || "--"));
-    Portal.setText("onlineStaff", Portal.pick(stats, ["onlineStaff", "online"], "--"));
-    Portal.setText("checkedInToday", Portal.pick(stats, ["checkedInToday", "checkedIn", "present"], "--"));
-    Portal.setText("onBreak", Portal.pick(stats, ["onBreak", "breaks"], "--"));
-    Portal.setText("lateStaff", Portal.pick(stats, ["lateStaff", "late"], "--"));
-    Portal.setText("missingCheckout", Portal.pick(stats, ["missingCheckout", "missingCheckOut"], "--"));
+    Portal.setText("onlineStaff", Portal.pick(stats, ["onlineStaff", "online_staff", "currently_working", "online"], "--"));
+    Portal.setText("checkedInToday", Portal.pick(stats, ["checkedInToday", "checked_in", "checkedIn", "present"], "--"));
+    Portal.setText("onBreak", Portal.pick(stats, ["onBreak", "on_break", "breaks"], "--"));
+    Portal.setText("lateStaff", Portal.pick(stats, ["lateStaff", "late_staff", "late"], "--"));
+    Portal.setText("missingCheckout", Portal.pick(stats, ["missingCheckout", "missing_checkout", "missingCheckOut"], "--"));
   };
 
   const statusTone = (value) => {
@@ -61,7 +77,7 @@
         <td>${Portal.pick(row, ["name", "full_name", "staffName", "staff"], "Staff")}</td>
         <td>${Portal.pick(row, ["department", "team"], "--")}</td>
         <td>${badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], "")))}</td>
-        <td>${Portal.formatTime(Portal.pick(row, ["checkIn", "check_in", "in"], ""))}</td>
+        <td>${Portal.formatTime(Portal.pick(row, ["checkIn", "check_in", "in", "event_time", "time"], ""))}</td>
         <td>${Portal.pick(row, ["ip", "ipAddress"], "--")}</td>
       </tr>`).join("");
   };
@@ -73,7 +89,7 @@
     host.innerHTML = rows.map((row) => `
       <tr>
         <td>${Portal.pick(row, ["name", "full_name", "staffName", "staff"], "Staff")}</td>
-        <td>${Portal.formatTime(Portal.pick(row, ["breakStart", "start", "startedAt"], ""))}</td>
+        <td>${Portal.formatTime(Portal.pick(row, ["breakStart", "start", "startedAt", "event_time", "time"], ""))}</td>
         <td>${Portal.pick(row, ["duration", "breakDuration"], "--")}</td>
         <td>${badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], "")))}</td>
       </tr>`).join("");
@@ -119,7 +135,7 @@
         <td>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</td>
         <td>${Portal.pick(row, ["kpi_month", "month", "period"], "--")}</td>
         <td>${Portal.pick(row, ["kpi_score_out_of_5", "kpi", "kpiScore", "score"], "--")}</td>
-        <td>${Portal.pick(row, ["quarter_score", "quarter", "quarterScore"], "--")}</td>
+        <td>${Portal.pick(row, ["quarter_score", "final_score", "quarter", "quarterScore"], "--")}</td>
         <td>${Portal.pick(row, ["rank", "position"], "--")}</td>
       </tr>`).join("");
   };
@@ -360,7 +376,7 @@
       const csv = await file.text();
       const rows = parseCsv(csv);
       const ip = await Portal.api.detectIp();
-      await callFirstValid(["import_schedule", "upload_schedule", "uploadSchedule", "saveScheduleBatch", "importSchedule", "updateSchedule"], {
+      const result = await callFirstValid(["upload_schedule_csv"], {
         admin_login_id: session.loginId || session.staffId,
         ip,
         fileName: file.name,
@@ -368,13 +384,14 @@
         rows,
         schedules: rows
       });
-      state.textContent = `Schedule uploaded: ${rows.length} rows.`;
+      const inserted = Number(Portal.pick(result, ["inserted"], 0));
+      const updated = Number(Portal.pick(result, ["updated"], 0));
+      const failed = Number(Portal.pick(result, ["failed"], 0));
+      state.textContent = `Schedule uploaded. Inserted: ${inserted}. Updated: ${updated}. Failed: ${failed}.`;
       Portal.toast("Schedule uploaded");
       await load(true);
     } catch (error) {
-      state.textContent = /invalid action/i.test(String(error.message))
-        ? "Schedule upload action is not enabled in the Worker yet."
-        : (error.message || "Unable to upload schedule.");
+      state.textContent = error.message || "Unable to upload schedule.";
     }
   });
   document.getElementById("kpiInputForm")?.addEventListener("submit", async (event) => {

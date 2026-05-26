@@ -233,6 +233,9 @@
       dashboard = normalizeDashboard(data);
       renderAll();
     } catch (error) {
+      dashboard = normalizeDashboard({});
+      renderAll();
+      Portal.setStatus(false, "API issue");
       Portal.toast(error.message || "Unable to load admin dashboard", "error");
     }
   };

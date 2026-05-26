@@ -204,7 +204,31 @@
       throw lastError || new Error("Login action is not available");
     },
     async dashboard(role) {
-      return this.call(role === "admin" ? "adminDashboard" : "staffDashboard", { role });
+      const actions = role === "admin"
+        ? ["adminDashboard", "getAdminDashboard", "admin_dashboard", "adminData", "getAdminData"]
+        : ["staffDashboard", "getStaffDashboard", "staff_dashboard", "staffData", "getStaffData"];
+      let lastError;
+      for (const action of actions) {
+        try {
+          const data = await this.call(action, { role }, { endpoints: [API_BASE], timeoutMs: 10000 });
+          if (data?.error && /invalid action/i.test(String(data.error))) {
+            lastError = new Error(data.error);
+            continue;
+          }
+          if (data?.message && /invalid action/i.test(String(data.message))) {
+            lastError = new Error(data.message);
+            continue;
+          }
+          return data;
+        } catch (error) {
+          if (/invalid action/i.test(String(error.message))) {
+            lastError = error;
+            continue;
+          }
+          throw error;
+        }
+      }
+      throw lastError || new Error("Dashboard action is not available");
     },
     async action(action, payload = {}) { return this.call(action, payload); }
   };
@@ -244,7 +268,8 @@
   const normalizeSession = (role, identity, data) => {
     const root = data.user || data.staff || data.admin || data.data || data;
     return {
-      role: pick(root, ["role"], role),
+      role,
+      accountRole: pick(root, ["role"], role),
       token: pick(root, ["token", "jwt", "accessToken", "sessionToken", "session_id"], pick(data, ["token", "jwt", "accessToken"], "")),
       staffId: pick(root, ["staffId", "staff_id", "id", "email", "username"], identity),
       name: pick(root, ["name", "fullName", "staffName", "displayName"], identity),

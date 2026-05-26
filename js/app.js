@@ -135,6 +135,21 @@
           if (!/invalid action/i.test(String(error.message))) break;
         }
       }
+      try {
+        const timeout = withTimeout(3500);
+        const response = await fetch("https://www.cloudflare.com/cdn-cgi/trace", {
+          cache: "no-store",
+          credentials: "omit",
+          signal: timeout.controller.signal
+        });
+        clearTimeout(timeout.timer);
+        if (!response.ok) return "";
+        const trace = await response.text();
+        const line = trace.split("\n").find((item) => item.startsWith("ip="));
+        return line ? line.slice(3).trim() : "";
+      } catch (error) {
+        return "";
+      }
       return "";
     },
     async login(role, identity, password, attemptedIp = "") {
@@ -146,6 +161,10 @@
         staff_id: identity,
         staffId: identity,
         email: identity,
+        ip: attemptedIp,
+        ipAddress: attemptedIp,
+        request_ip: attemptedIp,
+        requestIp: attemptedIp,
         attempted_ip: attemptedIp,
         client_ip: attemptedIp,
         ip_address: attemptedIp
@@ -305,7 +324,9 @@
     const data = source?.data || source;
     const message = pick(data, ["message", "error"], source?.message || "Unable to sign in. Check credentials and try again.");
     const ip = pick(data, ["ip", "clientIp", "client_ip", "requestIp", "request_ip", "attemptedIp", "attempted_ip", "ipAddress"], fallbackIp);
-    if (/ip not allowed|not allowed/i.test(String(message)) && ip) return `${message}. Trying IP: ${ip}`;
+    if (/ip not allowed|not allowed/i.test(String(message))) {
+      return ip ? `${message}. Trying IP: ${ip}` : `${message}. Could not detect browser IP.`;
+    }
     return message;
   };
 

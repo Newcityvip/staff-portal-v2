@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07111f">
+  <title>Staff Portal V2 | Staff Dashboard</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="dashboard-body" data-page="staff">
+  <div class="app-shell">
+    <aside class="sidebar glass-panel">
+      <a class="logo" href="staff.html"><span></span><strong>Staff Portal</strong></a>
+      <nav class="side-nav">
+        <a class="active" href="#overview">Overview</a>
+        <a href="#attendance">Attendance</a>
+        <a href="#performance">Performance</a>
+        <a href="#history">History</a>
+      </nav>
+      <button class="logout-btn" data-logout type="button">Logout</button>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Staff Dashboard</p>
+          <h1 id="staffGreeting">Welcome back</h1>
+        </div>
+        <div class="top-actions">
+          <span id="connectionStatus" class="status-pill">Connecting</span>
+          <span id="liveClock" class="clock">--:--:--</span>
+        </div>
+      </header>
+
+      <section id="overview" class="hero-grid">
+        <article class="profile-card glass-panel">
+          <div class="avatar" id="staffInitials">SP</div>
+          <div>
+            <p class="eyebrow">Profile</p>
+            <h2 id="staffName">Loading</h2>
+            <p id="staffMeta">Department and role loading</p>
+          </div>
+          <span id="ipStatus" class="status-dot">IP verifying</span>
+        </article>
+
+        <article class="shift-card glass-panel">
+          <p class="eyebrow">Today Shift</p>
+          <h2 id="shiftName">Loading shift</h2>
+          <p id="shiftWindow">--</p>
+          <div class="progress-track"><span id="shiftProgress"></span></div>
+          <small id="lateWarning">Checking late status</small>
+        </article>
+      </section>
+
+      <section class="action-grid" aria-label="Attendance actions">
+        <button class="action-btn cyan" data-action="checkIn" type="button">Check In<span id="checkInState">Ready</span></button>
+        <button class="action-btn red" data-action="checkOut" type="button">Check Out<span id="checkOutState">Pending</span></button>
+        <button class="action-btn amber" data-action="breakStart" type="button">Break Start<span id="breakStartState">Available</span></button>
+        <button class="action-btn green" data-action="breakEnd" type="button">Break End<span id="breakEndState">Inactive</span></button>
+      </section>
+
+      <section id="attendance" class="metric-grid">
+        <article class="metric-card glass-panel"><span>Attendance</span><strong id="attendanceStatus">--</strong><small>Live state</small></article>
+        <article class="metric-card glass-panel"><span>Break</span><strong id="breakStatus">--</strong><small id="breakTimer">00:00:00</small></article>
+        <article class="metric-card glass-panel"><span>Monthly Score</span><strong id="monthlyScore">--</strong><small>Attendance score</small></article>
+        <article class="metric-card glass-panel"><span>Rank</span><strong id="rankPosition">--</strong><small>Current position</small></article>
+      </section>
+
+      <section id="performance" class="content-grid">
+        <article class="glass-panel chart-panel">
+          <div class="panel-title"><h2>KPI and Quarter Score</h2><span id="scoreUpdated">Live</span></div>
+          <div class="score-ring-wrap">
+            <div class="score-ring" id="kpiRing"><span id="kpiScore">--</span><small>KPI</small></div>
+            <div class="score-ring quarter" id="quarterRing"><span id="quarterScore">--</span><small>Quarter</small></div>
+          </div>
+        </article>
+
+        <article class="glass-panel">
+          <div class="panel-title"><h2>Leaderboard Preview</h2><span class="pulse">Live</span></div>
+          <div id="leaderboardPreview" class="leaderboard"></div>
+        </article>
+      </section>
+
+      <section id="history" class="content-grid">
+        <article class="glass-panel">
+          <div class="panel-title"><h2>Activity Timeline</h2><span>Today</span></div>
+          <div id="activityTimeline" class="timeline"></div>
+        </article>
+
+        <article class="glass-panel table-panel">
+          <div class="panel-title"><h2>Attendance History</h2><span id="historyCount">0 records</span></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Date</th><th>In</th><th>Out</th><th>Status</th><th>Break</th></tr></thead>
+              <tbody id="attendanceHistory"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <nav class="mobile-nav">
+    <a href="#overview">Home</a><a href="#attendance">Live</a><a href="#performance">KPI</a><a href="#history">Logs</a>
+  </nav>
+
+  <div id="toastHost" class="toast-host"></div>
+  <script src="js/app.js"></script>
+  <script src="js/staff.js"></script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07111f">
+  <title>Staff Portal V2 | Secure Login</title>
+  <link rel="preconnect" href="https://staff-portal-api-v2.mdrobiulislam.workers.dev">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="auth-body">
+  <main class="auth-shell">
+    <section class="auth-brand" aria-label="Portal introduction">
+      <div class="brand-mark">
+        <span></span>
+      </div>
+      <p class="eyebrow">Newcityvip Operations</p>
+      <h1>Staff Performance Portal V2</h1>
+      <p class="auth-copy">Real-time attendance, KPI ranking, shift operations, and staff performance control in one secure portal.</p>
+      <div class="auth-orbit" aria-hidden="true">
+        <i></i><i></i><i></i>
+      </div>
+    </section>
+
+    <section class="login-card glass-panel" aria-label="Login">
+      <div class="login-tabs" role="tablist" aria-label="Login type">
+        <button class="tab-btn active" data-role="staff" type="button">Staff</button>
+        <button class="tab-btn" data-role="admin" type="button">Admin</button>
+      </div>
+
+      <form id="loginForm" class="login-form">
+        <div>
+          <p class="eyebrow">Secure Access</p>
+          <h2 id="loginTitle">Staff Login</h2>
+        </div>
+
+        <label class="field">
+          <span>User ID or Email</span>
+          <input id="identity" name="identity" autocomplete="username" required placeholder="Enter your ID">
+        </label>
+
+        <label class="field">
+          <span>Password or PIN</span>
+          <input id="password" name="password" type="password" autocomplete="current-password" required placeholder="Enter password">
+        </label>
+
+        <div class="form-row">
+          <label class="check">
+            <input id="remember" type="checkbox" checked>
+            <span>Remember login</span>
+          </label>
+          <button class="ghost-link" id="sessionCheck" type="button">Check session</button>
+        </div>
+
+        <button id="loginBtn" class="primary-btn" type="submit">
+          <span>Sign in</span>
+          <b class="btn-loader" aria-hidden="true"></b>
+        </button>
+
+        <div id="loginAlert" class="inline-alert" hidden></div>
+      </form>
+    </section>
+  </main>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

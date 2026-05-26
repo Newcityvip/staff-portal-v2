@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#07111f">
+  <title>Staff Portal V2 | Admin Dashboard</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="dashboard-body" data-page="admin">
+  <div class="app-shell">
+    <aside class="sidebar glass-panel">
+      <a class="logo" href="admin.html"><span></span><strong>Admin Control</strong></a>
+      <nav class="side-nav">
+        <a class="active" href="#overview">Overview</a>
+        <a href="#boards">Boards</a>
+        <a href="#management">Management</a>
+        <a href="#logs">Logs</a>
+      </nav>
+      <button class="logout-btn" data-logout type="button">Logout</button>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Operations Command</p>
+          <h1>Admin Dashboard</h1>
+        </div>
+        <div class="top-actions">
+          <input id="staffSearch" class="search-input" placeholder="Search staff">
+          <span id="connectionStatus" class="status-pill">Connecting</span>
+          <span id="liveClock" class="clock">--:--:--</span>
+        </div>
+      </header>
+
+      <section id="overview" class="metric-grid admin-metrics">
+        <article class="metric-card glass-panel"><span>Total Staff</span><strong id="totalStaff">--</strong><small>Active records</small></article>
+        <article class="metric-card glass-panel"><span>Online Staff</span><strong id="onlineStaff">--</strong><small>Live online</small></article>
+        <article class="metric-card glass-panel"><span>Checked In</span><strong id="checkedInToday">--</strong><small>Today</small></article>
+        <article class="metric-card glass-panel"><span>On Break</span><strong id="onBreak">--</strong><small>Current</small></article>
+        <article class="metric-card glass-panel"><span>Late Staff</span><strong id="lateStaff">--</strong><small>Needs attention</small></article>
+        <article class="metric-card glass-panel"><span>Missing Checkout</span><strong id="missingCheckout">--</strong><small>Open shifts</small></article>
+      </section>
+
+      <section class="content-grid wide">
+        <article class="glass-panel chart-panel">
+          <div class="panel-title"><h2>Attendance Analytics</h2><span>Realtime</span></div>
+          <canvas id="attendanceChart" width="680" height="300"></canvas>
+        </article>
+        <article class="glass-panel chart-panel">
+          <div class="panel-title"><h2>KPI Analytics</h2><span>Monthly</span></div>
+          <canvas id="kpiChart" width="680" height="300"></canvas>
+        </article>
+      </section>
+
+      <section id="boards" class="content-grid">
+        <article class="glass-panel table-panel">
+          <div class="panel-title"><h2>Live Attendance Board</h2><button class="mini-btn" data-export="attendance">Export</button></div>
+          <div class="table-wrap"><table><thead><tr><th>Staff</th><th>Department</th><th>Status</th><th>Check In</th><th>IP</th></tr></thead><tbody id="attendanceBoard"></tbody></table></div>
+        </article>
+        <article class="glass-panel table-panel">
+          <div class="panel-title"><h2>Live Break Board</h2><button class="mini-btn" data-export="breaks">Export</button></div>
+          <div class="table-wrap"><table><thead><tr><th>Staff</th><th>Break Start</th><th>Duration</th><th>Status</th></tr></thead><tbody id="breakBoard"></tbody></table></div>
+        </article>
+      </section>
+
+      <section class="content-grid">
+        <article class="glass-panel">
+          <div class="panel-title"><h2>Top Performers</h2><span>Quarter</span></div>
+          <div id="topPerformers" class="leaderboard"></div>
+        </article>
+        <article class="glass-panel">
+          <div class="panel-title"><h2>Needs Coaching</h2><span>Lowest KPI</span></div>
+          <div id="worstPerformers" class="leaderboard"></div>
+        </article>
+      </section>
+
+      <section id="management" class="content-grid">
+        <article class="glass-panel table-panel">
+          <div class="panel-title"><h2>Staff Management</h2><button class="mini-btn" data-refresh>Refresh</button></div>
+          <div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Department</th><th>KPI</th><th>Status</th></tr></thead><tbody id="staffTable"></tbody></table></div>
+        </article>
+        <article class="glass-panel table-panel">
+          <div class="panel-title"><h2>Schedule Management</h2><button class="mini-btn" data-export="schedule">Export</button></div>
+          <div class="table-wrap"><table><thead><tr><th>Staff</th><th>Shift</th><th>Start</th><th>End</th><th>Day</th></tr></thead><tbody id="scheduleTable"></tbody></table></div>
+        </article>
+      </section>
+
+      <section class="content-grid">
+        <article class="glass-panel table-panel">
+          <div class="panel-title"><h2>Monthly KPI Management</h2><span id="kpiRows">0 rows</span></div>
+          <div class="table-wrap"><table><thead><tr><th>Staff</th><th>Month</th><th>KPI</th><th>Quarter</th><th>Rank</th></tr></thead><tbody id="kpiTable"></tbody></table></div>
+        </article>
+        <article class="glass-panel table-panel">
+          <div class="panel-title"><h2>IP Allowlist</h2><button class="mini-btn" id="saveIpBtn">Save</button></div>
+          <textarea id="ipAllowlist" class="control-textarea" placeholder="One IP address or CIDR per line"></textarea>
+          <div id="ipSaveState" class="inline-alert subtle" hidden></div>
+        </article>
+      </section>
+
+      <section id="logs" class="content-grid">
+        <article class="glass-panel table-panel">
+          <div class="panel-title"><h2>Daily Logs</h2><button class="mini-btn" data-export="dailyLogs">Export</button></div>
+          <div class="table-wrap"><table><thead><tr><th>Time</th><th>Staff</th><th>Action</th><th>Status</th></tr></thead><tbody id="dailyLogs"></tbody></table></div>
+        </article>
+        <article class="glass-panel table-panel">
+          <div class="panel-title"><h2>Telegram Logs</h2><button class="mini-btn" data-export="telegramLogs">Export</button></div>
+          <div class="table-wrap"><table><thead><tr><th>Time</th><th>Target</th><th>Message</th><th>Status</th></tr></thead><tbody id="telegramLogs"></tbody></table></div>
+        </article>
+        <article class="glass-panel table-panel full-span">
+          <div class="panel-title"><h2>Audit Logs</h2><button class="mini-btn" data-export="auditLogs">Export</button></div>
+          <div class="table-wrap"><table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>IP</th><th>Result</th></tr></thead><tbody id="auditLogs"></tbody></table></div>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <nav class="mobile-nav">
+    <a href="#overview">Stats</a><a href="#boards">Boards</a><a href="#management">Manage</a><a href="#logs">Logs</a>
+  </nav>
+
+  <div id="toastHost" class="toast-host"></div>
+  <script src="js/app.js"></script>
+  <script src="js/admin.js"></script>
+</body>
+</html>

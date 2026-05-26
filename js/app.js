@@ -2,6 +2,7 @@
   const API_BASE = "https://staff-portal-api-v2.mdrobiulislam.workers.dev";
   const SESSION_KEY = "staffPortalV2.session";
   const REMEMBER_KEY = "staffPortalV2.remember";
+  const CLIENT_IP_KEY = "staffPortalV2.clientIp";
   const MAX_SESSION_AGE = 12 * 60 * 60 * 1000;
 
   const safeJson = async (response) => {
@@ -123,13 +124,18 @@
       setStatus(false, "API offline");
       throw lastError || new Error("API request failed");
     },
-    async detectIp() {
+    async detectIp(forceRefresh = false) {
+      const cached = localStorage.getItem(CLIENT_IP_KEY);
+      if (!forceRefresh && cached) return cached;
       const actions = ["clientIp", "getClientIp", "ipStatus", "checkIp", "getIp"];
       for (const action of actions) {
         try {
           const data = await this.call(action, {}, { endpoints: [API_BASE], timeoutMs: 3500 });
           const ip = pick(data?.data || data, ["ip", "clientIp", "client_ip", "requestIp", "request_ip", "address", "ipAddress"], "");
-          if (ip && !/invalid action/i.test(String(data?.message || data?.error || ""))) return ip;
+          if (ip && !/invalid action/i.test(String(data?.message || data?.error || ""))) {
+            localStorage.setItem(CLIENT_IP_KEY, ip);
+            return ip;
+          }
         } catch (error) {
           if (/abort/i.test(String(error.message))) break;
           if (!/invalid action/i.test(String(error.message))) break;
@@ -146,7 +152,9 @@
         if (!response.ok) return "";
         const trace = await response.text();
         const line = trace.split("\n").find((item) => item.startsWith("ip="));
-        return line ? line.slice(3).trim() : "";
+        const ip = line ? line.slice(3).trim() : "";
+        if (ip) localStorage.setItem(CLIENT_IP_KEY, ip);
+        return ip;
       } catch (error) {
         return "";
       }
@@ -178,8 +186,8 @@
         pin: password
       };
       const actions = role === "admin"
-        ? ["adminLogin", "loginAdmin", "admin_login", "validateAdmin", "authenticateAdmin"]
-        : ["staffLogin", "loginStaff", "staff_login", "validateStaff", "authenticateStaff"];
+        ? ["admin_login"]
+        : ["staff_login"];
       let lastError;
       for (const action of actions) {
         try {
@@ -205,12 +213,21 @@
     },
     async dashboard(role) {
       const actions = role === "admin"
-        ? ["adminDashboard", "getAdminDashboard", "admin_dashboard", "adminData"]
-        : ["staffDashboard", "getStaffDashboard", "staff_dashboard", "staffData"];
+        ? ["get_admin_dashboard"]
+        : ["get_staff_dashboard"];
+      const session = Portal.getSession(false);
+      const ip = await this.detectIp();
+      const payload = {
+        role,
+        ip,
+        login_id: session?.loginId || session?.staffId || "",
+        admin_login_id: session?.loginId || session?.staffId || "",
+        month: new Date().toISOString().slice(0, 7)
+      };
       let lastError;
       for (const action of actions) {
         try {
-          const data = await this.call(action, { role }, { endpoints: [API_BASE], timeoutMs: 10000 });
+          const data = await this.call(action, payload, { endpoints: [API_BASE], timeoutMs: 10000 });
           if (data?.error && /invalid action/i.test(String(data.error))) {
             lastError = new Error(data.error);
             continue;
@@ -219,6 +236,7 @@
             lastError = new Error(data.message);
             continue;
           }
+          if (data?.ok === false) throw new Error(data.message || data.error || "Dashboard request failed");
           return data;
         } catch (error) {
           if (/invalid action/i.test(String(error.message))) {
@@ -265,15 +283,17 @@
     sessionStorage.removeItem(SESSION_KEY);
   };
 
-  const normalizeSession = (role, identity, data) => {
+  const normalizeSession = (role, identity, data, ip = "") => {
     const root = data.user || data.staff || data.admin || data.data || data;
     return {
       role,
       accountRole: pick(root, ["role"], role),
       token: pick(root, ["token", "jwt", "accessToken", "sessionToken", "session_id"], pick(data, ["token", "jwt", "accessToken"], "")),
       staffId: pick(root, ["staffId", "staff_id", "id", "email", "username"], identity),
+      loginId: pick(root, ["login_id", "loginId", "username", "email"], identity),
       name: pick(root, ["name", "fullName", "staffName", "displayName"], identity),
       department: pick(root, ["department", "team"], ""),
+      ip,
       raw: root
     };
   };
@@ -295,14 +315,15 @@
     const form = document.getElementById("loginForm");
     if (!form) return;
     const existing = getSession(false);
-    if (existing?.role === "admin") location.href = "admin.html";
-    if (existing?.role === "staff") location.href = "staff.html";
+      if (existing?.role === "admin") location.href = "admin.html";
+      if (existing?.role === "staff") location.href = "staff.html";
     let role = "staff";
     const title = document.getElementById("loginTitle");
     const alert = document.getElementById("loginAlert");
     const btn = document.getElementById("loginBtn");
     const remember = document.getElementById("remember");
     remember.checked = localStorage.getItem(REMEMBER_KEY) !== "0";
+    api.detectIp();
 
     document.querySelectorAll(".tab-btn").forEach((tab) => {
       tab.addEventListener("click", () => {
@@ -327,13 +348,14 @@
       try {
         const identity = document.getElementById("identity").value.trim();
         const password = document.getElementById("password").value;
+        attemptedIp = await api.detectIp(true);
         const data = await api.login(role, identity, password, attemptedIp);
         const ok = data.ok !== false && data.success !== false && !data.error;
         if (!ok) {
           if (/ip not allowed|not allowed/i.test(String(data.message || data.error || ""))) attemptedIp = await api.detectIp();
           throw new Error(formatLoginError(data, attemptedIp));
         }
-        saveSession(normalizeSession(role, identity, data), remember.checked);
+        saveSession(normalizeSession(role, identity, data, attemptedIp), remember.checked);
         location.href = role === "admin" ? "admin.html" : "staff.html";
       } catch (error) {
         if (/ip not allowed|not allowed/i.test(String(error.message)) && !attemptedIp) attemptedIp = await api.detectIp();
@@ -352,6 +374,7 @@
     const data = source?.data || source;
     const message = pick(data, ["message", "error"], source?.message || "Unable to sign in. Check credentials and try again.");
     const ip = pick(data, ["ip", "clientIp", "client_ip", "requestIp", "request_ip", "attemptedIp", "attempted_ip", "ipAddress"], fallbackIp);
+    if (/Trying IP:/i.test(String(message))) return message;
     if (/ip not allowed|not allowed/i.test(String(message))) {
       return ip ? `${message}. Trying IP: ${ip}` : `${message}. Could not detect browser IP.`;
     }
@@ -373,6 +396,7 @@
   window.Portal = {
     api,
     SESSION_KEY,
+    CLIENT_IP_KEY,
     normalizeArray,
     pick,
     formatTime,

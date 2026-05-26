@@ -11,8 +11,16 @@
 
   const normalizeDashboard = (data) => {
     const root = data.data || data.dashboard || data;
+    const summary = root.today_summary || {};
     return {
-      stats: root.stats || root.summary || root.counters || {},
+      stats: root.stats || root.summary || root.counters || {
+        totalStaff: root.staff_count,
+        onlineStaff: summary.currently_working,
+        checkedInToday: summary.checked_in,
+        onBreak: summary.on_break,
+        lateStaff: summary.late_staff,
+        missingCheckout: Math.max(Number(summary.checked_in || 0) - Number(summary.checked_out || 0), 0)
+      },
       attendance: Portal.normalizeArray(root.attendanceBoard || root.attendance || root.onlineStaff),
       breaks: Portal.normalizeArray(root.breakBoard || root.breaks),
       staff: Portal.normalizeArray(root.staff || root.staffList || root.users),
@@ -389,7 +397,20 @@
     try {
       state.hidden = false;
       state.textContent = "Saving KPI...";
-      await callFirstValid(["saveKPI", "saveKpi", "updateKPI", "updateKpi", "saveMonthlyKPI"], payload);
+      const ip = await Portal.api.detectIp();
+      await callFirstValid(["save_monthly_kpi"], {
+        admin_login_id: session.loginId || session.staffId,
+        login_id: payload.staffId,
+        kpi_month: payload.month,
+        ip,
+        L_Leadership: payload.leadership,
+        E_Effectiveness: payload.effectiveness,
+        P_ProblemSolving: payload.problemSolving,
+        C_Communication: payload.communication,
+        PR_Productivity: payload.productivity,
+        I_Initiative: payload.initiative,
+        Penalty: payload.penalty
+      });
       state.textContent = `KPI saved for ${payload.staffId}.`;
       Portal.toast("KPI saved");
       await load(true);

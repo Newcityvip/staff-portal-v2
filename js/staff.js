@@ -14,18 +14,31 @@
   const normalizeDashboard = (data) => {
     const root = data.data || data.dashboard || data;
     const staff = root.staff || root.profile || root.user || session.raw || {};
-    const today = root.today || root.attendance || root.current || {};
-    const shift = root.shift || today.shift || {};
-    const performance = root.performance || root.kpi || {};
+    const schedule = root.today_schedule || root.schedule || root.shift || {};
+    const attendance = root.attendance_state || root.today || root.attendance || root.current || {};
+    const kpi = root.own_kpi || root.performance || root.kpi || {};
     return {
       staff,
-      today,
-      shift,
-      performance,
-      history: Portal.normalizeArray(root.history || root.attendanceHistory || root.records),
+      today: {
+        ...attendance,
+        status: attendance.hasCheckOut ? "Checked out" : attendance.hasCheckIn ? "Checked in" : "Not checked in",
+        breakStatus: attendance.activeBreak ? attendance.activeBreak.replaceAll("_", " ") : "Not on break",
+        ipAllowed: true
+      },
+      shift: {
+        ...schedule,
+        name: Portal.pick(schedule, ["shift_code", "shift", "name"], "Today shift"),
+        start: Portal.pick(schedule, ["start_time", "start", "startTime"], ""),
+        end: Portal.pick(schedule, ["end_time", "end", "endTime"], "")
+      },
+      performance: {
+        ...kpi,
+        kpiScore: Portal.pick(kpi, ["kpi_score_out_of_5", "kpiScore", "score"], "--")
+      },
+      history: Portal.normalizeArray(root.history || root.attendanceHistory || root.records || root.monthly_schedule),
       leaderboard: Portal.normalizeArray(root.leaderboard || root.rankings),
       timeline: Portal.normalizeArray(root.timeline || root.activity || root.logs),
-      ip: root.ip || root.ipStatus || {}
+      ip: root.ip || root.ipStatus || { allowed: true, message: "IP allowed" }
     };
   };
 
@@ -183,9 +196,21 @@
     document.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", async () => {
         const action = button.dataset.action;
+        const eventMap = {
+          checkIn: { event_type: "CHECK_IN" },
+          checkOut: { event_type: "CHECK_OUT" },
+          breakStart: { event_type: "BREAK_START", break_type: "BREAK" },
+          breakEnd: { event_type: "BREAK_END", break_type: state.today?.activeBreak || "BREAK" }
+        };
         button.disabled = true;
         try {
-          await Portal.api.action(action, { staffId: session.staffId });
+          const ip = await Portal.api.detectIp();
+          await Portal.api.action("attendance_action", {
+            login_id: session.loginId || session.staffId,
+            ip,
+            user_agent: navigator.userAgent,
+            ...(eventMap[action] || {})
+          });
           Portal.toast(`${button.firstChild.textContent.trim()} recorded`);
           await load(true);
         } catch (error) {

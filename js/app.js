@@ -183,7 +183,7 @@
       let lastError;
       for (const action of actions) {
         try {
-          const data = await this.call(action, role === "admin" ? adminPayload : staffPayload, { endpoints: [API_BASE] });
+          const data = await this.call(action, role === "admin" ? adminPayload : staffPayload, { endpoints: [API_BASE], timeoutMs: 6000 });
           if (data?.error && /invalid action/i.test(String(data.error))) {
             lastError = new Error(data.error);
             continue;
@@ -205,8 +205,8 @@
     },
     async dashboard(role) {
       const actions = role === "admin"
-        ? ["adminDashboard", "getAdminDashboard", "admin_dashboard", "adminData", "getAdminData"]
-        : ["staffDashboard", "getStaffDashboard", "staff_dashboard", "staffData", "getStaffData"];
+        ? ["adminDashboard", "getAdminDashboard", "admin_dashboard", "adminData"]
+        : ["staffDashboard", "getStaffDashboard", "staff_dashboard", "staffData"];
       let lastError;
       for (const action of actions) {
         try {
@@ -327,13 +327,16 @@
       try {
         const identity = document.getElementById("identity").value.trim();
         const password = document.getElementById("password").value;
-        attemptedIp = await api.detectIp();
         const data = await api.login(role, identity, password, attemptedIp);
         const ok = data.ok !== false && data.success !== false && !data.error;
-        if (!ok) throw new Error(formatLoginError(data, attemptedIp));
+        if (!ok) {
+          if (/ip not allowed|not allowed/i.test(String(data.message || data.error || ""))) attemptedIp = await api.detectIp();
+          throw new Error(formatLoginError(data, attemptedIp));
+        }
         saveSession(normalizeSession(role, identity, data), remember.checked);
         location.href = role === "admin" ? "admin.html" : "staff.html";
       } catch (error) {
+        if (/ip not allowed|not allowed/i.test(String(error.message)) && !attemptedIp) attemptedIp = await api.detectIp();
         alert.hidden = false;
         alert.textContent = formatLoginError(error, attemptedIp);
       } finally {

@@ -87,6 +87,65 @@
       </section>
 
       <section class="content-grid">
+        <article class="glass-panel">
+          <div class="panel-title"><h2>Upload Schedule</h2><span>CSV import</span></div>
+          <form id="scheduleUploadForm" class="control-grid">
+            <label class="field full-span">
+              <span>Schedule CSV</span>
+              <input id="scheduleFile" class="file-input" type="file" accept=".csv,text/csv">
+            </label>
+            <button class="primary-btn" type="submit">Upload Schedule</button>
+            <button class="mini-btn" id="clearScheduleUpload" type="button">Clear</button>
+            <div id="scheduleUploadState" class="inline-alert subtle full-span" hidden></div>
+          </form>
+        </article>
+
+        <article class="glass-panel">
+          <div class="panel-title"><h2>Monthly KPI Input</h2><span>Score update</span></div>
+          <form id="kpiInputForm" class="control-grid">
+            <label class="field">
+              <span>Staff Login ID or Email</span>
+              <input id="kpiStaffId" required placeholder="AKM001">
+            </label>
+            <label class="field">
+              <span>KPI Month</span>
+              <input id="kpiMonth" type="month" required>
+            </label>
+            <label class="field">
+              <span>Leadership</span>
+              <input id="kpiLeadership" type="number" min="0" max="5" step="0.1" value="0">
+            </label>
+            <label class="field">
+              <span>Effectiveness</span>
+              <input id="kpiEffectiveness" type="number" min="0" max="5" step="0.1" value="0">
+            </label>
+            <label class="field">
+              <span>Problem Solving</span>
+              <input id="kpiProblemSolving" type="number" min="0" max="5" step="0.1" value="0">
+            </label>
+            <label class="field">
+              <span>Communication</span>
+              <input id="kpiCommunication" type="number" min="0" max="5" step="0.1" value="0">
+            </label>
+            <label class="field">
+              <span>Productivity</span>
+              <input id="kpiProductivity" type="number" min="0" max="5" step="0.1" value="0">
+            </label>
+            <label class="field">
+              <span>Initiative</span>
+              <input id="kpiInitiative" type="number" min="0" max="5" step="0.1" value="0">
+            </label>
+            <label class="field">
+              <span>Penalty</span>
+              <input id="kpiPenalty" type="number" min="0" max="5" step="0.1" value="0">
+            </label>
+            <button class="primary-btn" type="submit">Save KPI</button>
+            <div id="kpiInputState" class="inline-alert subtle full-span" hidden></div>
+          </form>
+        </article>
+      </section>
+
+      <section class="content-grid">
         <article class="glass-panel table-panel">
           <div class="panel-title"><h2>Monthly KPI Management</h2><span id="kpiRows">0 rows</span></div>
           <div class="table-wrap"><table><thead><tr><th>Staff</th><th>Month</th><th>KPI</th><th>Quarter</th><th>Rank</th></tr></thead><tbody id="kpiTable"></tbody></table></div>
@@ -120,7 +179,7 @@
   </nav>
 
   <div id="toastHost" class="toast-host"></div>
-  <script src="js/app.js?v=20260526-dashboard1"></script>
-  <script src="js/admin.js?v=20260526-dashboard1"></script>
+  <script src="js/app.js?v=20260526-dashboard2"></script>
+  <script src="js/admin.js?v=20260526-dashboard2"></script>
 </body>
 </html>

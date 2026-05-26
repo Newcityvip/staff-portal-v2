@@ -236,8 +236,65 @@
       dashboard = normalizeDashboard({});
       renderAll();
       Portal.setStatus(false, "API issue");
-      Portal.toast(error.message || "Unable to load admin dashboard", "error");
+      if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load admin dashboard", "error");
     }
+  };
+
+  const callFirstValid = async (actions, payload) => {
+    let lastError;
+    for (const action of actions) {
+      try {
+        const data = await Portal.api.action(action, payload);
+        if (/invalid action/i.test(String(data?.message || data?.error || ""))) {
+          lastError = new Error(data.message || data.error);
+          continue;
+        }
+        return data;
+      } catch (error) {
+        if (/invalid action/i.test(String(error.message))) {
+          lastError = error;
+          continue;
+        }
+        throw error;
+      }
+    }
+    throw lastError || new Error("Action is not available");
+  };
+
+  const parseCsv = (text) => {
+    const rows = [];
+    let row = [];
+    let cell = "";
+    let quoted = false;
+    for (let i = 0; i < text.length; i += 1) {
+      const char = text[i];
+      const next = text[i + 1];
+      if (char === '"' && quoted && next === '"') {
+        cell += '"';
+        i += 1;
+      } else if (char === '"') {
+        quoted = !quoted;
+      } else if (char === "," && !quoted) {
+        row.push(cell.trim());
+        cell = "";
+      } else if ((char === "\n" || char === "\r") && !quoted) {
+        if (char === "\r" && next === "\n") i += 1;
+        row.push(cell.trim());
+        if (row.some(Boolean)) rows.push(row);
+        row = [];
+        cell = "";
+      } else {
+        cell += char;
+      }
+    }
+    row.push(cell.trim());
+    if (row.some(Boolean)) rows.push(row);
+    if (!rows.length) return [];
+    const headers = rows.shift().map((item) => item.trim());
+    return rows.map((items) => headers.reduce((record, header, index) => {
+      record[header] = items[index] || "";
+      return record;
+    }, {}));
   };
 
   const exportTable = (name) => {
@@ -269,6 +326,79 @@
   document.getElementById("ipAllowlist")?.addEventListener("input", (event) => event.target.dataset.touched = "1");
   document.querySelectorAll("[data-export]").forEach((btn) => btn.addEventListener("click", () => exportTable(btn.dataset.export)));
   document.querySelector("[data-refresh]")?.addEventListener("click", () => load());
+  document.getElementById("clearScheduleUpload")?.addEventListener("click", () => {
+    const input = document.getElementById("scheduleFile");
+    const state = document.getElementById("scheduleUploadState");
+    if (input) input.value = "";
+    if (state) state.hidden = true;
+  });
+  document.getElementById("scheduleUploadForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const state = document.getElementById("scheduleUploadState");
+    const file = document.getElementById("scheduleFile")?.files?.[0];
+    if (!file) {
+      state.hidden = false;
+      state.textContent = "Select a CSV schedule file first.";
+      return;
+    }
+    try {
+      state.hidden = false;
+      state.textContent = "Uploading schedule...";
+      const csv = await file.text();
+      const rows = parseCsv(csv);
+      await callFirstValid(["uploadSchedule", "saveScheduleBatch", "importSchedule", "updateSchedule"], {
+        fileName: file.name,
+        csv,
+        rows,
+        schedules: rows
+      });
+      state.textContent = `Schedule uploaded: ${rows.length} rows.`;
+      Portal.toast("Schedule uploaded");
+      await load(true);
+    } catch (error) {
+      state.textContent = /invalid action/i.test(String(error.message))
+        ? "Schedule upload action is not enabled in the Worker yet."
+        : (error.message || "Unable to upload schedule.");
+    }
+  });
+  document.getElementById("kpiInputForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const state = document.getElementById("kpiInputState");
+    const payload = {
+      staffId: document.getElementById("kpiStaffId").value.trim(),
+      login_id: document.getElementById("kpiStaffId").value.trim(),
+      email: document.getElementById("kpiStaffId").value.trim(),
+      month: document.getElementById("kpiMonth").value,
+      leadership: Number(document.getElementById("kpiLeadership").value || 0),
+      effectiveness: Number(document.getElementById("kpiEffectiveness").value || 0),
+      problemSolving: Number(document.getElementById("kpiProblemSolving").value || 0),
+      communication: Number(document.getElementById("kpiCommunication").value || 0),
+      productivity: Number(document.getElementById("kpiProductivity").value || 0),
+      initiative: Number(document.getElementById("kpiInitiative").value || 0),
+      penalty: Number(document.getElementById("kpiPenalty").value || 0)
+    };
+    payload.kpiScore = Math.max(0, (
+      payload.leadership +
+      payload.effectiveness +
+      payload.problemSolving +
+      payload.communication +
+      payload.productivity +
+      payload.initiative -
+      payload.penalty
+    ) / 6);
+    try {
+      state.hidden = false;
+      state.textContent = "Saving KPI...";
+      await callFirstValid(["saveKPI", "saveKpi", "updateKPI", "updateKpi", "saveMonthlyKPI"], payload);
+      state.textContent = `KPI saved for ${payload.staffId}.`;
+      Portal.toast("KPI saved");
+      await load(true);
+    } catch (error) {
+      state.textContent = /invalid action/i.test(String(error.message))
+        ? "KPI save action is not enabled in the Worker yet."
+        : (error.message || "Unable to save KPI.");
+    }
+  });
   document.getElementById("saveIpBtn")?.addEventListener("click", async () => {
     const state = document.getElementById("ipSaveState");
     try {

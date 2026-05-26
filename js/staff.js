@@ -175,7 +175,7 @@
       state = normalizeDashboard({});
       renderProfile(state);
       Portal.setStatus(false, "API issue");
-      Portal.toast(error.message || "Unable to load staff dashboard", "error");
+      if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load staff dashboard", "error");
     }
   };
 

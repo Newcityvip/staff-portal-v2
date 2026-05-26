@@ -23,15 +23,15 @@
       },
       attendance: Portal.normalizeArray(root.attendanceBoard || root.attendance || root.onlineStaff),
       breaks: Portal.normalizeArray(root.breakBoard || root.breaks),
-      staff: Portal.normalizeArray(root.staff || root.staffList || root.users),
-      schedules: Portal.normalizeArray(root.schedules || root.schedule),
-      kpis: Portal.normalizeArray(root.kpis || root.kpi || root.monthlyKpi),
+      staff: Portal.normalizeArray(root.staff || root.staffList || root.users || root.staff_rows),
+      schedules: Portal.normalizeArray(root.schedules || root.schedule || root.schedule_rows),
+      kpis: Portal.normalizeArray(root.kpis || root.kpi || root.monthlyKpi || root.kpi_rows),
       top: Portal.normalizeArray(root.topPerformers || root.leaderboard || root.rankings),
       worst: Portal.normalizeArray(root.worstPerformers || root.lowPerformers || root.needsCoaching),
-      dailyLogs: Portal.normalizeArray(root.dailyLogs || root.logs),
-      telegramLogs: Portal.normalizeArray(root.telegramLogs),
-      auditLogs: Portal.normalizeArray(root.auditLogs || root.audit),
-      ipAllowlist: root.ipAllowlist || root.allowlist || []
+      dailyLogs: Portal.normalizeArray(root.dailyLogs || root.daily_logs || root.logs),
+      telegramLogs: Portal.normalizeArray(root.telegramLogs || root.telegram_logs),
+      auditLogs: Portal.normalizeArray(root.auditLogs || root.audit_logs || root.audit),
+      ipAllowlist: root.ipAllowlist || root.ip_allowlist || root.allowlist || []
     };
   };
 
@@ -58,7 +58,7 @@
     if (!rows.length) return host.innerHTML = empty("No live attendance records received.", 5);
     host.innerHTML = rows.map((row) => `
       <tr>
-        <td>${Portal.pick(row, ["name", "staffName", "staff"], "Staff")}</td>
+        <td>${Portal.pick(row, ["name", "full_name", "staffName", "staff"], "Staff")}</td>
         <td>${Portal.pick(row, ["department", "team"], "--")}</td>
         <td>${badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], "")))}</td>
         <td>${Portal.formatTime(Portal.pick(row, ["checkIn", "check_in", "in"], ""))}</td>
@@ -72,7 +72,7 @@
     if (!rows.length) return host.innerHTML = empty("No active break records received.", 4);
     host.innerHTML = rows.map((row) => `
       <tr>
-        <td>${Portal.pick(row, ["name", "staffName", "staff"], "Staff")}</td>
+        <td>${Portal.pick(row, ["name", "full_name", "staffName", "staff"], "Staff")}</td>
         <td>${Portal.formatTime(Portal.pick(row, ["breakStart", "start", "startedAt"], ""))}</td>
         <td>${Portal.pick(row, ["duration", "breakDuration"], "--")}</td>
         <td>${badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], "")))}</td>
@@ -87,10 +87,10 @@
     if (!filtered.length) return host.innerHTML = empty("No staff records match the current filter.", 5);
     host.innerHTML = filtered.map((row) => `
       <tr>
-        <td>${Portal.pick(row, ["name", "fullName", "staffName"], "Staff")}</td>
+        <td>${Portal.pick(row, ["name", "full_name", "fullName", "staffName"], "Staff")}</td>
         <td>${Portal.pick(row, ["role", "position"], "--")}</td>
         <td>${Portal.pick(row, ["department", "team"], "--")}</td>
-        <td>${Portal.pick(row, ["kpi", "kpiScore", "score"], "--")}</td>
+        <td>${Portal.pick(row, ["kpi", "kpi_score_out_of_5", "kpiScore", "score"], "--")}</td>
         <td>${badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], "")))}</td>
       </tr>`).join("");
   };
@@ -101,11 +101,11 @@
     if (!rows.length) return host.innerHTML = empty("No schedule rows received.", 5);
     host.innerHTML = rows.map((row) => `
       <tr>
-        <td>${Portal.pick(row, ["name", "staffName", "staff"], "Staff")}</td>
-        <td>${Portal.pick(row, ["shift", "shiftName", "name"], "--")}</td>
-        <td>${Portal.formatTime(Portal.pick(row, ["start", "startTime"], ""))}</td>
-        <td>${Portal.formatTime(Portal.pick(row, ["end", "endTime"], ""))}</td>
-        <td>${Portal.pick(row, ["day", "date"], "--")}</td>
+        <td>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</td>
+        <td>${Portal.pick(row, ["shift_code", "shift", "shiftName", "name"], "--")}</td>
+        <td>${Portal.formatTime(Portal.pick(row, ["start_time", "start", "startTime"], ""))}</td>
+        <td>${Portal.formatTime(Portal.pick(row, ["end_time", "end", "endTime"], ""))}</td>
+        <td>${Portal.pick(row, ["schedule_date", "day", "date"], "--")}</td>
       </tr>`).join("");
   };
 
@@ -116,10 +116,10 @@
     if (!rows.length) return host.innerHTML = empty("No KPI rows received.", 5);
     host.innerHTML = rows.map((row) => `
       <tr>
-        <td>${Portal.pick(row, ["name", "staffName", "staff"], "Staff")}</td>
-        <td>${Portal.pick(row, ["month", "period"], "--")}</td>
-        <td>${Portal.pick(row, ["kpi", "kpiScore", "score"], "--")}</td>
-        <td>${Portal.pick(row, ["quarter", "quarterScore"], "--")}</td>
+        <td>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</td>
+        <td>${Portal.pick(row, ["kpi_month", "month", "period"], "--")}</td>
+        <td>${Portal.pick(row, ["kpi_score_out_of_5", "kpi", "kpiScore", "score"], "--")}</td>
+        <td>${Portal.pick(row, ["quarter_score", "quarter", "quarterScore"], "--")}</td>
         <td>${Portal.pick(row, ["rank", "position"], "--")}</td>
       </tr>`).join("");
   };
@@ -134,8 +134,8 @@
     host.innerHTML = rows.slice(0, 7).map((row, index) => `
       <div class="leader-row">
         <span class="leader-rank">${Portal.pick(row, ["rank", "position"], index + 1)}</span>
-        <div><strong>${Portal.pick(row, ["name", "staffName", "staff"], "Staff")}</strong><br><small>${Portal.pick(row, ["department", "team"], "")}</small></div>
-        <strong>${Portal.pick(row, ["score", "kpi", "quarterScore"], "--")}</strong>
+        <div><strong>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</strong><br><small>${Portal.pick(row, ["department", "team"], "")}</small></div>
+        <strong>${Portal.pick(row, ["final_score", "kpi_score_out_of_5", "score", "kpi", "quarterScore"], "--")}</strong>
       </div>`).join("");
   };
 
@@ -150,7 +150,9 @@
   const renderIpAllowlist = (value) => {
     const textarea = document.getElementById("ipAllowlist");
     if (!textarea || textarea.dataset.touched) return;
-    textarea.value = Array.isArray(value) ? value.join("\n") : String(value || "");
+    textarea.value = Array.isArray(value)
+      ? value.map((row) => typeof row === "string" ? row : Portal.pick(row, ["ip_address", "ip", "address", "value"], "")).filter(Boolean).join("\n")
+      : String(value || "");
   };
 
   const renderCharts = () => {
@@ -162,7 +164,7 @@
       ["Missing", Number(Portal.pick(dashboard.stats, ["missingCheckout", "missingCheckOut"], 0))]
     ], "#28dcff");
 
-    const kpiRows = dashboard.kpis.slice(0, 8).map((row) => [Portal.pick(row, ["name", "staffName", "staff"], "Staff"), Number(Portal.pick(row, ["kpi", "kpiScore", "score"], 0))]);
+    const kpiRows = dashboard.kpis.slice(0, 8).map((row) => [Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff"), Number(Portal.pick(row, ["kpi_score_out_of_5", "kpi", "kpiScore", "score"], 0))]);
     drawBars("kpiChart", kpiRows, "#54f5a8");
   };
 
@@ -212,20 +214,20 @@
     renderLeaders("topPerformers", dashboard.top);
     renderLeaders("worstPerformers", dashboard.worst);
     renderLogs("dailyLogs", dashboard.dailyLogs, [
-      { render: (row) => Portal.formatTime(Portal.pick(row, ["time", "timestamp", "createdAt"], "")) },
-      { keys: ["name", "staffName", "staff"] },
-      { keys: ["action", "event"] },
+      { render: (row) => Portal.formatTime(Portal.pick(row, ["created_at", "time", "timestamp", "createdAt"], "")) },
+      { keys: ["full_name", "name", "staffName", "staff"] },
+      { keys: ["event_type", "action", "event"] },
       { render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
     ]);
     renderLogs("telegramLogs", dashboard.telegramLogs, [
-      { render: (row) => Portal.formatTime(Portal.pick(row, ["time", "timestamp", "createdAt"], "")) },
-      { keys: ["target", "chat", "recipient"] },
-      { keys: ["message", "text"] },
+      { render: (row) => Portal.formatTime(Portal.pick(row, ["created_at", "time", "timestamp", "createdAt"], "")) },
+      { keys: ["target", "chat", "recipient", "login_id"] },
+      { keys: ["message", "text", "event_type"] },
       { render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
     ]);
     renderLogs("auditLogs", dashboard.auditLogs, [
-      { render: (row) => Portal.formatTime(Portal.pick(row, ["time", "timestamp", "createdAt"], "")) },
-      { keys: ["user", "name", "email"] },
+      { render: (row) => Portal.formatTime(Portal.pick(row, ["created_at", "time", "timestamp", "createdAt"], "")) },
+      { keys: ["actor_name", "user", "name", "email"] },
       { keys: ["action", "event"] },
       { keys: ["ip", "ipAddress"] },
       { render: (row) => badge(Portal.pick(row, ["result", "status", "state"], "--"), statusTone(Portal.pick(row, ["result", "status", "state"], ""))) }
@@ -256,6 +258,9 @@
         if (/invalid action/i.test(String(data?.message || data?.error || ""))) {
           lastError = new Error(data.message || data.error);
           continue;
+        }
+        if (data?.ok === false || data?.success === false) {
+          throw new Error(data.message || data.error || `${action} failed`);
         }
         return data;
       } catch (error) {
@@ -354,7 +359,10 @@
       state.textContent = "Uploading schedule...";
       const csv = await file.text();
       const rows = parseCsv(csv);
-      await callFirstValid(["uploadSchedule", "saveScheduleBatch", "importSchedule", "updateSchedule"], {
+      const ip = await Portal.api.detectIp();
+      await callFirstValid(["import_schedule", "upload_schedule", "uploadSchedule", "saveScheduleBatch", "importSchedule", "updateSchedule"], {
+        admin_login_id: session.loginId || session.staffId,
+        ip,
         fileName: file.name,
         csv,
         rows,
@@ -424,7 +432,13 @@
     const state = document.getElementById("ipSaveState");
     try {
       const ips = document.getElementById("ipAllowlist").value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
-      await Portal.api.action("saveIpAllowlist", { ips, ipAllowlist: ips });
+      const ip = await Portal.api.detectIp();
+      await callFirstValid(["save_ip_allowlist", "saveIpAllowlist"], {
+        admin_login_id: session.loginId || session.staffId,
+        ip,
+        ips,
+        ipAllowlist: ips
+      });
       state.hidden = false;
       state.textContent = "IP allowlist saved through Worker.";
       Portal.toast("IP allowlist saved");

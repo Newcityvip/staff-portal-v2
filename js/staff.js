@@ -6,6 +6,11 @@
   let state = {};
   let refreshTimer;
   let breakStartedAt = null;
+  const BREAK_RULES = {
+    BREAK: { label: "Break", limit: 1, minutes: 60 },
+    BIO_BREAK: { label: "Bio Break", limit: 3, minutes: 11 },
+    PRAYER_BREAK: { label: "Prayer Break", limit: 3, minutes: 15 }
+  };
 
   const empty = (message) => `<tr><td colspan="8" class="empty-state">${message}</td></tr>`;
   const badge = (text, tone = "") => `<span class="badge ${tone}">${text || "--"}</span>`;
@@ -35,7 +40,9 @@
         ...kpi,
         kpiScore: Portal.pick(kpi, ["kpi_score_out_of_5", "kpiScore", "score"], "--")
       },
-      history: Portal.normalizeArray(root.history || root.attendanceHistory || root.records || root.monthly_schedule),
+      history: Portal.normalizeArray(root.history || root.attendanceHistory || root.records),
+      scheduleList: Portal.normalizeArray(root.monthly_schedule),
+      tomorrowSchedule: root.tomorrow_schedule || {},
       leaderboard: Portal.normalizeArray(root.leaderboard || root.rankings),
       timeline: Portal.normalizeArray(root.timeline || root.activity || root.logs),
       ip: root.ip || root.ipStatus || { allowed: true, message: "IP allowed" }
@@ -50,7 +57,7 @@
     return Portal.percent(((now - start.getTime()) / (end.getTime() - start.getTime())) * 100);
   };
 
-  const renderProfile = ({ staff, today, shift, performance, leaderboard, timeline, history, ip }) => {
+  const renderProfile = ({ staff, today, shift, performance, leaderboard, timeline, history, scheduleList, tomorrowSchedule, ip }) => {
     const name = Portal.pick(staff, ["name", "fullName", "staffName", "displayName"], session.name);
     Portal.setText("staffGreeting", `Welcome back, ${name}`);
     Portal.setText("staffInitials", initials(name));
@@ -87,6 +94,7 @@
     renderLeaderboard(leaderboard);
     renderTimeline(timeline);
     renderHistory(history);
+    renderUpcomingSchedule(scheduleList, tomorrowSchedule);
     updateActionStates(today);
   };
 
@@ -106,8 +114,8 @@
     host.innerHTML = rows.slice(0, 5).map((row, index) => `
       <div class="leader-row">
         <span class="leader-rank">${Portal.pick(row, ["rank", "position"], index + 1)}</span>
-        <div><strong>${Portal.pick(row, ["name", "staffName", "staff"], "Staff")}</strong><br><small>${Portal.pick(row, ["department", "team"], "")}</small></div>
-        <strong>${Portal.pick(row, ["score", "kpi", "quarterScore"], "--")}</strong>
+        <div><strong>${Portal.pick(row, ["name", "staffName", "full_name", "staff"], "Staff")}</strong><br><small>${Portal.pick(row, ["department", "team"], "")}</small></div>
+        <strong>${Portal.pick(row, ["score", "kpi", "kpi_score_out_of_5", "quarterScore"], "--")}</strong>
       </div>`).join("");
   };
 
@@ -144,6 +152,46 @@
       </tr>`).join("");
   };
 
+  const renderUpcomingSchedule = (rows, tomorrow) => {
+    const host = document.getElementById("upcomingSchedule");
+    if (!host) return;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const nextWeek = new Date(today);
+    nextWeek.setDate(today.getDate() + 7);
+    let list = rows.filter((row) => {
+      const date = new Date(`${Portal.pick(row, ["date", "schedule_date"], "")}T00:00:00`);
+      return !Number.isNaN(date.getTime()) && date >= today;
+    });
+    if (tomorrow?.ok && !list.some((row) => Portal.pick(row, ["date", "schedule_date"], "") === Portal.pick(tomorrow, ["schedule_date", "date"], ""))) {
+      list.push({
+        date: Portal.pick(tomorrow, ["schedule_date", "date"], ""),
+        shift_code: Portal.pick(tomorrow, ["shift_code"], ""),
+        start_time: Portal.pick(tomorrow, ["start_time"], ""),
+        end_time: Portal.pick(tomorrow, ["end_time"], ""),
+        status: Portal.pick(tomorrow, ["status"], "")
+      });
+    }
+    list.sort((a, b) => String(Portal.pick(a, ["date", "schedule_date"], "")).localeCompare(String(Portal.pick(b, ["date", "schedule_date"], ""))));
+    const nextSeven = list.filter((row) => {
+      const date = new Date(`${Portal.pick(row, ["date", "schedule_date"], "")}T00:00:00`);
+      return date <= nextWeek;
+    });
+    const output = nextSeven.length ? nextSeven : list;
+    if (!output.length) {
+      host.innerHTML = empty("No upcoming schedule found for selected month.");
+      return;
+    }
+    host.innerHTML = output.map((row) => `
+      <tr>
+        <td>${Portal.formatDate(Portal.pick(row, ["date", "schedule_date"], ""))}</td>
+        <td>${Portal.pick(row, ["shift_code", "shift"], "--")}</td>
+        <td>${Portal.formatTime(Portal.pick(row, ["start_time", "start"], ""))}</td>
+        <td>${Portal.formatTime(Portal.pick(row, ["end_time", "end"], ""))}</td>
+        <td>${badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], "")))}</td>
+      </tr>`).join("");
+  };
+
   const statusTone = (value) => {
     const text = String(value).toLowerCase();
     if (text.includes("late") || text.includes("missing") || text.includes("absent")) return "red";
@@ -153,17 +201,24 @@
   };
 
   const updateActionStates = (today) => {
-    const checkedIn = /in|present|online/i.test(Portal.pick(today, ["status", "attendanceStatus", "state"], ""));
-    const checkedOut = /out|closed|complete/i.test(Portal.pick(today, ["status", "attendanceStatus", "state"], ""));
-    const onBreak = /break/i.test(Portal.pick(today, ["breakStatus", "currentBreakStatus"], ""));
+    const checkedIn = today.hasCheckIn === true;
+    const checkedOut = today.hasCheckOut === true;
+    const activeBreak = Portal.pick(today, ["activeBreak"], "");
+    const onBreak = Boolean(activeBreak);
+    const selectedBreak = document.getElementById("breakTypeSelect")?.value || "BREAK";
+    const counts = today.counts || {};
+    const selectedCount = Number(counts[selectedBreak] || 0);
+    const selectedRule = BREAK_RULES[selectedBreak] || BREAK_RULES.BREAK;
+    const selectedLimitReached = selectedCount >= selectedRule.limit;
     Portal.setText("checkInState", checkedIn ? "Completed" : "Ready");
     Portal.setText("checkOutState", checkedOut ? "Completed" : checkedIn ? "Ready" : "Pending");
-    Portal.setText("breakStartState", onBreak ? "Running" : checkedIn ? "Available" : "Check in first");
+    Portal.setText("breakStartState", onBreak ? "Running" : selectedLimitReached ? "Limit reached" : checkedIn ? "Available" : "Check in first");
     Portal.setText("breakEndState", onBreak ? "Ready" : "Inactive");
+    Portal.setText("breakLimitHint", `${selectedRule.label}: ${selectedCount}/${selectedRule.limit} used, ${selectedRule.minutes} min limit`);
     breakStartedAt = Portal.pick(today, ["breakStartedAt", "breakStart", "currentBreakStart"], breakStartedAt);
-    document.querySelector('[data-action="checkIn"]').disabled = checkedIn && !checkedOut;
+    document.querySelector('[data-action="checkIn"]').disabled = checkedIn;
     document.querySelector('[data-action="checkOut"]').disabled = !checkedIn || checkedOut;
-    document.querySelector('[data-action="breakStart"]').disabled = !checkedIn || onBreak || checkedOut;
+    document.querySelector('[data-action="breakStart"]').disabled = !checkedIn || onBreak || checkedOut || selectedLimitReached;
     document.querySelector('[data-action="breakEnd"]').disabled = !onBreak;
   };
 
@@ -181,7 +236,8 @@
   const load = async (silent = false) => {
     if (!silent) Portal.setStatus(false, "Loading");
     try {
-      const data = await Portal.api.dashboard("staff");
+      const month = document.getElementById("scheduleMonth")?.value || new Date().toISOString().slice(0, 7);
+      const data = await Portal.api.dashboard("staff", { month });
       state = normalizeDashboard(data);
       renderProfile(state);
     } catch (error) {
@@ -199,7 +255,7 @@
         const eventMap = {
           checkIn: { event_type: "CHECK_IN" },
           checkOut: { event_type: "CHECK_OUT" },
-          breakStart: { event_type: "BREAK_START", break_type: "BREAK" },
+          breakStart: { event_type: "BREAK_START", break_type: document.getElementById("breakTypeSelect")?.value || "BREAK" },
           breakEnd: { event_type: "BREAK_END", break_type: state.today?.activeBreak || "BREAK" }
         };
         button.disabled = true;
@@ -223,6 +279,12 @@
   };
 
   bindActions();
+  const scheduleMonth = document.getElementById("scheduleMonth");
+  if (scheduleMonth) {
+    scheduleMonth.value = new Date().toISOString().slice(0, 7);
+    scheduleMonth.addEventListener("change", () => load());
+  }
+  document.getElementById("breakTypeSelect")?.addEventListener("change", () => updateActionStates(state.today || {}));
   load();
   setInterval(tickBreak, 1000);
   refreshTimer = setInterval(() => load(true), 15000);

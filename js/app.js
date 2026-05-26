@@ -211,7 +211,7 @@
       }
       throw lastError || new Error("Login action is not available");
     },
-    async dashboard(role) {
+    async dashboard(role, extraPayload = {}) {
       const actions = role === "admin"
         ? ["get_admin_dashboard"]
         : ["get_staff_dashboard"];
@@ -222,7 +222,8 @@
         ip,
         login_id: session?.loginId || session?.staffId || "",
         admin_login_id: session?.loginId || session?.staffId || "",
-        month: new Date().toISOString().slice(0, 7)
+        month: new Date().toISOString().slice(0, 7),
+        ...extraPayload
       };
       let lastError;
       for (const action of actions) {

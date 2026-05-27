@@ -144,6 +144,41 @@ function monthNow() {
   return Utilities.formatDate(new Date(), TZ, "yyyy-MM");
 }
 
+function normalizeMonthKey(v) {
+  if (Object.prototype.toString.call(v) === "[object Date]") {
+    return Utilities.formatDate(v, TZ, "yyyy-MM");
+  }
+
+  const s = clean(v);
+  if (!s) return "";
+
+  if (/^\d{4}-\d{2}$/.test(s)) return s;
+  if (/^\d{4}-\d{1}$/.test(s)) return s.substring(0, 5) + "0" + s.substring(5);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.substring(0, 7);
+
+  const mdy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (mdy) return mdy[3] + "-" + pad2(Number(mdy[1]));
+
+  const named = s.match(/^([A-Za-z]+)\s+(\d{4})$/);
+  if (named) {
+    const months = {
+      january: "01", jan: "01", february: "02", feb: "02", march: "03", mar: "03",
+      april: "04", apr: "04", may: "05", june: "06", jun: "06", july: "07", jul: "07",
+      august: "08", aug: "08", september: "09", sep: "09", sept: "09", october: "10", oct: "10",
+      november: "11", nov: "11", december: "12", dec: "12"
+    };
+    const month = months[named[1].toLowerCase()];
+    if (month) return named[2] + "-" + month;
+  }
+
+  if (s.indexOf("GMT") > -1 || s.indexOf("T") > -1) {
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) return Utilities.formatDate(d, TZ, "yyyy-MM");
+  }
+
+  return s.substring(0, 7);
+}
+
 function makeId(prefix) {
   return prefix + "-" + new Date().getTime() + "-" + Math.floor(Math.random() * 1000);
 }
@@ -416,11 +451,12 @@ function getScheduleForDate(loginId, dateStr) {
 function getMonthlySchedule(loginId, month) {
   const values = getValues(SHEETS.SCHEDULE);
   const target = clean(loginId).toLowerCase();
+  const targetMonth = normalizeMonthKey(month);
   const list = [];
 
   for (let i = 1; i < values.length; i++) {
     const row = values[i];
-    if (clean(row[1]) === clean(month) && clean(row[4]).toLowerCase() === target) {
+    if (normalizeMonthKey(row[1]) === targetMonth && clean(row[4]).toLowerCase() === target) {
       const mapped = mapScheduleRow(row);
       list.push({
         date: mapped.schedule_date,
@@ -519,8 +555,8 @@ function attendanceActionLocked(data) {
 
   const shiftCode = safeUpper(schedule.shift_code);
   const scheduleStatus = safeUpper(schedule.status);
+  if (isNonWorkingDay(shiftCode, scheduleStatus)) return { ok: false, message: dayOffMessage(shiftCode, scheduleStatus) };
   if (scheduleStatus !== "WORKING") return { ok: false, message: "Today is not a working day: " + scheduleStatus };
-  if (["OFF", "AL", "UL", "HOLIDAY"].indexOf(shiftCode) !== -1) return { ok: false, message: "Today shift is " + shiftCode };
 
   const state = getAttendanceState(staff.login_id, today);
   if (eventType === "CHECK_IN" && state.hasCheckIn) return { ok: false, message: "Already checked in today" };
@@ -636,8 +672,8 @@ function getStaffDashboard(data) {
   if (!staff.ok) return staff;
 
   const today = todayDate();
-  const month = clean(data.month) || monthNow();
-  const performanceDetails = getPerformanceDetails(month);
+  const month = normalizeMonthKey(data.month) || monthNow();
+  const performanceDetails = getPerformanceDetails(month, staff.team);
   const leaderboard = performanceDetails.map(function (row) {
     return {
       login_id: row.login_id,
@@ -730,9 +766,12 @@ function averageRows(rows, key) {
   return count ? Number((total / count).toFixed(2)) : "";
 }
 
-function getPerformanceDetails(month) {
+function getPerformanceDetails(month, teamFilter) {
+  month = normalizeMonthKey(month) || monthNow();
+  const teamKey = clean(teamFilter).toLowerCase();
   const activeStaff = listStaffRows().filter(function (staff) {
-    return safeUpper(staff.status) === "ACTIVE" && !isAdminStaff(staff);
+    if (safeUpper(staff.status) !== "ACTIVE" || isAdminStaff(staff)) return false;
+    return !teamKey || clean(staff.team).toLowerCase() === teamKey;
   });
   const dailyRows = listDailyScoreRows(month, 0);
   const kpiRows = listKpiRows(month);
@@ -805,6 +844,22 @@ function isAdminStaff(staff) {
   return role === "ADMIN" || team === "ADMIN" || role.indexOf("ADMIN") > -1 || team.indexOf("ADMIN") > -1;
 }
 
+function isNonWorkingDay(shiftCode, status) {
+  const shift = safeUpper(shiftCode);
+  const state = safeUpper(status);
+  return ["OFF", "AL", "UL", "SL", "HOLIDAY"].indexOf(shift) !== -1 ||
+    ["OFF", "AL", "UL", "SL", "HOLIDAY", "LEAVE"].indexOf(state) !== -1;
+}
+
+function dayOffMessage(shiftCode, status) {
+  const value = safeUpper(shiftCode || status);
+  if (value === "OFF" || value === "HOLIDAY") return "Today is your OFF day";
+  if (value === "AL") return "Today is your approved leave";
+  if (value === "UL") return "Today is your unpaid leave";
+  if (value === "SL") return "Today is your sick leave";
+  return "Today is not a working day";
+}
+
 /***** ADMIN DASHBOARD + LIST ACTIONS *****/
 
 function getAdminDashboardFull(data) {
@@ -812,13 +867,13 @@ function getAdminDashboardFull(data) {
   const ipError = requireAllowedIp(ip);
   if (ipError) return ipError;
 
-  const month = clean(data.month) || monthNow();
+  const month = normalizeMonthKey(data.month) || monthNow();
   const today = todayDate();
   const staffList = listStaffRows();
   let scheduleList = listScheduleRows(month, clean(data.date));
   if (!scheduleList.length && !clean(data.date)) {
     scheduleList = listScheduleRows("", "").filter(function (row) {
-      return clean(row.schedule_month) === month || normalizeDateKey(row.schedule_date) >= today;
+      return normalizeMonthKey(row.schedule_month) === month || normalizeDateKey(row.schedule_date) >= today;
     }).slice(0, 500);
   }
   const attendanceEvents = listAttendanceRows(clean(data.date) || today, safeNumber(data.limit, 250));
@@ -879,7 +934,7 @@ function getStaffList(data) {
 function getScheduleList(data) {
   const ipError = requireAllowedIp(clean(data.ip));
   if (ipError) return ipError;
-  return { ok: true, schedule_list: listScheduleRows(clean(data.month), clean(data.date)) };
+  return { ok: true, schedule_list: listScheduleRows(normalizeMonthKey(data.month), clean(data.date)) };
 }
 
 function getAttendanceLogs(data) {
@@ -909,7 +964,7 @@ function getIpAllowlist(data) {
 function getKpiList(data) {
   const ipError = requireAllowedIp(clean(data.ip));
   if (ipError) return ipError;
-  return { ok: true, kpi_list: listKpiRows(clean(data.month)) };
+  return { ok: true, kpi_list: listKpiRows(normalizeMonthKey(data.month)) };
 }
 
 function getQuarterScores(data) {
@@ -921,7 +976,7 @@ function getQuarterScores(data) {
 function getDailyScores(data) {
   const ipError = requireAllowedIp(clean(data.ip));
   if (ipError) return ipError;
-  return { ok: true, daily_scores: listDailyScoreRows(clean(data.month), safeNumber(data.limit, 250)) };
+  return { ok: true, daily_scores: listDailyScoreRows(normalizeMonthKey(data.month), safeNumber(data.limit, 250)) };
 }
 
 function uploadScheduleCsv(data) {
@@ -1162,11 +1217,12 @@ function listStaffRows() {
 }
 
 function listScheduleRows(month, dateStr) {
+  const targetMonth = normalizeMonthKey(month);
   const values = getValues(SHEETS.SCHEDULE);
   const rows = [];
   for (let i = 1; i < values.length; i++) {
     const row = mapScheduleRow(values[i]);
-    if (month && clean(row.schedule_month) !== clean(month)) continue;
+    if (targetMonth && normalizeMonthKey(row.schedule_month) !== targetMonth) continue;
     if (dateStr && normalizeDateKey(row.schedule_date) !== normalizeDateKey(dateStr)) continue;
     rows.push(row);
   }
@@ -1223,10 +1279,11 @@ function listAttendanceRows(dateStr, limit) {
 }
 
 function listDailyScoreRows(month, limit) {
+  const targetMonth = normalizeMonthKey(month);
   const values = getValues(SHEETS.DAILY);
   const rows = [];
   for (let i = values.length - 1; i >= 1; i--) {
-    if (month && clean(values[i][2]) !== clean(month)) continue;
+    if (targetMonth && normalizeMonthKey(values[i][2]) !== targetMonth) continue;
     rows.push({
       daily_score_id: values[i][0],
       score_date: normalizeDateKey(values[i][1]),
@@ -1252,13 +1309,14 @@ function listDailyScoreRows(month, limit) {
 }
 
 function listKpiRows(month) {
+  const targetMonth = normalizeMonthKey(month);
   const values = getValues(SHEETS.KPI);
   const rows = [];
   for (let i = 1; i < values.length; i++) {
-    if (month && clean(values[i][1]) !== clean(month)) continue;
+    if (targetMonth && normalizeMonthKey(values[i][1]) !== targetMonth) continue;
     rows.push({
       kpi_id: values[i][0],
-      kpi_month: values[i][1],
+      kpi_month: normalizeMonthKey(values[i][1]) || values[i][1],
       staff_id: values[i][2],
       login_id: values[i][3],
       full_name: values[i][4],
@@ -1407,7 +1465,7 @@ function saveMonthlyKPI(data) {
 
   const adminLoginId = clean(data.admin_login_id);
   const staffLoginId = clean(data.login_id);
-  const month = clean(data.kpi_month);
+  const month = normalizeMonthKey(data.kpi_month);
   if (!adminLoginId || !staffLoginId || !month) return { ok: false, message: "Missing admin, staff, or month" };
 
   const staff = getStaffByLogin(staffLoginId);
@@ -1426,7 +1484,7 @@ function saveMonthlyKPI(data) {
   const sheet = sh(SHEETS.KPI);
   const values = sheet.getDataRange().getValues();
   for (let i = 1; i < values.length; i++) {
-    if (clean(values[i][1]) === month && clean(values[i][3]) === staff.login_id) {
+    if (normalizeMonthKey(values[i][1]) === month && clean(values[i][3]).toLowerCase() === clean(staff.login_id).toLowerCase()) {
       sheet.getRange(i + 1, 7, 1, 13).setValues([[L, E, P, C, PR, I, Penalty, raw, score, adminLoginId, nowDateTime(), nowDateTime(), clean(data.notes)]]);
       clearSheetCache(SHEETS.KPI);
       appendAudit("ADMIN", adminLoginId, adminLoginId, "UPDATE_KPI", "KPI", staff.login_id, "", JSON.stringify(data), ip, "");
@@ -1441,11 +1499,13 @@ function saveMonthlyKPI(data) {
 }
 
 function getOwnKPI(loginId, month) {
+  const targetMonth = normalizeMonthKey(month);
+  const targetLogin = clean(loginId).toLowerCase();
   const values = getValues(SHEETS.KPI);
-  for (let i = 1; i < values.length; i++) {
-    if (clean(values[i][1]) === month && clean(values[i][3]) === clean(loginId)) {
+  for (let i = values.length - 1; i >= 1; i--) {
+    if (normalizeMonthKey(values[i][1]) === targetMonth && clean(values[i][3]).toLowerCase() === targetLogin) {
       return {
-        kpi_month: values[i][1],
+        kpi_month: normalizeMonthKey(values[i][1]) || values[i][1],
         login_id: values[i][3],
         full_name: values[i][4],
         team: values[i][5],
@@ -1565,11 +1625,12 @@ function getQuarterMonths(year, q) {
 }
 
 function averageAttendance(loginId, months) {
+  const monthKeys = months.map(normalizeMonthKey);
   const values = getValues(SHEETS.DAILY);
   let total = 0;
   let count = 0;
   for (let i = 1; i < values.length; i++) {
-    if (clean(values[i][4]) === loginId && months.indexOf(clean(values[i][2])) !== -1) {
+    if (clean(values[i][4]).toLowerCase() === clean(loginId).toLowerCase() && monthKeys.indexOf(normalizeMonthKey(values[i][2])) !== -1) {
       total += safeNumber(values[i][22], 0);
       count++;
     }
@@ -1578,11 +1639,12 @@ function averageAttendance(loginId, months) {
 }
 
 function averageKPI(loginId, months) {
+  const monthKeys = months.map(normalizeMonthKey);
   const values = getValues(SHEETS.KPI);
   let total = 0;
   let count = 0;
   for (let i = 1; i < values.length; i++) {
-    if (clean(values[i][3]) === loginId && months.indexOf(clean(values[i][1])) !== -1) {
+    if (clean(values[i][3]).toLowerCase() === clean(loginId).toLowerCase() && monthKeys.indexOf(normalizeMonthKey(values[i][1])) !== -1) {
       total += safeNumber(values[i][14], 0);
       count++;
     }

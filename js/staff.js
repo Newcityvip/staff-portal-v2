@@ -23,6 +23,7 @@
 
   const empty = (message) => `<tr><td colspan="8" class="empty-state">${message}</td></tr>`;
   const badge = (text, tone = "") => `<span class="badge ${tone}">${text || "--"}</span>`;
+  const previewLimit = 5;
   const initials = (name) => String(name || "SP").split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
   const numeric = (value) => {
     const number = Number(value);
@@ -99,6 +100,55 @@
 
   state = normalizeDashboard(readCachedDashboard() || {});
 
+  const openLeaderboardModal = (rows, loginKey) => {
+    let modal = document.getElementById("staffLeaderboardModal");
+    if (!modal) {
+      modal = document.createElement("div");
+      modal.id = "staffLeaderboardModal";
+      modal.className = "data-modal";
+      modal.innerHTML = `
+        <div class="data-modal__panel">
+          <div class="data-modal__head">
+            <h2>Team Leaderboard</h2>
+            <button class="mini-btn" type="button" data-modal-close>Close</button>
+          </div>
+          <input id="staffLeaderboardSearch" class="search-input" placeholder="Search team scores">
+          <div class="table-wrap data-modal__table">
+            <table>
+              <thead><tr><th>Name</th><th>Team</th><th>Attendance</th><th>KPI</th><th>Final</th><th>Rank</th></tr></thead>
+              <tbody id="staffLeaderboardBody"></tbody>
+            </table>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal || event.target.closest("[data-modal-close]")) modal.classList.remove("open");
+      });
+    }
+    const render = () => {
+      const query = document.getElementById("staffLeaderboardSearch")?.value.trim().toLowerCase() || "";
+      const filtered = query ? rows.filter((row) => JSON.stringify(row).toLowerCase().includes(query)) : rows;
+      document.getElementById("staffLeaderboardBody").innerHTML = filtered.length ? filtered.map((row, index) => {
+        const rowLogin = String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase();
+        return `
+          <tr class="${rowLogin && rowLogin === loginKey ? "is-current-user" : ""}">
+            <td>${Portal.pick(row, ["name", "staffName", "full_name", "staff"], "Staff")}</td>
+            <td>${Portal.pick(row, ["department", "team"], "--")}</td>
+            <td>${Portal.pick(row, ["attendance_score", "monthly_attendance_score"], "0")}</td>
+            <td>${Portal.pick(row, ["kpi_score_out_of_5", "kpi_score", "kpi", "kpiScore"], "0")}</td>
+            <td>${Portal.pick(row, ["final_score", "score"], "0")}</td>
+            <td>${Portal.pick(row, ["rank", "position"], index + 1)}</td>
+          </tr>`;
+      }).join("") : `<tr><td colspan="6" class="empty-state">No leaderboard rows match this search.</td></tr>`;
+    };
+    const search = document.getElementById("staffLeaderboardSearch");
+    search.value = "";
+    search.oninput = render;
+    render();
+    modal.classList.add("open");
+    search.focus();
+  };
+
   const shiftProgress = (shift) => {
     const start = new Date(Portal.pick(shift, ["start", "startTime", "shiftStart"], ""));
     const end = new Date(Portal.pick(shift, ["end", "endTime", "shiftEnd"], ""));
@@ -154,7 +204,8 @@
     setScoreBar("quarterScoreBar", quarterScore);
     setScoreBar("rankScoreBar", rank === "--" ? 0 : 5);
 
-    renderLeaderboard(leaderboard);
+    const loginKey = String(Portal.pick(staff, ["login_id", "email"], session.loginId || session.staffId || "")).toLowerCase();
+    renderLeaderboard(leaderboard, loginKey);
     renderTimeline(timeline);
     renderHistory(history);
     renderUpcomingSchedule(scheduleList, tomorrowSchedule);
@@ -182,19 +233,34 @@
     el.style.background = `linear-gradient(90deg, var(--cyan) 0%, var(--green) ${percent}%, rgba(255,255,255,.08) ${percent}%)`;
   };
 
-  const renderLeaderboard = (rows) => {
+  const renderLeaderboard = (rows, loginKey = "") => {
     const host = document.getElementById("leaderboardPreview");
     if (!host) return;
     if (!rows.length) {
       host.innerHTML = `<div class="empty-state">Leaderboard data will appear after the API returns ranking records.</div>`;
       return;
     }
-    host.innerHTML = rows.map((row, index) => `
-      <div class="leader-row">
+    const panelTitle = host.closest(".glass-panel")?.querySelector(".panel-title");
+    if (panelTitle && !panelTitle.querySelector("[data-view-team-leaderboard]")) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mini-btn";
+      btn.dataset.viewTeamLeaderboard = "1";
+      btn.textContent = "View All";
+      panelTitle.appendChild(btn);
+    }
+    const viewAll = panelTitle?.querySelector("[data-view-team-leaderboard]");
+    if (viewAll) viewAll.onclick = () => openLeaderboardModal(rows, loginKey);
+
+    host.innerHTML = rows.slice(0, previewLimit).map((row, index) => {
+      const rowLogin = String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase();
+      return `
+      <div class="leader-row ${rowLogin && rowLogin === loginKey ? "is-current-user" : ""}">
         <span class="leader-rank">${Portal.pick(row, ["rank", "position"], index + 1)}</span>
         <div><strong>${Portal.pick(row, ["name", "staffName", "full_name", "staff"], "Staff")}</strong><br><small>${Portal.pick(row, ["department", "team"], "")}</small></div>
         <strong>${Portal.pick(row, ["final_score", "score", "kpi", "kpi_score_out_of_5", "quarterScore"], "0")}</strong>
-      </div>`).join("");
+      </div>`;
+    }).join("");
   };
 
   const renderTimeline = (rows) => {

@@ -17,6 +17,7 @@
 
   const empty = (message, span = 8) => `<tr><td colspan="${span}" class="empty-state">${message}</td></tr>`;
   const badge = (text, tone = "") => `<span class="badge ${tone}">${text || "--"}</span>`;
+  const previewLimit = 5;
 
   const normalizeDashboard = (data) => {
     const root = data.data || data.dashboard || data;
@@ -81,6 +82,61 @@
     Portal.setText("missingCheckout", Portal.pick(stats, ["missingCheckout", "missing_checkout", "missingCheckOut"], "--"));
   };
 
+  const ensureViewButton = (hostId, label, onClick) => {
+    const host = document.getElementById(hostId);
+    const panel = host?.closest(".glass-panel");
+    const title = panel?.querySelector(".panel-title");
+    if (!title) return;
+    let button = title.querySelector(`[data-view-all="${hostId}"]`);
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = "mini-btn";
+      button.dataset.viewAll = hostId;
+      button.textContent = "View All";
+      title.appendChild(button);
+    }
+    button.onclick = onClick;
+    button.setAttribute("aria-label", `View all ${label}`);
+  };
+
+  const openTableModal = (title, rows, columns) => {
+    let modal = document.getElementById("dataModal");
+    if (!modal) {
+      modal = document.createElement("div");
+      modal.id = "dataModal";
+      modal.className = "data-modal";
+      modal.innerHTML = `
+        <div class="data-modal__panel">
+          <div class="data-modal__head">
+            <h2 id="dataModalTitle"></h2>
+            <button class="mini-btn" type="button" data-modal-close>Close</button>
+          </div>
+          <input id="dataModalSearch" class="search-input" placeholder="Search">
+          <div class="table-wrap data-modal__table"><table><thead id="dataModalHead"></thead><tbody id="dataModalBody"></tbody></table></div>
+        </div>`;
+      document.body.appendChild(modal);
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal || event.target.closest("[data-modal-close]")) modal.classList.remove("open");
+      });
+    }
+    const render = () => {
+      const query = document.getElementById("dataModalSearch")?.value.trim().toLowerCase() || "";
+      const filtered = query ? rows.filter((row) => JSON.stringify(row).toLowerCase().includes(query)) : rows;
+      document.getElementById("dataModalBody").innerHTML = filtered.length
+        ? filtered.map((row) => `<tr>${columns.map((column) => `<td>${column.render ? column.render(row) : Portal.pick(row, column.keys, "--")}</td>`).join("")}</tr>`).join("")
+        : `<tr><td colspan="${columns.length}" class="empty-state">No records match this search.</td></tr>`;
+    };
+    document.getElementById("dataModalTitle").textContent = title;
+    document.getElementById("dataModalHead").innerHTML = `<tr>${columns.map((column) => `<th>${column.label}</th>`).join("")}</tr>`;
+    const search = document.getElementById("dataModalSearch");
+    search.value = "";
+    search.oninput = render;
+    render();
+    modal.classList.add("open");
+    search.focus();
+  };
+
   const statusTone = (value) => {
     const text = String(value).toLowerCase();
     if (text.includes("late") || text.includes("missing") || text.includes("fail") || text.includes("offline")) return "red";
@@ -122,7 +178,17 @@
     const filtered = query ? rows.filter((row) => JSON.stringify(row).toLowerCase().includes(query)) : rows;
     if (!host) return;
     if (!filtered.length) return host.innerHTML = empty("No staff records match the current filter.", 5);
-    host.innerHTML = filtered.map((row) => `
+    ensureViewButton("staffTable", "staff management", () => openTableModal("Staff Management", rows, [
+      { label: "Name", keys: ["name", "full_name", "fullName", "staffName"] },
+      { label: "Team", keys: ["department", "team"] },
+      { label: "Role", keys: ["role", "position"] },
+      { label: "Attendance", keys: ["attendance_score", "monthly_attendance_score"] },
+      { label: "KPI", keys: ["kpi_score_out_of_5", "kpi", "kpiScore"] },
+      { label: "Final", keys: ["final_score", "score"] },
+      { label: "Rank", keys: ["rank", "position"] },
+      { label: "Status", render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
+    ]));
+    host.innerHTML = filtered.slice(0, previewLimit).map((row) => `
       <tr>
         <td>${Portal.pick(row, ["name", "full_name", "fullName", "staffName"], "Staff")}</td>
         <td>${Portal.pick(row, ["role", "position"], "--")}</td>
@@ -141,7 +207,16 @@
       return String(Portal.pick(a, ["full_name", "name", "staffName", "staff"], "")).localeCompare(String(Portal.pick(b, ["full_name", "name", "staffName", "staff"], "")));
     });
     if (!sorted.length) return host.innerHTML = empty("No schedule rows received.", 6);
-    host.innerHTML = sorted.map((row) => `
+    ensureViewButton("scheduleTable", "schedule management", () => openTableModal("Schedule Management", sorted, [
+      { label: "Staff", keys: ["full_name", "name", "staffName", "staff"] },
+      { label: "Team", keys: ["team", "department"] },
+      { label: "Date", keys: ["schedule_date", "day", "date"] },
+      { label: "Shift", keys: ["shift_code", "shift", "shiftName", "name"] },
+      { label: "Start", render: (row) => Portal.formatTime(Portal.pick(row, ["start_time", "start", "startTime"], "")) },
+      { label: "End", render: (row) => Portal.formatTime(Portal.pick(row, ["end_time", "end", "endTime"], "")) },
+      { label: "Status", render: (row) => badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], ""))) }
+    ]));
+    host.innerHTML = sorted.slice(0, previewLimit).map((row) => `
       <tr>
         <td>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</td>
         <td>${Portal.pick(row, ["schedule_date", "day", "date"], "--")}</td>
@@ -159,7 +234,17 @@
     Portal.setText("kpiRows", `${sourceRows.length} rows`);
     if (!host) return;
     if (!sourceRows.length) return host.innerHTML = empty("No KPI rows received.", 5);
-    host.innerHTML = sourceRows.map((row) => `
+    ensureViewButton("kpiTable", "monthly KPI management", () => openTableModal("Monthly KPI Management", sourceRows, [
+      { label: "Staff", keys: ["full_name", "name", "staffName", "staff"] },
+      { label: "Team", keys: ["team", "department"] },
+      { label: "Month", keys: ["kpi_month", "month", "period"] },
+      { label: "Attendance", keys: ["attendance_score", "monthly_attendance_score"] },
+      { label: "KPI", keys: ["kpi_score_out_of_5", "kpi_score", "kpi", "kpiScore"] },
+      { label: "Final", keys: ["final_score", "score"] },
+      { label: "Quarter", keys: ["quarter_score", "quarterScore"] },
+      { label: "Rank", keys: ["rank", "position"] }
+    ]));
+    host.innerHTML = sourceRows.slice(0, previewLimit).map((row) => `
       <tr>
         <td>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</td>
         <td>${Portal.pick(row, ["kpi_month", "month", "period"], new Date().toISOString().slice(0, 7))}</td>
@@ -176,7 +261,16 @@
       host.innerHTML = `<div class="empty-state">Ranking records are not available yet.</div>`;
       return;
     }
-    host.innerHTML = rows.map((row, index) => `
+    ensureViewButton(id, id === "topPerformers" ? "top performers" : "needs coaching", () => openTableModal(id === "topPerformers" ? "Top Performers" : "Needs Coaching", rows, [
+      { label: "Rank", keys: ["rank", "position"] },
+      { label: "Staff", keys: ["full_name", "name", "staffName", "staff"] },
+      { label: "Team", keys: ["department", "team"] },
+      { label: "Attendance", keys: ["attendance_score", "monthly_attendance_score"] },
+      { label: "KPI", keys: ["kpi_score_out_of_5", "kpi", "kpiScore"] },
+      { label: "Final", keys: ["final_score", "score"] },
+      { label: "Quarter", keys: ["quarter_score", "quarterScore"] }
+    ]));
+    host.innerHTML = rows.slice(0, previewLimit).map((row, index) => `
       <div class="leader-row">
         <span class="leader-rank">${Portal.pick(row, ["rank", "position"], index + 1)}</span>
         <div><strong>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</strong><br><small>${Portal.pick(row, ["department", "team"], "")}</small></div>

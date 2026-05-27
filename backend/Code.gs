@@ -641,6 +641,11 @@ function getStaffDashboard(data) {
   const ownRank = leaderboard.filter(function (row) {
     return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
   })[0];
+  const monthlyAttendanceScore = averageRows(dailyScores, "final_attendance_score");
+  const kpiScore = ownKpi && clean(ownKpi.kpi_score_out_of_5) !== "" ? safeNumber(ownKpi.kpi_score_out_of_5, 0) : "";
+  const finalScore = monthlyAttendanceScore !== "" && kpiScore !== ""
+    ? Number(((safeNumber(monthlyAttendanceScore, 0) * 0.4) + (safeNumber(kpiScore, 0) * 0.6)).toFixed(2))
+    : "";
 
   return {
     ok: true,
@@ -655,8 +660,10 @@ function getStaffDashboard(data) {
     daily_scores: dailyScores,
     quarter_scores: quarterScores,
     quarter_score: quarterScores[0] || null,
+    current_rank: ownRank ? ownRank.rank : "",
     rank: ownRank ? ownRank.rank : "",
-    monthly_attendance_score: averageRows(dailyScores, "final_attendance_score"),
+    monthly_attendance_score: monthlyAttendanceScore,
+    final_score: finalScore,
     leaderboard: leaderboard,
     own_kpi: ownKpi
   };
@@ -865,6 +872,7 @@ function uploadScheduleCsv(data) {
       updated++;
     } else {
       sheet.appendRow(record);
+      existingMap[key] = sheet.getLastRow();
       inserted++;
     }
   });

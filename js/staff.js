@@ -15,6 +15,18 @@
   const empty = (message) => `<tr><td colspan="8" class="empty-state">${message}</td></tr>`;
   const badge = (text, tone = "") => `<span class="badge ${tone}">${text || "--"}</span>`;
   const initials = (name) => String(name || "SP").split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase();
+  const numeric = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  };
+  const averageScore = (rows, keys) => {
+    const values = rows
+      .map((row) => numeric(Portal.pick(row, keys, "")))
+      .filter((value) => value !== null);
+    if (!values.length) return "--";
+    return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2));
+  };
+  const dateKey = (value) => String(value || "").slice(0, 10);
 
   const normalizeDashboard = (data) => {
     const root = data.data || data.dashboard || data;
@@ -32,6 +44,15 @@
     const selectedMonth = document.getElementById("scheduleMonth")?.value || new Date().toISOString().slice(0, 7);
     const currentMonth = new Date().toISOString().slice(0, 7);
     const scheduleList = selectedMonth === currentMonth && nextSchedule.length ? nextSchedule : monthlySchedule;
+    const loginKey = String(Portal.pick(staff, ["login_id"], session.loginId || session.staffId || "")).toLowerCase();
+    const ownLeader = leaderboard.find((row) => String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase() === loginKey);
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const todayEvents = attendanceEvents.filter((row) => dateKey(Portal.pick(row, ["event_date", "date", "created_at"], "")) === todayKey);
+    const monthlyAttendanceScore = Portal.pick(root, ["monthly_attendance_score"], averageScore(dailyScores, ["final_attendance_score", "attendanceScore", "score"]));
+    const kpiScore = Portal.pick(kpi, ["kpi_score_out_of_5", "kpiScore", "score"], "--");
+    const finalScore = numeric(monthlyAttendanceScore) !== null && numeric(kpiScore) !== null
+      ? Number((numeric(monthlyAttendanceScore) * 0.4 + numeric(kpiScore) * 0.6).toFixed(2))
+      : Portal.pick(root, ["final_score"], "--");
     return {
       staff,
       today: {
@@ -48,17 +69,18 @@
       },
       performance: {
         ...kpi,
-        kpiScore: Portal.pick(kpi, ["kpi_score_out_of_5", "kpiScore", "score"], "--"),
+        kpiScore,
         quarterScore: Portal.pick(quarterScore, ["final_score", "quarter_score", "score"], Portal.pick(root, ["quarter_score"], "--")),
-        rank: Portal.pick(root, ["rank"], Portal.pick(kpi, ["rank"], "--")),
-        monthlyAttendanceScore: Portal.pick(root, ["monthly_attendance_score"], Portal.pick(kpi, ["monthlyAttendanceScore", "attendanceScore", "monthlyScore"], "--")),
+        rank: Portal.pick(root, ["current_rank", "rank"], Portal.pick(ownLeader || {}, ["rank", "position"], Portal.pick(kpi, ["rank"], "--"))),
+        monthlyAttendanceScore,
+        finalScore,
         quarter: Portal.pick(quarterScore, ["quarter"], "")
       },
-      history: dailyScores,
+      history: attendanceEvents.length ? attendanceEvents : dailyScores,
       scheduleList,
       tomorrowSchedule: root.tomorrow_schedule || {},
       leaderboard,
-      timeline: attendanceEvents,
+      timeline: todayEvents.length ? todayEvents : attendanceEvents,
       ip: root.ip || root.ipStatus || { allowed: true, message: "IP allowed" }
     };
   };
@@ -101,7 +123,8 @@
     Portal.setText("kpiScore", Portal.pick(performance, ["kpi_score_out_of_5", "kpi", "kpiScore", "score"], "--"));
     Portal.setText("quarterScore", Portal.pick(performance, ["final_score", "quarterScore", "quarter_score", "quarter"], "--"));
     Portal.setText("rankPosition", Portal.pick(performance, ["rank", "rankPosition", "position"], "--"));
-    Portal.setText("scoreUpdated", Portal.pick(performance, ["updatedAt", "month"], "Live"));
+    const finalScore = Portal.pick(performance, ["finalScore", "final_score"], "--");
+    Portal.setText("scoreUpdated", finalScore === "--" ? Portal.pick(performance, ["updatedAt", "month"], "Live") : `Final score: ${finalScore}`);
     setRing("kpiRing", Portal.pick(performance, ["kpi_score_out_of_5", "kpi", "kpiScore", "score"], 0), "var(--cyan)");
     setRing("quarterRing", Portal.pick(performance, ["final_score", "quarterScore", "quarter_score", "quarter"], 0), "var(--green)");
 
@@ -158,14 +181,25 @@
       host.innerHTML = empty("Attendance history is empty.");
       return;
     }
-    host.innerHTML = rows.slice(0, 20).map((row) => `
-      <tr>
-        <td>${Portal.formatDate(Portal.pick(row, ["score_date", "event_date", "date", "day"], ""))}</td>
-        <td>${Portal.formatTime(Portal.pick(row, ["checkIn", "in", "check_in", "firstCheckIn"], ""))}</td>
-        <td>${Portal.formatTime(Portal.pick(row, ["checkOut", "out", "check_out", "lastCheckOut"], ""))}</td>
-        <td>${badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], "")))}</td>
-        <td>${Portal.pick(row, ["breakDuration", "break", "breakTotal", "penalty", "final_attendance_score"], "--")}</td>
-      </tr>`).join("");
+    host.innerHTML = rows.slice(0, 20).map((row) => {
+      const eventType = String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase();
+      const eventTime = Portal.pick(row, ["event_time", "time", "created_at", "createdAt", "timestamp"], "");
+      const isEventRow = Boolean(eventType);
+      const inTime = isEventRow && /CHECK_IN|BREAK_START/.test(eventType) ? eventTime : Portal.pick(row, ["checkIn", "in", "check_in", "firstCheckIn"], "");
+      const outTime = isEventRow && /CHECK_OUT|BREAK_END/.test(eventType) ? eventTime : Portal.pick(row, ["checkOut", "out", "check_out", "lastCheckOut"], "");
+      const status = isEventRow ? eventType.replaceAll("_", " ") : Portal.pick(row, ["status", "state"], "--");
+      const breakText = isEventRow
+        ? Portal.pick(row, ["break_type", "shift_code", "ip"], "--")
+        : Portal.pick(row, ["breakDuration", "break", "breakTotal", "penalty", "final_attendance_score"], "--");
+      return `
+        <tr>
+          <td>${Portal.formatDate(Portal.pick(row, ["score_date", "event_date", "date", "day"], ""))}</td>
+          <td>${Portal.formatTime(inTime)}</td>
+          <td>${Portal.formatTime(outTime)}</td>
+          <td>${badge(status, statusTone(status))}</td>
+          <td>${breakText}</td>
+        </tr>`;
+    }).join("");
   };
 
   const renderUpcomingSchedule = (rows, tomorrow) => {

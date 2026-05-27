@@ -180,8 +180,7 @@
       ["Missing", Number(Portal.pick(dashboard.stats, ["missingCheckout", "missingCheckOut"], 0))]
     ], "#28dcff");
 
-    const kpiRows = dashboard.kpis.slice(0, 8).map((row) => [Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff"), Number(Portal.pick(row, ["kpi_score_out_of_5", "kpi", "kpiScore", "score"], 0))]);
-    drawBars("kpiChart", kpiRows, "#54f5a8");
+    drawKpiAnalytics("kpiChart", dashboard.kpis);
   };
 
   const drawBars = (id, rows, color) => {
@@ -217,6 +216,64 @@
       ctx.fillStyle = "#91a8bb";
       ctx.font = "12px system-ui";
       ctx.fillText(String(row[0]).slice(0, 10), x, height - 24);
+    });
+  };
+
+  const drawKpiAnalytics = (id, rows) => {
+    const canvas = document.getElementById(id);
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const width = canvas.width;
+    const height = canvas.height;
+    const scores = rows
+      .map((row) => Number(Portal.pick(row, ["kpi_score_out_of_5", "kpi", "kpiScore", "score"], NaN)))
+      .filter((score) => Number.isFinite(score));
+
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "rgba(255,255,255,.08)";
+    ctx.fillRect(42, 74, width - 62, height - 120);
+
+    if (!scores.length) {
+      ctx.fillStyle = "#91a8bb";
+      ctx.font = "16px system-ui";
+      ctx.fillText("No KPI records received", 54, 64);
+      return;
+    }
+
+    const avg = scores.reduce((sum, score) => sum + score, 0) / scores.length;
+    const high = Math.max(...scores);
+    const low = Math.min(...scores);
+    const buckets = [0, 0, 0, 0, 0];
+    scores.forEach((score) => {
+      const index = Math.min(4, Math.max(0, Math.floor(score === 5 ? 4 : score)));
+      buckets[index] += 1;
+    });
+
+    ctx.fillStyle = "#dff7ff";
+    ctx.font = "800 15px system-ui";
+    ctx.fillText(`Avg ${avg.toFixed(2)}`, 54, 38);
+    ctx.fillText(`High ${high.toFixed(2)}`, 190, 38);
+    ctx.fillText(`Low ${low.toFixed(2)}`, 326, 38);
+
+    const labels = ["0-1", "1-2", "2-3", "3-4", "4-5"];
+    const max = Math.max(...buckets, 1);
+    const gap = 16;
+    const barWidth = Math.max(34, (width - 92 - gap * (buckets.length - 1)) / buckets.length);
+    buckets.forEach((count, index) => {
+      const x = 42 + index * (barWidth + gap);
+      const h = Math.max(4, (count / max) * (height - 146));
+      const y = height - 46 - h;
+      const gradient = ctx.createLinearGradient(0, y, 0, height - 46);
+      gradient.addColorStop(0, "#54f5a8");
+      gradient.addColorStop(1, "rgba(84,245,168,.16)");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(x, y, barWidth, h);
+      ctx.fillStyle = "#dff7ff";
+      ctx.font = "700 13px system-ui";
+      ctx.fillText(String(count), x, y - 7);
+      ctx.fillStyle = "#91a8bb";
+      ctx.font = "12px system-ui";
+      ctx.fillText(labels[index], x, height - 24);
     });
   };
 
@@ -288,6 +345,27 @@
       }
     }
     throw lastError || new Error("Action is not available");
+  };
+
+  const callScheduleUpload = async (payload) => {
+    const response = await fetch(Portal.api.base, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ action: "upload_schedule_csv", ...payload }),
+      cache: "no-store",
+      credentials: "omit"
+    });
+    const text = await response.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch (error) {
+      data = { ok: response.ok, message: text };
+    }
+    if (!response.ok || data?.ok === false || data?.success === false) {
+      throw new Error(data.message || data.error || `Schedule upload failed (${response.status})`);
+    }
+    return data;
   };
 
   const SUPPORTED_SHIFT_CODES = new Set(["AM", "AM1", "PM1", "PM", "NP", "OFF", "AL", "UL", "SL"]);
@@ -482,8 +560,9 @@
       const csv = await file.text();
       const parsed = parseScheduleCsv(csv);
       const rows = parsed.rows;
+      if (!rows.length) throw new Error("No schedule rows found in CSV.");
       const ip = await Portal.api.detectIp();
-      const result = await callFirstValid(["upload_schedule_csv"], {
+      const result = await callScheduleUpload({
         admin_login_id: session.loginId || session.staffId,
         ip,
         fileName: file.name,
@@ -500,6 +579,11 @@
       Portal.toast("Schedule uploaded");
       await load(true);
     } catch (error) {
+      if (/abort/i.test(String(error.message || ""))) {
+        state.textContent = "Upload may still be processing. Refreshing schedule data...";
+        await load(true);
+        return;
+      }
       state.textContent = error.message || "Unable to upload schedule.";
     }
   });

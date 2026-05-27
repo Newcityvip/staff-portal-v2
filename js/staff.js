@@ -60,7 +60,7 @@
     const dailyAverage = averageScore(dailyScores, ["final_attendance_score", "attendanceScore", "score"]);
     const monthlyAttendanceScore = Portal.pick(root, ["monthly_attendance_score", "attendance_score"], dailyAverage === "--" ? 0 : dailyAverage);
     const kpiScore = Portal.pick(root, ["kpi_score"], Portal.pick(kpi, ["kpi_score_out_of_5", "kpiScore", "score"], 0));
-    const kpiDisplay = Portal.pick(root, ["kpi_status"], "") === "Not scored yet" || !Object.keys(kpi || {}).length ? "Not scored" : kpiScore;
+    const kpiDisplay = kpiScore;
     const finalScore = numeric(monthlyAttendanceScore) !== null && numeric(kpiScore) !== null
       ? Number((numeric(monthlyAttendanceScore) * 0.4 + numeric(kpiScore) * 0.6).toFixed(2))
       : Portal.pick(root, ["final_score"], 0);
@@ -82,7 +82,7 @@
         ...kpi,
         kpiScore,
         kpiDisplay,
-        quarterScore: Portal.pick(quarterScore, ["final_score", "quarter_score", "score"], Portal.pick(root, ["quarter_score_value", "quarter_score"], 0)),
+        quarterScore: Portal.pick(quarterScore, ["final_score", "quarter_score", "score"], Portal.pick(root, ["quarter_score_value", "quarter_score"], finalScore)),
         rank: Portal.pick(root, ["current_rank", "rank"], Portal.pick(ownLeader || {}, ["rank", "position"], Portal.pick(kpi, ["rank"], "--"))),
         monthlyAttendanceScore,
         finalScore,
@@ -138,9 +138,21 @@
     Portal.setText("quarterScore", Portal.pick(performance, ["quarterScore", "quarter_score", "final_score", "quarter"], "0"));
     Portal.setText("rankPosition", Portal.pick(performance, ["rank", "rankPosition", "position"], "--"));
     const finalScore = Portal.pick(performance, ["finalScore", "final_score"], "0");
+    const attendanceScore = Portal.pick(performance, ["monthlyAttendanceScore", "monthly_attendance_score", "attendanceScore", "monthlyScore"], "0");
+    const kpiScore = Portal.pick(performance, ["kpiDisplay", "kpi_score_out_of_5", "kpi", "kpiScore", "score"], "0");
+    const quarterScore = Portal.pick(performance, ["quarterScore", "quarter_score", "final_score", "quarter"], finalScore);
+    const rank = Portal.pick(performance, ["rank", "rankPosition", "position"], "--");
+    Portal.setText("summaryAttendanceScore", scoreText(attendanceScore));
+    Portal.setText("kpiScore", scoreText(kpiScore));
+    Portal.setText("summaryFinalScore", scoreText(finalScore));
+    Portal.setText("quarterScore", scoreText(quarterScore));
+    Portal.setText("summaryRank", rank);
     Portal.setText("scoreUpdated", `Final score: ${finalScore}`);
-    setRing("kpiRing", Portal.pick(performance, ["kpi_score_out_of_5", "kpi", "kpiScore", "score"], 0), "var(--cyan)");
-    setRing("quarterRing", Portal.pick(performance, ["quarterScore", "quarter_score", "final_score", "quarter"], 0), "var(--green)");
+    setScoreBar("summaryAttendanceBar", attendanceScore);
+    setScoreBar("kpiScoreBar", kpiScore);
+    setScoreBar("summaryFinalBar", finalScore);
+    setScoreBar("quarterScoreBar", quarterScore);
+    setScoreBar("rankScoreBar", rank === "--" ? 0 : 5);
 
     renderLeaderboard(leaderboard);
     renderTimeline(timeline);
@@ -155,6 +167,19 @@
     const numeric = Number(value);
     const percent = Number.isFinite(numeric) && numeric <= 5 ? numeric * 20 : numeric;
     el.style.background = `conic-gradient(${color} ${Portal.percent(percent) * 3.6}deg, rgba(255,255,255,.08) 0)`;
+  };
+
+  const scoreText = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? String(Number(number.toFixed(2))) : "0";
+  };
+
+  const setScoreBar = (id, value) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const number = Number(value);
+    const percent = Number.isFinite(number) ? Portal.percent((number / 5) * 100) : 0;
+    el.style.background = `linear-gradient(90deg, var(--cyan) 0%, var(--green) ${percent}%, rgba(255,255,255,.08) ${percent}%)`;
   };
 
   const renderLeaderboard = (rows) => {
@@ -309,7 +334,7 @@
       renderProfile(state);
     } catch (error) {
       Portal.setStatus(false, "API issue");
-      if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load staff dashboard", "error");
+      if (!Portal.isAbortLike(error) && !/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load staff dashboard", "error");
       if (!Object.keys(state || {}).length) {
         state = normalizeDashboard(readCachedDashboard() || {});
         renderProfile(state);
@@ -341,7 +366,7 @@
           Portal.toast(`${button.firstChild.textContent.trim()} recorded`);
           await load(true);
         } catch (error) {
-          Portal.toast(error.message || "Action failed", "error");
+          if (!Portal.isAbortLike(error)) Portal.toast(error.message || "Action failed", "error");
         } finally {
           button.disabled = false;
         }

@@ -127,7 +127,7 @@
         <td>${Portal.pick(row, ["name", "full_name", "fullName", "staffName"], "Staff")}</td>
         <td>${Portal.pick(row, ["role", "position"], "--")}</td>
         <td>${Portal.pick(row, ["department", "team"], "--")}</td>
-        <td>${Portal.pick(row, ["final_score", "kpi_score_out_of_5", "kpi", "kpiScore", "score"], "0")}</td>
+        <td>F ${Portal.pick(row, ["final_score", "score"], "0")} / A ${Portal.pick(row, ["attendance_score", "monthly_attendance_score"], "0")} / K ${Portal.pick(row, ["kpi_score_out_of_5", "kpi", "kpiScore"], "0")}</td>
         <td>${badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], "")))}</td>
       </tr>`).join("");
   };
@@ -140,28 +140,31 @@
       if (dateCompare) return dateCompare;
       return String(Portal.pick(a, ["full_name", "name", "staffName", "staff"], "")).localeCompare(String(Portal.pick(b, ["full_name", "name", "staffName", "staff"], "")));
     });
-    if (!sorted.length) return host.innerHTML = empty("No schedule rows received.", 5);
+    if (!sorted.length) return host.innerHTML = empty("No schedule rows received.", 6);
     host.innerHTML = sorted.map((row) => `
       <tr>
         <td>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</td>
+        <td>${Portal.pick(row, ["schedule_date", "day", "date"], "--")}</td>
         <td>${Portal.pick(row, ["shift_code", "shift", "shiftName", "name"], "--")}</td>
         <td>${Portal.formatTime(Portal.pick(row, ["start_time", "start", "startTime"], ""))}</td>
         <td>${Portal.formatTime(Portal.pick(row, ["end_time", "end", "endTime"], ""))}</td>
-        <td>${Portal.pick(row, ["schedule_date", "day", "date"], "--")}</td>
+        <td>${badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], "")))}</td>
       </tr>`).join("");
   };
 
   const renderKpi = (rows) => {
     const host = document.getElementById("kpiTable");
-    Portal.setText("kpiRows", `${rows.length} rows`);
+    const performanceRows = dashboard.performance || [];
+    const sourceRows = rows.length ? rows : performanceRows;
+    Portal.setText("kpiRows", `${sourceRows.length} rows`);
     if (!host) return;
-    if (!rows.length) return host.innerHTML = empty("No KPI rows received.", 5);
-    host.innerHTML = rows.map((row) => `
+    if (!sourceRows.length) return host.innerHTML = empty("No KPI rows received.", 5);
+    host.innerHTML = sourceRows.map((row) => `
       <tr>
         <td>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</td>
-        <td>${Portal.pick(row, ["kpi_month", "month", "period"], "--")}</td>
-        <td>${Portal.pick(row, ["kpi_score_out_of_5", "kpi", "kpiScore", "score"], "--")}</td>
-        <td>${Portal.pick(row, ["quarter_score", "final_score", "quarter", "quarterScore"], "--")}</td>
+        <td>${Portal.pick(row, ["kpi_month", "month", "period"], new Date().toISOString().slice(0, 7))}</td>
+        <td>${Portal.pick(row, ["kpi_score_out_of_5", "kpi_score", "kpi", "kpiScore"], "0")}</td>
+        <td>${Portal.pick(row, ["final_score", "score"], "0")}</td>
         <td>${Portal.pick(row, ["rank", "position"], "--")}</td>
       </tr>`).join("");
   };
@@ -356,7 +359,7 @@
       renderAll();
     } catch (error) {
       Portal.setStatus(false, "API issue");
-      if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load admin dashboard", "error");
+      if (!Portal.isAbortLike(error) && !/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load admin dashboard", "error");
       if (!Object.keys(dashboard || {}).length) {
         dashboard = normalizeDashboard(readCachedDashboard() || {});
         renderAll();

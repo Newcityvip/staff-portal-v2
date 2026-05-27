@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#07111f">
   <title>Staff Portal V2 | Staff Dashboard</title>
-  <link rel="stylesheet" href="css/style.css?v=20260527-stability1">
+  <link rel="stylesheet" href="css/style.css?v=20260527-finalfix1">
 </head>
 <body class="dashboard-body" data-page="staff">
   <div class="app-shell">
@@ -80,10 +80,13 @@
 
       <section id="performance" class="content-grid">
         <article class="glass-panel chart-panel">
-          <div class="panel-title"><h2>KPI and Quarter Score</h2><span id="scoreUpdated">Live</span></div>
-          <div class="score-ring-wrap">
-            <div class="score-ring" id="kpiRing"><span id="kpiScore">--</span><small>KPI</small></div>
-            <div class="score-ring quarter" id="quarterRing"><span id="quarterScore">--</span><small>Quarter</small></div>
+          <div class="panel-title"><h2>Performance Summary</h2><span id="scoreUpdated">Live</span></div>
+          <div class="performance-summary">
+            <div class="score-tile"><span>Attendance Score</span><strong id="summaryAttendanceScore">0</strong><small>out of 5</small><i id="summaryAttendanceBar"></i></div>
+            <div class="score-tile"><span>KPI Score</span><strong id="kpiScore">0</strong><small>out of 5</small><i id="kpiScoreBar"></i></div>
+            <div class="score-tile"><span>Final Score</span><strong id="summaryFinalScore">0</strong><small>out of 5</small><i id="summaryFinalBar"></i></div>
+            <div class="score-tile"><span>Quarter Score</span><strong id="quarterScore">0</strong><small>out of 5</small><i id="quarterScoreBar"></i></div>
+            <div class="score-tile"><span>Rank</span><strong id="summaryRank">--</strong><small>current position</small><i id="rankScoreBar"></i></div>
           </div>
         </article>
 
@@ -130,7 +133,7 @@
   </nav>
 
   <div id="toastHost" class="toast-host"></div>
-  <script src="js/app.js?v=20260527-staff4"></script>
-  <script src="js/staff.js?v=20260527-stability1"></script>
+  <script src="js/app.js?v=20260527-finalfix1"></script>
+  <script src="js/staff.js?v=20260527-finalfix1"></script>
 </body>
 </html>

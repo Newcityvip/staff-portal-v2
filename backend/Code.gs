@@ -565,13 +565,23 @@ function attendanceActionLocked(data) {
   appendAudit("STAFF", staff.staff_id, staff.full_name, eventType, "ATTENDANCE", eventId, "", "", ip, "");
   queueTelegramAttendance(staff, schedule, eventType, breakType, ip);
 
+  let daily_score = null;
+  if (eventType === "CHECK_OUT") {
+    try {
+      daily_score = calculateDailyScore({ login_id: staff.login_id, date: today });
+    } catch (err) {
+      logInternalError("attendanceActionLocked.dailyScore", err);
+    }
+  }
+
   return {
     ok: true,
     message: eventType + " saved successfully",
     event_id: eventId,
     staff: staff,
     schedule: schedule,
-    state: getAttendanceState(staff.login_id, today)
+    state: getAttendanceState(staff.login_id, today),
+    daily_score: daily_score
   };
 }
 
@@ -663,8 +673,8 @@ function getStaffDashboard(data) {
     full_name: staff.full_name,
     attendance_avg: monthlyAttendanceScore,
     kpi_avg: kpiScore,
-    final_score: 0,
-    final_grade: getGrade(0),
+    final_score: finalScore,
+    final_grade: getGrade(finalScore),
     rank: ownPerformance.rank || "",
     calculated: true
   };
@@ -682,7 +692,7 @@ function getStaffDashboard(data) {
     daily_scores: dailyScores,
     quarter_scores: quarterScores,
     quarter_score: quarterScores[0] || fallbackQuarter,
-    quarter_score_value: quarterScores[0] ? safeNumber(quarterScores[0].final_score, 0) : 0,
+    quarter_score_value: quarterScores[0] ? safeNumber(quarterScores[0].final_score, 0) : finalScore,
     current_rank: ownPerformance.rank || "",
     rank: ownPerformance.rank || "",
     monthly_attendance_score: monthlyAttendanceScore,
@@ -805,7 +815,12 @@ function getAdminDashboardFull(data) {
   const month = clean(data.month) || monthNow();
   const today = todayDate();
   const staffList = listStaffRows();
-  const scheduleList = listScheduleRows(month, clean(data.date));
+  let scheduleList = listScheduleRows(month, clean(data.date));
+  if (!scheduleList.length && !clean(data.date)) {
+    scheduleList = listScheduleRows("", "").filter(function (row) {
+      return clean(row.schedule_month) === month || normalizeDateKey(row.schedule_date) >= today;
+    }).slice(0, 500);
+  }
   const attendanceEvents = listAttendanceRows(clean(data.date) || today, safeNumber(data.limit, 250));
   const dailyScores = listDailyScoreRows(month, safeNumber(data.limit, 250));
   const kpiList = listKpiRows(month);
@@ -1478,14 +1493,29 @@ function calculateDailyScore(data) {
     }
 
     const finalScore = Math.max(0, base - penalty);
-    sh(SHEETS.DAILY).appendRow([
+    const dailyRow = [
       makeId("DAS"), dateStr, clean(schedule.schedule_month), staff.staff_id, staff.login_id, staff.full_name,
       schedule.shift_code, schedule.start_time, schedule.end_time, state.firstCheckIn, state.lastCheckOut,
       "", "", "", "", "", state.hasCheckIn ? "NO" : "YES", state.hasCheckOut ? "NO" : "YES", "",
       status, base, penalty, finalScore, nowDateTime(), ""
-    ]);
+    ];
+    const sheet = sh(SHEETS.DAILY);
+    const values = sheet.getDataRange().getValues();
+    let existingRow = 0;
+    for (let i = 1; i < values.length; i++) {
+      if (normalizeDateKey(values[i][1]) === normalizeDateKey(dateStr) && clean(values[i][4]).toLowerCase() === clean(staff.login_id).toLowerCase()) {
+        existingRow = i + 1;
+        dailyRow[0] = clean(values[i][0]) || dailyRow[0];
+        break;
+      }
+    }
+    if (existingRow) {
+      sheet.getRange(existingRow, 1, 1, dailyRow.length).setValues([dailyRow]);
+    } else {
+      sheet.appendRow(dailyRow);
+    }
     clearSheetCache(SHEETS.DAILY);
-    return { ok: true, message: "Daily score calculated", final_attendance_score: finalScore, penalty: penalty, status: status };
+    return { ok: true, message: existingRow ? "Daily score updated" : "Daily score calculated", final_attendance_score: finalScore, penalty: penalty, status: status };
   } catch (err) {
     logInternalError("calculateDailyScore", err);
     return { ok: false, message: "Daily score calculation failed. Please try again." };

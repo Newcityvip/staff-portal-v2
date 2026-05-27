@@ -51,6 +51,16 @@
     return Math.max(0, Math.min(100, number));
   };
 
+  const isAbortLike = (error) => {
+    const name = String(error?.name || "");
+    const message = String(error?.message || error || "");
+    return name === "AbortError" ||
+      /signal is aborted/i.test(message) ||
+      /aborted without reason/i.test(message) ||
+      /user aborted a request/i.test(message) ||
+      /^aborted$/i.test(message);
+  };
+
   const setText = (id, value) => {
     const el = document.getElementById(id);
     if (el) el.textContent = value === undefined || value === null || value === "" ? "--" : String(value);
@@ -65,6 +75,7 @@
   };
 
   const toast = (message, type = "info") => {
+    if (isAbortLike(message)) return;
     const host = document.getElementById("toastHost");
     if (!host) return;
     const node = document.createElement("div");
@@ -406,6 +417,7 @@
     setText,
     setStatus,
     toast,
+    isAbortLike,
     getSession,
     saveSession,
     clearSession,

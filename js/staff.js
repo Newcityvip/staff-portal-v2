@@ -3,8 +3,17 @@
   if (!session) return;
   if (session.role !== "staff") location.href = "admin.html";
 
+  const CACHE_KEY = `spv2_staff_dashboard_last_good_${session.loginId || session.staffId || "staff"}`;
+  const readCachedDashboard = () => {
+    try { return JSON.parse(localStorage.getItem(CACHE_KEY) || "null"); } catch (error) { return null; }
+  };
+  const writeCachedDashboard = (data) => {
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch (error) {}
+  };
+
   let state = {};
   let refreshTimer;
+  let refreshInFlight = false;
   let breakStartedAt = null;
   const BREAK_RULES = {
     BREAK: { label: "Break", limit: 1, minutes: 60 },
@@ -48,8 +57,9 @@
     const ownLeader = leaderboard.find((row) => String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase() === loginKey);
     const todayKey = new Date().toISOString().slice(0, 10);
     const todayEvents = attendanceEvents.filter((row) => dateKey(Portal.pick(row, ["event_date", "date", "created_at"], "")) === todayKey);
-    const monthlyAttendanceScore = Portal.pick(root, ["monthly_attendance_score"], averageScore(dailyScores, ["final_attendance_score", "attendanceScore", "score"]));
-    const kpiScore = Portal.pick(kpi, ["kpi_score_out_of_5", "kpiScore", "score"], "--");
+    const monthlyAttendanceScore = Portal.pick(root, ["monthly_attendance_score", "attendance_score"], averageScore(dailyScores, ["final_attendance_score", "attendanceScore", "score"]) === "--" ? 5 : averageScore(dailyScores, ["final_attendance_score", "attendanceScore", "score"]));
+    const kpiScore = Portal.pick(root, ["kpi_score"], Portal.pick(kpi, ["kpi_score_out_of_5", "kpiScore", "score"], 0));
+    const kpiDisplay = Portal.pick(root, ["kpi_status"], "") === "Not scored yet" || !Object.keys(kpi || {}).length ? "Not scored" : kpiScore;
     const finalScore = numeric(monthlyAttendanceScore) !== null && numeric(kpiScore) !== null
       ? Number((numeric(monthlyAttendanceScore) * 0.4 + numeric(kpiScore) * 0.6).toFixed(2))
       : Portal.pick(root, ["final_score"], "--");
@@ -70,6 +80,7 @@
       performance: {
         ...kpi,
         kpiScore,
+        kpiDisplay,
         quarterScore: Portal.pick(quarterScore, ["final_score", "quarter_score", "score"], Portal.pick(root, ["quarter_score"], "--")),
         rank: Portal.pick(root, ["current_rank", "rank"], Portal.pick(ownLeader || {}, ["rank", "position"], Portal.pick(kpi, ["rank"], "--"))),
         monthlyAttendanceScore,
@@ -84,6 +95,8 @@
       ip: root.ip || root.ipStatus || { allowed: true, message: "IP allowed" }
     };
   };
+
+  state = normalizeDashboard(readCachedDashboard() || {});
 
   const shiftProgress = (shift) => {
     const start = new Date(Portal.pick(shift, ["start", "startTime", "shiftStart"], ""));
@@ -120,7 +133,7 @@
     Portal.setText("attendanceStatus", attendanceStatus);
     Portal.setText("breakStatus", breakStatus);
     Portal.setText("monthlyScore", Portal.pick(performance, ["monthlyAttendanceScore", "monthly_attendance_score", "attendanceScore", "monthlyScore"], "--"));
-    Portal.setText("kpiScore", Portal.pick(performance, ["kpi_score_out_of_5", "kpi", "kpiScore", "score"], "--"));
+    Portal.setText("kpiScore", Portal.pick(performance, ["kpiDisplay", "kpi_score_out_of_5", "kpi", "kpiScore", "score"], "--"));
     Portal.setText("quarterScore", Portal.pick(performance, ["final_score", "quarterScore", "quarter_score", "quarter"], "--"));
     Portal.setText("rankPosition", Portal.pick(performance, ["rank", "rankPosition", "position"], "--"));
     const finalScore = Portal.pick(performance, ["finalScore", "final_score"], "--");
@@ -154,7 +167,7 @@
       <div class="leader-row">
         <span class="leader-rank">${Portal.pick(row, ["rank", "position"], index + 1)}</span>
         <div><strong>${Portal.pick(row, ["name", "staffName", "full_name", "staff"], "Staff")}</strong><br><small>${Portal.pick(row, ["department", "team"], "")}</small></div>
-        <strong>${Portal.pick(row, ["score", "kpi", "kpi_score_out_of_5", "quarterScore"], "--")}</strong>
+        <strong>${Portal.pick(row, ["final_score", "score", "kpi", "kpi_score_out_of_5", "quarterScore"], "--")}</strong>
       </div>`).join("");
   };
 
@@ -284,17 +297,24 @@
   };
 
   const load = async (silent = false) => {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
     if (!silent) Portal.setStatus(false, "Loading");
     try {
       const month = document.getElementById("scheduleMonth")?.value || new Date().toISOString().slice(0, 7);
       const data = await Portal.api.dashboard("staff", { month });
       state = normalizeDashboard(data);
+      writeCachedDashboard(data);
       renderProfile(state);
     } catch (error) {
-      state = normalizeDashboard({});
-      renderProfile(state);
       Portal.setStatus(false, "API issue");
       if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load staff dashboard", "error");
+      if (!Object.keys(state || {}).length) {
+        state = normalizeDashboard(readCachedDashboard() || {});
+        renderProfile(state);
+      }
+    } finally {
+      refreshInFlight = false;
     }
   };
 

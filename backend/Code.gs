@@ -627,7 +627,20 @@ function getStaffDashboard(data) {
 
   const today = todayDate();
   const month = clean(data.month) || monthNow();
-  const leaderboard = getLeaderboard(month);
+  const performanceDetails = getPerformanceDetails(month);
+  const leaderboard = performanceDetails.map(function (row) {
+    return {
+      login_id: row.login_id,
+      full_name: row.full_name,
+      team: row.team,
+      attendance_score: row.attendance_score,
+      kpi_score_out_of_5: row.kpi_score_out_of_5,
+      final_score: row.final_score,
+      rank: row.rank,
+      grade: row.grade,
+      kpi_status: row.kpi_status
+    };
+  });
   const ownKpi = getOwnKPI(staff.login_id, month);
   const attendanceEvents = listAttendanceRows("", 300).filter(function (row) {
     return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
@@ -638,14 +651,23 @@ function getStaffDashboard(data) {
   const quarterScores = listQuarterScoreRows(300).filter(function (row) {
     return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
   });
-  const ownRank = leaderboard.filter(function (row) {
+  const ownPerformance = performanceDetails.filter(function (row) {
     return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
-  })[0];
-  const monthlyAttendanceScore = averageRows(dailyScores, "final_attendance_score");
-  const kpiScore = ownKpi && clean(ownKpi.kpi_score_out_of_5) !== "" ? safeNumber(ownKpi.kpi_score_out_of_5, 0) : "";
-  const finalScore = monthlyAttendanceScore !== "" && kpiScore !== ""
-    ? Number(((safeNumber(monthlyAttendanceScore, 0) * 0.4) + (safeNumber(kpiScore, 0) * 0.6)).toFixed(2))
-    : "";
+  })[0] || {};
+  const monthlyAttendanceScore = clean(ownPerformance.attendance_score) !== "" ? ownPerformance.attendance_score : 5;
+  const kpiScore = clean(ownPerformance.kpi_score_out_of_5) !== "" ? ownPerformance.kpi_score_out_of_5 : 0;
+  const finalScore = clean(ownPerformance.final_score) !== "" ? ownPerformance.final_score : Number(((safeNumber(monthlyAttendanceScore, 5) * 0.4) + (safeNumber(kpiScore, 0) * 0.6)).toFixed(2));
+  const fallbackQuarter = {
+    quarter: "Current",
+    login_id: staff.login_id,
+    full_name: staff.full_name,
+    attendance_avg: monthlyAttendanceScore,
+    kpi_avg: kpiScore,
+    final_score: finalScore,
+    final_grade: getGrade(finalScore),
+    rank: ownPerformance.rank || "",
+    calculated: true
+  };
 
   return {
     ok: true,
@@ -659,10 +681,14 @@ function getStaffDashboard(data) {
     attendance_events: attendanceEvents,
     daily_scores: dailyScores,
     quarter_scores: quarterScores,
-    quarter_score: quarterScores[0] || null,
-    current_rank: ownRank ? ownRank.rank : "",
-    rank: ownRank ? ownRank.rank : "",
+    quarter_score: quarterScores[0] || fallbackQuarter,
+    quarter_score_value: quarterScores[0] ? safeNumber(quarterScores[0].final_score, finalScore) : finalScore,
+    current_rank: ownPerformance.rank || "",
+    rank: ownPerformance.rank || "",
     monthly_attendance_score: monthlyAttendanceScore,
+    attendance_score: monthlyAttendanceScore,
+    kpi_score: kpiScore,
+    kpi_status: ownPerformance.kpi_status || (ownKpi ? "Scored" : "Not scored yet"),
     final_score: finalScore,
     leaderboard: leaderboard,
     own_kpi: ownKpi
@@ -694,6 +720,75 @@ function averageRows(rows, key) {
   return count ? Number((total / count).toFixed(2)) : "";
 }
 
+function getPerformanceDetails(month) {
+  const activeStaff = listStaffRows().filter(function (staff) {
+    return safeUpper(staff.status) === "ACTIVE";
+  });
+  const dailyRows = listDailyScoreRows(month, 0);
+  const kpiRows = listKpiRows(month);
+  const quarterRows = listQuarterScoreRows(0);
+  const dailyMap = {};
+  const kpiMap = {};
+  const quarterMap = {};
+
+  dailyRows.forEach(function (row) {
+    const key = clean(row.login_id).toLowerCase();
+    if (!key) return;
+    if (!dailyMap[key]) dailyMap[key] = [];
+    dailyMap[key].push(row);
+  });
+
+  kpiRows.forEach(function (row) {
+    const key = clean(row.login_id).toLowerCase();
+    if (key && !kpiMap[key]) kpiMap[key] = row;
+  });
+
+  quarterRows.forEach(function (row) {
+    const key = clean(row.login_id).toLowerCase();
+    if (key && !quarterMap[key]) quarterMap[key] = row;
+  });
+
+  const rows = activeStaff.map(function (staff) {
+    const key = clean(staff.login_id).toLowerCase();
+    const staffDaily = dailyMap[key] || [];
+    const kpi = kpiMap[key] || null;
+    const quarter = quarterMap[key] || null;
+    const attendanceScore = staffDaily.length ? averageRows(staffDaily, "final_attendance_score") : 5;
+    const kpiScore = kpi ? safeNumber(kpi.kpi_score_out_of_5, 0) : 0;
+    const finalScore = Number(((safeNumber(attendanceScore, 5) * 0.4) + (kpiScore * 0.6)).toFixed(2));
+    const quarterScore = quarter ? safeNumber(quarter.final_score, finalScore) : finalScore;
+
+    return {
+      staff_id: staff.staff_id,
+      login_id: staff.login_id,
+      full_name: staff.full_name,
+      team: staff.team,
+      role: staff.role,
+      status: staff.status,
+      attendance_score: attendanceScore,
+      monthly_attendance_score: attendanceScore,
+      kpi_score_out_of_5: kpiScore,
+      kpi_score: kpiScore,
+      kpi_status: kpi ? "Scored" : "Not scored yet",
+      quarter_score: quarterScore,
+      quarter: quarter ? quarter.quarter : "Current",
+      final_score: finalScore,
+      grade: getGrade(finalScore),
+      daily_score_count: staffDaily.length,
+      has_kpi: Boolean(kpi),
+      has_quarter_score: Boolean(quarter)
+    };
+  });
+
+  rows.sort(function (a, b) {
+    return safeNumber(b.final_score, 0) - safeNumber(a.final_score, 0) || clean(a.full_name).localeCompare(clean(b.full_name));
+  });
+  rows.forEach(function (row, index) {
+    row.rank = index + 1;
+  });
+  return rows;
+}
+
 /***** ADMIN DASHBOARD + LIST ACTIONS *****/
 
 function getAdminDashboardFull(data) {
@@ -713,7 +808,20 @@ function getAdminDashboardFull(data) {
   const telegramLogs = listTelegramRows(safeNumber(data.limit, 100));
   const ipAllowlist = listIpRows();
   const summary = getTodaySummary(today);
-  const leaderboard = getLeaderboard(month);
+  const performanceDetails = getPerformanceDetails(month);
+  const leaderboard = performanceDetails.map(function (row) {
+    return {
+      login_id: row.login_id,
+      full_name: row.full_name,
+      team: row.team,
+      attendance_score: row.attendance_score,
+      kpi_score_out_of_5: row.kpi_score_out_of_5,
+      final_score: row.final_score,
+      rank: row.rank,
+      grade: row.grade,
+      kpi_status: row.kpi_status
+    };
+  });
 
   summary.total_staff = staffList.filter(function (row) { return safeUpper(row.status) === "ACTIVE"; }).length;
   summary.online_staff = summary.currently_working;
@@ -736,7 +844,8 @@ function getAdminDashboardFull(data) {
     ip_allowlist: ipAllowlist,
     leaderboard: leaderboard,
     topPerformers: leaderboard.slice(0, 10),
-    worstPerformers: leaderboard.slice().reverse().slice(0, 10)
+    worstPerformers: leaderboard.slice().reverse().slice(0, 10),
+    performance_details: performanceDetails
   };
 }
 
@@ -823,6 +932,7 @@ function uploadScheduleCsv(data) {
   let updated = 0;
   let failed = 0;
   const errors = [];
+  const insertRecords = [];
 
   rows.forEach(function (raw, index) {
     const row = normalizeScheduleImportRow(raw);
@@ -871,11 +981,16 @@ function uploadScheduleCsv(data) {
       sheet.getRange(existingMap[key], 1, 1, record.length).setValues([record]);
       updated++;
     } else {
-      sheet.appendRow(record);
-      existingMap[key] = sheet.getLastRow();
+      insertRecords.push(record);
+      existingMap[key] = -1;
       inserted++;
     }
   });
+
+  if (insertRecords.length) {
+    const startRow = sheet.getLastRow() + 1;
+    sheet.getRange(startRow, 1, insertRecords.length, insertRecords[0].length).setValues(insertRecords);
+  }
 
   clearSheetCache(SHEETS.SCHEDULE);
   appendAudit("ADMIN", adminLoginId, adminLoginId, "UPLOAD_SCHEDULE_CSV", "SCHEDULE", "", "", JSON.stringify({ inserted, updated, failed }), ip, clean(data.fileName));
@@ -1411,13 +1526,17 @@ function getGrade(score) {
 }
 
 function getLeaderboard(month) {
-  const list = listKpiRows(month).map(function (row) {
+  const list = getPerformanceDetails(month).map(function (row) {
     return {
       login_id: row.login_id,
       full_name: row.full_name,
       team: row.team,
+      attendance_score: row.attendance_score,
       kpi_score_out_of_5: safeNumber(row.kpi_score_out_of_5, 0),
-      rank: row.rank
+      final_score: row.final_score,
+      rank: row.rank,
+      grade: row.grade,
+      kpi_status: row.kpi_status
     };
   });
   return list;

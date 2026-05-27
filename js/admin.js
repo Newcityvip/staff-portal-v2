@@ -3,8 +3,17 @@
   if (!session) return;
   if (session.role !== "admin") location.href = "staff.html";
 
+  const CACHE_KEY = "spv2_admin_dashboard_last_good";
+  const readCachedDashboard = () => {
+    try { return JSON.parse(localStorage.getItem(CACHE_KEY) || "null"); } catch (error) { return null; }
+  };
+  const writeCachedDashboard = (data) => {
+    try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch (error) {}
+  };
+
   let dashboard = {};
   let refreshTimer;
+  let refreshInFlight = false;
 
   const empty = (message, span = 8) => `<tr><td colspan="${span}" class="empty-state">${message}</td></tr>`;
   const badge = (text, tone = "") => `<span class="badge ${tone}">${text || "--"}</span>`;
@@ -17,15 +26,24 @@
     const attendanceEvents = Portal.normalizeArray(root.attendance_events || root.attendanceBoard || root.attendance || root.onlineStaff);
     const kpiList = Portal.normalizeArray(root.kpi_list || root.kpis || root.kpi || root.monthlyKpi || root.kpi_rows);
     const quarterScores = Portal.normalizeArray(root.quarter_scores || root.quarterScores || root.quarter);
+    const performanceDetails = Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance);
     const dailyScores = Portal.normalizeArray(root.daily_scores || root.dailyScores);
     const auditLogs = Portal.normalizeArray(root.audit_logs || root.auditLogs || root.audit);
     const telegramLogs = Portal.normalizeArray(root.telegram_logs || root.telegramLogs);
     const ipAllowlist = root.ip_allowlist || root.ipAllowlist || root.allowlist || [];
-    const rankingRows = Portal.normalizeArray(root.topPerformers || root.leaderboard || root.rankings || quarterScores || kpiList);
-    const worstRows = Portal.normalizeArray(root.worstPerformers || root.lowPerformers || root.needsCoaching);
+    const rankingRows = performanceDetails.length ? performanceDetails : Portal.normalizeArray(root.topPerformers || root.leaderboard || root.rankings || quarterScores || kpiList);
+    const worstRows = performanceDetails.length ? performanceDetails.slice().reverse() : Portal.normalizeArray(root.worstPerformers || root.lowPerformers || root.needsCoaching);
     const sortedWorst = worstRows.length
       ? worstRows
       : rankingRows.slice().sort((a, b) => Number(Portal.pick(a, ["final_score", "kpi_score_out_of_5", "score", "kpi"], 0)) - Number(Portal.pick(b, ["final_score", "kpi_score_out_of_5", "score", "kpi"], 0)));
+    const performanceByLogin = performanceDetails.reduce((map, row) => {
+      map[String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase()] = row;
+      return map;
+    }, {});
+    const enrichedStaff = staffList.map((row) => {
+      const perf = performanceByLogin[String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase()] || {};
+      return { ...row, ...perf, status: Portal.pick(row, ["status", "state"], Portal.pick(perf, ["status"], "")) };
+    });
     return {
       stats: root.stats || root.counters || {
         totalStaff: root.staff_count || summary.total_staff || staffList.length,
@@ -39,9 +57,10 @@
       breaks: Portal.normalizeArray(root.breakBoard || root.breaks).length
         ? Portal.normalizeArray(root.breakBoard || root.breaks)
         : attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() === "BREAK_START"),
-      staff: staffList,
+      staff: enrichedStaff,
       schedules: scheduleList,
       kpis: kpiList,
+      performance: performanceDetails,
       top: rankingRows,
       worst: sortedWorst,
       dailyLogs: Portal.normalizeArray(root.dailyLogs || root.logs).length ? Portal.normalizeArray(root.dailyLogs || root.logs) : attendanceEvents.concat(dailyScores),
@@ -50,6 +69,8 @@
       ipAllowlist
     };
   };
+
+  dashboard = normalizeDashboard(readCachedDashboard() || {});
 
   const renderStats = (stats) => {
     Portal.setText("totalStaff", Portal.pick(stats, ["totalStaff", "staffTotal", "total"], dashboard.staff.length || "--"));
@@ -180,7 +201,7 @@
       ["Missing", Number(Portal.pick(dashboard.stats, ["missingCheckout", "missingCheckOut"], 0))]
     ], "#28dcff");
 
-    drawKpiAnalytics("kpiChart", dashboard.kpis);
+    drawKpiAnalytics("kpiChart", dashboard.performance?.length ? dashboard.performance : dashboard.kpis);
   };
 
   const drawBars = (id, rows, color) => {
@@ -310,16 +331,23 @@
   };
 
   const load = async (silent = false) => {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
     if (!silent) Portal.setStatus(false, "Loading");
     try {
       const data = await Portal.api.dashboard("admin");
       dashboard = normalizeDashboard(data);
+      writeCachedDashboard(data);
       renderAll();
     } catch (error) {
-      dashboard = normalizeDashboard({});
-      renderAll();
       Portal.setStatus(false, "API issue");
       if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load admin dashboard", "error");
+      if (!Object.keys(dashboard || {}).length) {
+        dashboard = normalizeDashboard(readCachedDashboard() || {});
+        renderAll();
+      }
+    } finally {
+      refreshInFlight = false;
     }
   };
 
@@ -556,7 +584,7 @@
     }
     try {
       state.hidden = false;
-      state.textContent = "Uploading schedule...";
+      state.textContent = "Uploading... please wait, large roster may take 1-3 minutes.";
       const csv = await file.text();
       const parsed = parseScheduleCsv(csv);
       const rows = parsed.rows;
@@ -579,7 +607,7 @@
       Portal.toast("Schedule uploaded");
       await load(true);
     } catch (error) {
-      if (/abort/i.test(String(error.message || ""))) {
+      if (/abort|524|timeout/i.test(String(error.message || ""))) {
         state.textContent = "Upload may still be processing. Refreshing schedule data...";
         await load(true);
         return;

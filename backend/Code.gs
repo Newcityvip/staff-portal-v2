@@ -627,6 +627,20 @@ function getStaffDashboard(data) {
 
   const today = todayDate();
   const month = clean(data.month) || monthNow();
+  const leaderboard = getLeaderboard(month);
+  const ownKpi = getOwnKPI(staff.login_id, month);
+  const attendanceEvents = listAttendanceRows("", 300).filter(function (row) {
+    return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
+  });
+  const dailyScores = listDailyScoreRows(month, 300).filter(function (row) {
+    return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
+  });
+  const quarterScores = listQuarterScoreRows(300).filter(function (row) {
+    return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
+  });
+  const ownRank = leaderboard.filter(function (row) {
+    return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
+  })[0];
 
   return {
     ok: true,
@@ -636,9 +650,41 @@ function getStaffDashboard(data) {
     tomorrow_schedule: getScheduleForDate(staff.login_id, addDays(today, 1)),
     attendance_state: getAttendanceState(staff.login_id, today),
     monthly_schedule: getMonthlySchedule(staff.login_id, month),
-    leaderboard: getLeaderboard(month),
-    own_kpi: getOwnKPI(staff.login_id, month)
+    next_7_schedule: getNextSchedule(staff.login_id, today, 7),
+    attendance_events: attendanceEvents,
+    daily_scores: dailyScores,
+    quarter_scores: quarterScores,
+    quarter_score: quarterScores[0] || null,
+    rank: ownRank ? ownRank.rank : "",
+    monthly_attendance_score: averageRows(dailyScores, "final_attendance_score"),
+    leaderboard: leaderboard,
+    own_kpi: ownKpi
   };
+}
+
+function getNextSchedule(loginId, fromDate, days) {
+  const target = clean(loginId).toLowerCase();
+  const from = normalizeDateKey(fromDate);
+  const rows = listScheduleRows("", "").filter(function (row) {
+    return clean(row.login_id).toLowerCase() === target && normalizeDateKey(row.schedule_date) >= from;
+  });
+  rows.sort(function (a, b) {
+    return normalizeDateKey(a.schedule_date).localeCompare(normalizeDateKey(b.schedule_date));
+  });
+  return rows.slice(0, safeNumber(days, 7));
+}
+
+function averageRows(rows, key) {
+  let total = 0;
+  let count = 0;
+  rows.forEach(function (row) {
+    const n = Number(row[key]);
+    if (!isNaN(n)) {
+      total += n;
+      count++;
+    }
+  });
+  return count ? Number((total / count).toFixed(2)) : "";
 }
 
 /***** ADMIN DASHBOARD + LIST ACTIONS *****/
@@ -751,10 +797,12 @@ function uploadScheduleCsv(data) {
   if (!rows.length) return { ok: false, message: "No schedule rows found in CSV", inserted: 0, updated: 0, failed: 0 };
 
   const staffByLogin = {};
+  const staffByName = {};
   const staffRows = listStaffRows();
   staffRows.forEach(function (staff) {
     staffByLogin[clean(staff.login_id).toLowerCase()] = staff;
     staffByLogin[clean(staff.email).toLowerCase()] = staff;
+    staffByName[clean(staff.full_name).toLowerCase()] = staff;
   });
 
   const sheet = sh(SHEETS.SCHEDULE);
@@ -771,27 +819,41 @@ function uploadScheduleCsv(data) {
 
   rows.forEach(function (raw, index) {
     const row = normalizeScheduleImportRow(raw);
-    if (!row.login_id || !row.schedule_date) {
+    if (!row.schedule_date) {
       failed++;
-      errors.push({ row: index + 2, message: "Missing login_id or schedule_date" });
+      errors.push({ row: index + 2, message: "Missing schedule_date" });
       return;
     }
 
-    const staff = staffByLogin[clean(row.login_id).toLowerCase()] || {};
+    const staff = staffByLogin[clean(row.login_id).toLowerCase()] || staffByName[clean(row.full_name).toLowerCase()];
+    if (!staff || !staff.login_id) {
+      failed++;
+      errors.push({ row: index + 2, message: "Staff not found: " + (row.full_name || row.login_id || "blank") });
+      return;
+    }
+
     const scheduleDate = normalizeDateKey(row.schedule_date);
+    if (!scheduleDate) {
+      failed++;
+      errors.push({ row: index + 2, message: "Invalid schedule_date" });
+      return;
+    }
+
+    const status = safeUpper(row.status || "WORKING");
+    const isWorking = status === "WORKING";
     const scheduleMonth = clean(row.schedule_month) || scheduleDate.substring(0, 7);
     const record = [
       clean(row.schedule_id) || makeId("SCH"),
       scheduleMonth,
       scheduleDate,
       clean(row.staff_id) || clean(staff.staff_id),
-      clean(staff.login_id || row.login_id),
+      clean(staff.login_id),
       clean(row.full_name) || clean(staff.full_name),
       clean(row.team) || clean(staff.team),
       safeUpper(row.shift_code || "GENERAL"),
-      normalizeSheetTime(row.start_time || "09:00:00"),
-      normalizeSheetTime(row.end_time || "18:00:00"),
-      safeUpper(row.status || "WORKING"),
+      isWorking ? normalizeSheetTime(row.start_time || "09:00:00") : "",
+      isWorking ? normalizeSheetTime(row.end_time || "18:00:00") : "",
+      status,
       adminLoginId,
       nowDateTime(),
       clean(row.notes)

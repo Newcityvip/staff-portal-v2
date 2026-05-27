@@ -573,15 +573,17 @@ tr:last-child td { border-bottom: 0; }
   background: rgba(7, 17, 31, .9);
   backdrop-filter: blur(20px);
 }
-.mobile-nav a {
+.mobile-nav a, .mobile-nav button {
   text-align: center;
   padding: 11px 6px;
   border-radius: 7px;
   color: var(--muted);
   font-weight: 800;
   font-size: .8rem;
+  border: 0;
+  background: transparent;
 }
-.mobile-nav a:focus, .mobile-nav a:hover { color: var(--cyan); background: rgba(40, 220, 255, .08); }
+.mobile-nav a:focus, .mobile-nav a:hover, .mobile-nav button:focus, .mobile-nav button:hover { color: var(--cyan); background: rgba(40, 220, 255, .08); }
 
 .empty-state {
   padding: 18px;

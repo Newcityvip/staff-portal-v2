@@ -290,7 +290,10 @@
     throw lastError || new Error("Action is not available");
   };
 
-  const parseCsv = (text) => {
+  const SUPPORTED_SHIFT_CODES = new Set(["AM", "AM1", "PM1", "PM", "NP", "OFF", "AL", "UL", "SL"]);
+  const NON_WORKING_SHIFT_CODES = new Set(["OFF", "AL", "UL", "SL"]);
+
+  const parseCsvRows = (text) => {
     const rows = [];
     let row = [];
     let cell = "";
@@ -318,12 +321,115 @@
     }
     row.push(cell.trim());
     if (row.some(Boolean)) rows.push(row);
+    return rows;
+  };
+
+  const csvDateToKey = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const iso = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (iso) return `${iso[1]}-${String(iso[2]).padStart(2, "0")}-${String(iso[3]).padStart(2, "0")}`;
+    const slash = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+    if (slash) {
+      const year = slash[3].length === 2 ? `20${slash[3]}` : slash[3];
+      return `${year}-${String(slash[1]).padStart(2, "0")}-${String(slash[2]).padStart(2, "0")}`;
+    }
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 10);
+  };
+
+  const monthFromDate = (dateKey) => String(dateKey || "").slice(0, 7);
+
+  const normalizeCsvTime = (value) => {
+    const raw = String(value || "").trim().replace(/\s+/g, " ");
+    if (!raw) return "";
+    const match = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+    if (!match) return raw;
+    let hour = Number(match[1]);
+    const minute = String(match[2]).padStart(2, "0");
+    const second = String(match[3] || "00").padStart(2, "0");
+    const meridiem = String(match[4] || "").toUpperCase();
+    if (meridiem === "PM" && hour < 12) hour += 12;
+    if (meridiem === "AM" && hour === 12) hour = 0;
+    return `${String(hour).padStart(2, "0")}:${minute}:${second}`;
+  };
+
+  const parseShiftWindow = (value) => {
+    const text = String(value || "").replace(/[–—]/g, "-").replace(/(\d)(AM|PM)/gi, "$1 $2");
+    const parts = text.split("-").map((item) => item.trim()).filter(Boolean);
+    return { start_time: normalizeCsvTime(parts[0]), end_time: normalizeCsvTime(parts[1]) };
+  };
+
+  const csvRowsToObjects = (rows) => {
     if (!rows.length) return [];
     const headers = rows.shift().map((item) => item.trim());
     return rows.map((items) => headers.reduce((record, header, index) => {
       record[header] = items[index] || "";
       return record;
     }, {}));
+  };
+
+  const parseRosterMatrix = (rows) => {
+    const headerIndex = rows.findIndex((row) => String(row[0] || "").replace(/^\uFEFF/, "").trim().toLowerCase() === "agent | date");
+    if (headerIndex === -1) return null;
+
+    const errors = [];
+    const shiftMap = {};
+    rows.slice(0, headerIndex).forEach((row) => {
+      const code = String(row[0] || "").trim().toUpperCase();
+      if (!SUPPORTED_SHIFT_CODES.has(code) || NON_WORKING_SHIFT_CODES.has(code)) return;
+      const window = parseShiftWindow(row.slice(1).join(","));
+      if (window.start_time || window.end_time) shiftMap[code] = window;
+    });
+
+    const headers = rows[headerIndex];
+    const dateKeys = headers.slice(1).map(csvDateToKey);
+    const output = [];
+
+    rows.slice(headerIndex + 2).forEach((row, staffRowIndex) => {
+      const fullName = String(row[0] || "").trim();
+      if (!fullName) return;
+      row.slice(1).forEach((value, offset) => {
+        const shiftCode = String(value || "").trim().toUpperCase();
+        if (!shiftCode) return;
+        const scheduleDate = dateKeys[offset];
+        if (!scheduleDate) {
+          errors.push({ row: headerIndex + staffRowIndex + 3, message: `Invalid date in column ${offset + 2}` });
+          return;
+        }
+        if (!SUPPORTED_SHIFT_CODES.has(shiftCode)) {
+          errors.push({ row: headerIndex + staffRowIndex + 3, message: `Unsupported shift code ${shiftCode} for ${fullName} on ${scheduleDate}` });
+          return;
+        }
+        const status = NON_WORKING_SHIFT_CODES.has(shiftCode) ? shiftCode : "WORKING";
+        const window = status === "WORKING" ? (shiftMap[shiftCode] || {}) : {};
+        output.push({
+          schedule_id: "",
+          schedule_month: monthFromDate(scheduleDate),
+          schedule_date: scheduleDate,
+          staff_id: "",
+          login_id: "",
+          full_name: fullName,
+          team: "",
+          shift_code: shiftCode,
+          start_time: window.start_time || "",
+          end_time: window.end_time || "",
+          status,
+          uploaded_by: session.loginId || session.staffId || "Admin",
+          uploaded_at: new Date().toISOString(),
+          notes: "Roster matrix import"
+        });
+      });
+    });
+
+    return { mode: "matrix", rows: output, errors };
+  };
+
+  const parseScheduleCsv = (text) => {
+    const rows = parseCsvRows(text);
+    const matrix = parseRosterMatrix(rows);
+    if (matrix) return matrix;
+    return { mode: "flat", rows: csvRowsToObjects(rows), errors: [] };
   };
 
   const exportTable = (name) => {
@@ -374,19 +480,22 @@
       state.hidden = false;
       state.textContent = "Uploading schedule...";
       const csv = await file.text();
-      const rows = parseCsv(csv);
+      const parsed = parseScheduleCsv(csv);
+      const rows = parsed.rows;
       const ip = await Portal.api.detectIp();
       const result = await callFirstValid(["upload_schedule_csv"], {
         admin_login_id: session.loginId || session.staffId,
         ip,
         fileName: file.name,
         csv,
+        upload_format: parsed.mode,
+        parse_errors: parsed.errors,
         rows,
         schedules: rows
       });
       const inserted = Number(Portal.pick(result, ["inserted"], 0));
       const updated = Number(Portal.pick(result, ["updated"], 0));
-      const failed = Number(Portal.pick(result, ["failed"], 0));
+      const failed = Number(Portal.pick(result, ["failed"], 0)) + parsed.errors.length;
       state.textContent = `Schedule uploaded. Inserted: ${inserted}. Updated: ${updated}. Failed: ${failed}.`;
       Portal.toast("Schedule uploaded");
       await load(true);

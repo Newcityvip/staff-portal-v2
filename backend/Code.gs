@@ -654,17 +654,17 @@ function getStaffDashboard(data) {
   const ownPerformance = performanceDetails.filter(function (row) {
     return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
   })[0] || {};
-  const monthlyAttendanceScore = clean(ownPerformance.attendance_score) !== "" ? ownPerformance.attendance_score : 5;
+  const monthlyAttendanceScore = clean(ownPerformance.attendance_score) !== "" ? ownPerformance.attendance_score : 0;
   const kpiScore = clean(ownPerformance.kpi_score_out_of_5) !== "" ? ownPerformance.kpi_score_out_of_5 : 0;
-  const finalScore = clean(ownPerformance.final_score) !== "" ? ownPerformance.final_score : Number(((safeNumber(monthlyAttendanceScore, 5) * 0.4) + (safeNumber(kpiScore, 0) * 0.6)).toFixed(2));
+  const finalScore = clean(ownPerformance.final_score) !== "" ? ownPerformance.final_score : Number(((safeNumber(monthlyAttendanceScore, 0) * 0.4) + (safeNumber(kpiScore, 0) * 0.6)).toFixed(2));
   const fallbackQuarter = {
     quarter: "Current",
     login_id: staff.login_id,
     full_name: staff.full_name,
     attendance_avg: monthlyAttendanceScore,
     kpi_avg: kpiScore,
-    final_score: finalScore,
-    final_grade: getGrade(finalScore),
+    final_score: 0,
+    final_grade: getGrade(0),
     rank: ownPerformance.rank || "",
     calculated: true
   };
@@ -682,7 +682,7 @@ function getStaffDashboard(data) {
     daily_scores: dailyScores,
     quarter_scores: quarterScores,
     quarter_score: quarterScores[0] || fallbackQuarter,
-    quarter_score_value: quarterScores[0] ? safeNumber(quarterScores[0].final_score, finalScore) : finalScore,
+    quarter_score_value: quarterScores[0] ? safeNumber(quarterScores[0].final_score, 0) : 0,
     current_rank: ownPerformance.rank || "",
     rank: ownPerformance.rank || "",
     monthly_attendance_score: monthlyAttendanceScore,
@@ -722,7 +722,7 @@ function averageRows(rows, key) {
 
 function getPerformanceDetails(month) {
   const activeStaff = listStaffRows().filter(function (staff) {
-    return safeUpper(staff.status) === "ACTIVE";
+    return safeUpper(staff.status) === "ACTIVE" && !isAdminStaff(staff);
   });
   const dailyRows = listDailyScoreRows(month, 0);
   const kpiRows = listKpiRows(month);
@@ -753,10 +753,10 @@ function getPerformanceDetails(month) {
     const staffDaily = dailyMap[key] || [];
     const kpi = kpiMap[key] || null;
     const quarter = quarterMap[key] || null;
-    const attendanceScore = staffDaily.length ? averageRows(staffDaily, "final_attendance_score") : 5;
+    const attendanceScore = staffDaily.length ? averageRows(staffDaily, "final_attendance_score") : 0;
     const kpiScore = kpi ? safeNumber(kpi.kpi_score_out_of_5, 0) : 0;
-    const finalScore = Number(((safeNumber(attendanceScore, 5) * 0.4) + (kpiScore * 0.6)).toFixed(2));
-    const quarterScore = quarter ? safeNumber(quarter.final_score, finalScore) : finalScore;
+    const finalScore = Number(((safeNumber(attendanceScore, 0) * 0.4) + (kpiScore * 0.6)).toFixed(2));
+    const quarterScore = quarter ? safeNumber(quarter.final_score, 0) : 0;
 
     return {
       staff_id: staff.staff_id,
@@ -787,6 +787,12 @@ function getPerformanceDetails(month) {
     row.rank = index + 1;
   });
   return rows;
+}
+
+function isAdminStaff(staff) {
+  const role = safeUpper(staff && staff.role);
+  const team = safeUpper(staff && staff.team);
+  return role === "ADMIN" || team === "ADMIN" || role.indexOf("ADMIN") > -1 || team.indexOf("ADMIN") > -1;
 }
 
 /***** ADMIN DASHBOARD + LIST ACTIONS *****/
@@ -910,7 +916,8 @@ function uploadScheduleCsv(data) {
 
   const adminLoginId = clean(data.admin_login_id || data.login_id || "Admin");
   const rows = Array.isArray(data.rows) ? data.rows : [];
-  if (!rows.length) return { ok: false, message: "No schedule rows found in CSV", inserted: 0, updated: 0, failed: 0 };
+  const skipped = safeNumber(data.skipped, 0);
+  if (!rows.length) return { ok: false, message: "No schedule rows found in CSV", inserted: 0, updated: 0, failed: 0, skipped: skipped };
 
   const staffByLogin = {};
   const staffByName = {};
@@ -918,7 +925,7 @@ function uploadScheduleCsv(data) {
   staffRows.forEach(function (staff) {
     staffByLogin[clean(staff.login_id).toLowerCase()] = staff;
     staffByLogin[clean(staff.email).toLowerCase()] = staff;
-    staffByName[clean(staff.full_name).toLowerCase()] = staff;
+    staffByName[normalizePersonName(staff.full_name)] = staff;
   });
 
   const sheet = sh(SHEETS.SCHEDULE);
@@ -933,6 +940,8 @@ function uploadScheduleCsv(data) {
   let failed = 0;
   const errors = [];
   const insertRecords = [];
+  const updateRecords = [];
+  const pendingInsertIndex = {};
 
   rows.forEach(function (raw, index) {
     const row = normalizeScheduleImportRow(raw);
@@ -942,7 +951,7 @@ function uploadScheduleCsv(data) {
       return;
     }
 
-    const staff = staffByLogin[clean(row.login_id).toLowerCase()] || staffByName[clean(row.full_name).toLowerCase()];
+    const staff = staffByLogin[clean(row.login_id).toLowerCase()] || staffByName[normalizePersonName(row.full_name)];
     if (!staff || !staff.login_id) {
       failed++;
       errors.push({ row: index + 2, message: "Staff not found: " + (row.full_name || row.login_id || "blank") });
@@ -977,12 +986,15 @@ function uploadScheduleCsv(data) {
     ];
 
     const key = record[2] + "|" + clean(record[4]).toLowerCase();
-    if (existingMap[key]) {
-      sheet.getRange(existingMap[key], 1, 1, record.length).setValues([record]);
+    if (existingMap[key] && existingMap[key] > 0) {
+      updateRecords.push({ rowIndex: existingMap[key], values: record });
+      updated++;
+    } else if (pendingInsertIndex[key] != null) {
+      insertRecords[pendingInsertIndex[key]] = record;
       updated++;
     } else {
+      pendingInsertIndex[key] = insertRecords.length;
       insertRecords.push(record);
-      existingMap[key] = -1;
       inserted++;
     }
   });
@@ -991,10 +1003,42 @@ function uploadScheduleCsv(data) {
     const startRow = sheet.getLastRow() + 1;
     sheet.getRange(startRow, 1, insertRecords.length, insertRecords[0].length).setValues(insertRecords);
   }
+  writeScheduleUpdateRecords(sheet, updateRecords);
 
   clearSheetCache(SHEETS.SCHEDULE);
-  appendAudit("ADMIN", adminLoginId, adminLoginId, "UPLOAD_SCHEDULE_CSV", "SCHEDULE", "", "", JSON.stringify({ inserted, updated, failed }), ip, clean(data.fileName));
-  return { ok: true, message: "Schedule CSV processed", inserted: inserted, updated: updated, failed: failed, errors: errors };
+  appendAudit("ADMIN", adminLoginId, adminLoginId, "UPLOAD_SCHEDULE_CSV", "SCHEDULE", "", "", JSON.stringify({ inserted, updated, failed, skipped }), ip, clean(data.fileName));
+  return { ok: true, message: "Schedule CSV processed", inserted: inserted, updated: updated, failed: failed, skipped: skipped, errors: errors };
+}
+
+function normalizePersonName(value) {
+  return clean(value).toLowerCase().replace(/\s+/g, " ");
+}
+
+function writeScheduleUpdateRecords(sheet, records) {
+  if (!records.length) return;
+  records.sort(function (a, b) {
+    return a.rowIndex - b.rowIndex;
+  });
+
+  let batchStart = records[0].rowIndex;
+  let batchRows = [records[0].values];
+  let previous = records[0].rowIndex;
+
+  for (let i = 1; i < records.length; i++) {
+    const item = records[i];
+    if (item.rowIndex === previous + 1) {
+      batchRows.push(item.values);
+    } else {
+      sheet.getRange(batchStart, 1, batchRows.length, batchRows[0].length).setValues(batchRows);
+      batchStart = item.rowIndex;
+      batchRows = [item.values];
+    }
+    previous = item.rowIndex;
+  }
+
+  if (batchRows.length) {
+    sheet.getRange(batchStart, 1, batchRows.length, batchRows[0].length).setValues(batchRows);
+  }
 }
 
 function saveIpAllowlist(data) {

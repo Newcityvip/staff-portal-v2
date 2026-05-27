@@ -127,7 +127,7 @@
         <td>${Portal.pick(row, ["name", "full_name", "fullName", "staffName"], "Staff")}</td>
         <td>${Portal.pick(row, ["role", "position"], "--")}</td>
         <td>${Portal.pick(row, ["department", "team"], "--")}</td>
-        <td>${Portal.pick(row, ["kpi", "kpi_score_out_of_5", "kpiScore", "score"], "--")}</td>
+        <td>${Portal.pick(row, ["final_score", "kpi_score_out_of_5", "kpi", "kpiScore", "score"], "0")}</td>
         <td>${badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], "")))}</td>
       </tr>`).join("");
   };
@@ -135,8 +135,13 @@
   const renderSchedules = (rows) => {
     const host = document.getElementById("scheduleTable");
     if (!host) return;
-    if (!rows.length) return host.innerHTML = empty("No schedule rows received.", 5);
-    host.innerHTML = rows.map((row) => `
+    const sorted = rows.slice().sort((a, b) => {
+      const dateCompare = String(Portal.pick(a, ["schedule_date", "day", "date"], "")).localeCompare(String(Portal.pick(b, ["schedule_date", "day", "date"], "")));
+      if (dateCompare) return dateCompare;
+      return String(Portal.pick(a, ["full_name", "name", "staffName", "staff"], "")).localeCompare(String(Portal.pick(b, ["full_name", "name", "staffName", "staff"], "")));
+    });
+    if (!sorted.length) return host.innerHTML = empty("No schedule rows received.", 5);
+    host.innerHTML = sorted.map((row) => `
       <tr>
         <td>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</td>
         <td>${Portal.pick(row, ["shift_code", "shift", "shiftName", "name"], "--")}</td>
@@ -168,11 +173,11 @@
       host.innerHTML = `<div class="empty-state">Ranking records are not available yet.</div>`;
       return;
     }
-    host.innerHTML = rows.slice(0, 7).map((row, index) => `
+    host.innerHTML = rows.map((row, index) => `
       <div class="leader-row">
         <span class="leader-rank">${Portal.pick(row, ["rank", "position"], index + 1)}</span>
         <div><strong>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</strong><br><small>${Portal.pick(row, ["department", "team"], "")}</small></div>
-        <strong>${Portal.pick(row, ["final_score", "kpi_score_out_of_5", "score", "kpi", "quarterScore"], "--")}</strong>
+        <strong>${Portal.pick(row, ["final_score", "kpi_score_out_of_5", "score", "kpi", "quarterScore"], "0")}</strong>
       </div>`).join("");
   };
 
@@ -204,12 +209,24 @@
     drawKpiAnalytics("kpiChart", dashboard.performance?.length ? dashboard.performance : dashboard.kpis);
   };
 
+  const prepareCanvas = (canvas, fallbackHeight = 240) => {
+    const ratio = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(280, Math.floor(rect.width || canvas.clientWidth || 520));
+    const height = Math.max(190, Math.floor(rect.height || fallbackHeight));
+    if (canvas.width !== Math.floor(width * ratio) || canvas.height !== Math.floor(height * ratio)) {
+      canvas.width = Math.floor(width * ratio);
+      canvas.height = Math.floor(height * ratio);
+    }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    return { ctx, width, height };
+  };
+
   const drawBars = (id, rows, color) => {
     const canvas = document.getElementById(id);
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const width = canvas.width;
-    const height = canvas.height;
+    const { ctx, width, height } = prepareCanvas(canvas);
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = "rgba(255,255,255,.08)";
     ctx.fillRect(42, 20, width - 62, height - 66);
@@ -243,9 +260,7 @@
   const drawKpiAnalytics = (id, rows) => {
     const canvas = document.getElementById(id);
     if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    const width = canvas.width;
-    const height = canvas.height;
+    const { ctx, width, height } = prepareCanvas(canvas);
     const scores = rows
       .map((row) => Number(Portal.pick(row, ["kpi_score_out_of_5", "kpi", "kpiScore", "score"], NaN)))
       .filter((score) => Number.isFinite(score));
@@ -461,7 +476,7 @@
   };
 
   const parseShiftWindow = (value) => {
-    const text = String(value || "").replace(/[–—]/g, "-").replace(/(\d)(AM|PM)/gi, "$1 $2");
+    const text = String(value || "").replace(/[\u2013\u2014]/g, "-").replace(/(\d)(AM|PM)/gi, "$1 $2");
     const parts = text.split("-").map((item) => item.trim()).filter(Boolean);
     return { start_time: normalizeCsvTime(parts[0]), end_time: normalizeCsvTime(parts[1]) };
   };
@@ -475,67 +490,94 @@
     }, {}));
   };
 
+  const isRosterHeader = (row) => String(row?.[0] || "").replace(/^\uFEFF/, "").trim().toLowerCase() === "agent | date";
+
+  const isSummaryRow = (value) => {
+    const first = String(value || "").trim();
+    if (!first) return true;
+    if (/^\d{1,2}[-/ ]?[a-z]{3,}$/i.test(first)) return true;
+    if (/^[a-z]{3,}[-/ ]?\d{1,2}$/i.test(first)) return true;
+    if (/^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(first)) return true;
+    return false;
+  };
+
   const parseRosterMatrix = (rows) => {
-    const headerIndex = rows.findIndex((row) => String(row[0] || "").replace(/^\uFEFF/, "").trim().toLowerCase() === "agent | date");
-    if (headerIndex === -1) return null;
+    const headerIndexes = rows.reduce((indexes, row, index) => {
+      if (isRosterHeader(row)) indexes.push(index);
+      return indexes;
+    }, []);
+    if (!headerIndexes.length) return null;
 
     const errors = [];
+    let skipped = 0;
     const shiftMap = {};
-    rows.slice(0, headerIndex).forEach((row) => {
+    rows.slice(0, headerIndexes[0]).forEach((row) => {
       const code = String(row[0] || "").trim().toUpperCase();
       if (!SUPPORTED_SHIFT_CODES.has(code) || NON_WORKING_SHIFT_CODES.has(code)) return;
       const window = parseShiftWindow(row.slice(1).join(","));
       if (window.start_time || window.end_time) shiftMap[code] = window;
     });
 
-    const headers = rows[headerIndex];
-    const dateKeys = headers.slice(1).map(csvDateToKey);
     const output = [];
 
-    rows.slice(headerIndex + 2).forEach((row, staffRowIndex) => {
-      const fullName = String(row[0] || "").trim();
-      if (!fullName) return;
-      row.slice(1).forEach((value, offset) => {
-        const shiftCode = String(value || "").trim().toUpperCase();
-        if (!shiftCode) return;
-        const scheduleDate = dateKeys[offset];
-        if (!scheduleDate) {
-          errors.push({ row: headerIndex + staffRowIndex + 3, message: `Invalid date in column ${offset + 2}` });
-          return;
+    headerIndexes.forEach((headerIndex, blockIndex) => {
+      skipped += 2;
+      const headers = rows[headerIndex];
+      const dateColumns = headers
+        .map((header, index) => ({ index, date: index === 0 ? "" : csvDateToKey(header) }))
+        .filter((column) => column.date);
+      skipped += Math.max(0, headers.length - 1 - dateColumns.length);
+      const blockEnd = headerIndexes[blockIndex + 1] || rows.length;
+
+      for (let rowIndex = headerIndex + 2; rowIndex < blockEnd; rowIndex += 1) {
+        const row = rows[rowIndex] || [];
+        const fullName = String(row[0] || "").trim();
+        if (isRosterHeader(row)) break;
+        if (isSummaryRow(fullName)) {
+          skipped += 1;
+          continue;
         }
-        if (!SUPPORTED_SHIFT_CODES.has(shiftCode)) {
-          errors.push({ row: headerIndex + staffRowIndex + 3, message: `Unsupported shift code ${shiftCode} for ${fullName} on ${scheduleDate}` });
-          return;
-        }
-        const status = NON_WORKING_SHIFT_CODES.has(shiftCode) ? shiftCode : "WORKING";
-        const window = status === "WORKING" ? (shiftMap[shiftCode] || {}) : {};
-        output.push({
-          schedule_id: "",
-          schedule_month: monthFromDate(scheduleDate),
-          schedule_date: scheduleDate,
-          staff_id: "",
-          login_id: "",
-          full_name: fullName,
-          team: "",
-          shift_code: shiftCode,
-          start_time: window.start_time || "",
-          end_time: window.end_time || "",
-          status,
-          uploaded_by: session.loginId || session.staffId || "Admin",
-          uploaded_at: new Date().toISOString(),
-          notes: "Roster matrix import"
+
+        dateColumns.forEach((column) => {
+          const shiftCode = String(row[column.index] || "").trim().toUpperCase();
+          if (!shiftCode) {
+            skipped += 1;
+            return;
+          }
+          if (!SUPPORTED_SHIFT_CODES.has(shiftCode)) {
+            errors.push({ row: rowIndex + 1, message: `Unsupported shift code ${shiftCode} for ${fullName} on ${column.date}` });
+            return;
+          }
+          const status = NON_WORKING_SHIFT_CODES.has(shiftCode) ? shiftCode : "WORKING";
+          const window = status === "WORKING" ? (shiftMap[shiftCode] || {}) : {};
+          output.push({
+            schedule_id: "",
+            schedule_month: monthFromDate(column.date),
+            schedule_date: column.date,
+            staff_id: "",
+            login_id: "",
+            full_name: fullName,
+            team: "",
+            shift_code: shiftCode,
+            start_time: window.start_time || "",
+            end_time: window.end_time || "",
+            status,
+            uploaded_by: session.loginId || session.staffId || "Admin",
+            uploaded_at: new Date().toISOString(),
+            notes: "Roster matrix import"
+          });
         });
-      });
+      }
     });
 
-    return { mode: "matrix", rows: output, errors };
+    return { mode: "matrix", rows: output, errors, skipped };
   };
 
   const parseScheduleCsv = (text) => {
     const rows = parseCsvRows(text);
     const matrix = parseRosterMatrix(rows);
     if (matrix) return matrix;
-    return { mode: "flat", rows: csvRowsToObjects(rows), errors: [] };
+    return { mode: "flat", rows: csvRowsToObjects(rows), errors: [], skipped: 0 };
   };
 
   const exportTable = (name) => {
@@ -584,7 +626,7 @@
     }
     try {
       state.hidden = false;
-      state.textContent = "Uploading... please wait, large roster may take 1-3 minutes.";
+      state.textContent = "Uploading roster... please wait.";
       const csv = await file.text();
       const parsed = parseScheduleCsv(csv);
       const rows = parsed.rows;
@@ -597,18 +639,22 @@
         csv,
         upload_format: parsed.mode,
         parse_errors: parsed.errors,
+        skipped: parsed.skipped || 0,
         rows,
         schedules: rows
       });
       const inserted = Number(Portal.pick(result, ["inserted"], 0));
       const updated = Number(Portal.pick(result, ["updated"], 0));
       const failed = Number(Portal.pick(result, ["failed"], 0)) + parsed.errors.length;
-      state.textContent = `Schedule uploaded. Inserted: ${inserted}. Updated: ${updated}. Failed: ${failed}.`;
+      const skipped = Number(Portal.pick(result, ["skipped"], parsed.skipped || 0));
+      state.textContent = `Schedule uploaded. Inserted: ${inserted}. Updated: ${updated}. Failed: ${failed}. Skipped: ${skipped}.`;
       Portal.toast("Schedule uploaded");
+      await new Promise((resolve) => setTimeout(resolve, 3000));
       await load(true);
     } catch (error) {
       if (/abort|524|timeout/i.test(String(error.message || ""))) {
         state.textContent = "Upload may still be processing. Refreshing schedule data...";
+        await new Promise((resolve) => setTimeout(resolve, 3000));
         await load(true);
         return;
       }

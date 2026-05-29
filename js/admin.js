@@ -535,8 +535,7 @@
     return data;
   };
 
-  const SUPPORTED_SHIFT_CODES = new Set(["AM", "AM1", "PM1", "PM", "NP", "OFF", "AL", "UL", "SL"]);
-  const NON_WORKING_SHIFT_CODES = new Set(["OFF", "AL", "UL", "SL"]);
+  const NON_WORKING_SHIFT_CODES = new Set(["OFF", "AL", "UL", "SL", "NP"]);
 
   const parseCsvRows = (text) => {
     const rows = [];
@@ -635,9 +634,9 @@
     const errors = [];
     let skipped = 0;
     const shiftMap = {};
-    rows.slice(0, headerIndexes[0]).forEach((row) => {
+    rows.forEach((row) => {
       const code = String(row[0] || "").trim().toUpperCase();
-      if (!SUPPORTED_SHIFT_CODES.has(code) || NON_WORKING_SHIFT_CODES.has(code)) return;
+      if (!code || isRosterHeader(row) || NON_WORKING_SHIFT_CODES.has(code)) return;
       const window = parseShiftWindow(row.slice(1).join(","));
       if (window.start_time || window.end_time) shiftMap[code] = window;
     });
@@ -668,12 +667,30 @@
             skipped += 1;
             return;
           }
-          if (!SUPPORTED_SHIFT_CODES.has(shiftCode)) {
-            errors.push({ row: rowIndex + 1, message: `Unsupported shift code ${shiftCode} for ${fullName} on ${column.date}` });
+          if (NON_WORKING_SHIFT_CODES.has(shiftCode)) {
+            output.push({
+              schedule_id: "",
+              schedule_month: monthFromDate(column.date),
+              schedule_date: column.date,
+              staff_id: "",
+              login_id: "",
+              full_name: fullName,
+              team: "",
+              shift_code: shiftCode,
+              start_time: "",
+              end_time: "",
+              status: shiftCode,
+              uploaded_by: session.loginId || session.staffId || "Admin",
+              uploaded_at: new Date().toISOString(),
+              notes: "Roster matrix import"
+            });
             return;
           }
-          const status = NON_WORKING_SHIFT_CODES.has(shiftCode) ? shiftCode : "WORKING";
-          const window = status === "WORKING" ? (shiftMap[shiftCode] || {}) : {};
+          const window = shiftMap[shiftCode];
+          if (!window) {
+            errors.push({ row: rowIndex + 1, message: `Unknown shift code: ${shiftCode} for ${fullName} on ${column.date}` });
+            return;
+          }
           output.push({
             schedule_id: "",
             schedule_month: monthFromDate(column.date),
@@ -685,7 +702,7 @@
             shift_code: shiftCode,
             start_time: window.start_time || "",
             end_time: window.end_time || "",
-            status,
+            status: "WORKING",
             uploaded_by: session.loginId || session.staffId || "Admin",
             uploaded_at: new Date().toISOString(),
             notes: "Roster matrix import"

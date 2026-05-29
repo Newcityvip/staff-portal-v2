@@ -18,6 +18,29 @@
   const empty = (message, span = 8) => `<tr><td colspan="${span}" class="empty-state">${message}</td></tr>`;
   const badge = (text, tone = "") => `<span class="badge ${tone}">${text || "--"}</span>`;
   const previewLimit = 5;
+  const formatShiftTime12h = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "--";
+    const timePart = raw.includes("T") ? raw.split("T").pop() : raw;
+    const match = timePart.match(/\b(\d{1,2})(?::(\d{1,2}))(?::\d{1,2})?\s*(AM|PM)?\b/i);
+    if (!match) {
+      const parsed = /GMT|T|:\d{2}/i.test(raw) ? new Date(raw) : null;
+      if (parsed && !Number.isNaN(parsed.getTime())) {
+        const hour = parsed.getHours();
+        const suffix = hour >= 12 ? "PM" : "AM";
+        return `${hour % 12 || 12}:${String(parsed.getMinutes()).padStart(2, "0")} ${suffix}`;
+      }
+      return raw;
+    }
+    let hour = Number(match[1]);
+    const minute = Number(match[2] || 0);
+    const meridiem = String(match[3] || "").toUpperCase();
+    if (meridiem === "PM" && hour < 12) hour += 12;
+    if (meridiem === "AM" && hour === 12) hour = 0;
+    const suffix = hour >= 12 ? "PM" : "AM";
+    const hour12 = hour % 12 || 12;
+    return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
+  };
 
   const normalizeDashboard = (data) => {
     const root = data.data || data.dashboard || data;
@@ -212,8 +235,8 @@
       { label: "Team", keys: ["team", "department"] },
       { label: "Date", keys: ["schedule_date", "day", "date"] },
       { label: "Shift", keys: ["shift_code", "shift", "shiftName", "name"] },
-      { label: "Start", render: (row) => Portal.formatTime(Portal.pick(row, ["start_time", "start", "startTime"], "")) },
-      { label: "End", render: (row) => Portal.formatTime(Portal.pick(row, ["end_time", "end", "endTime"], "")) },
+      { label: "Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["start_time", "start", "startTime"], "")) },
+      { label: "End", render: (row) => formatShiftTime12h(Portal.pick(row, ["end_time", "end", "endTime"], "")) },
       { label: "Status", render: (row) => badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], ""))) }
     ]));
     host.innerHTML = sorted.slice(0, previewLimit).map((row) => `
@@ -221,8 +244,8 @@
         <td>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</td>
         <td>${Portal.pick(row, ["schedule_date", "day", "date"], "--")}</td>
         <td>${Portal.pick(row, ["shift_code", "shift", "shiftName", "name"], "--")}</td>
-        <td>${Portal.formatTime(Portal.pick(row, ["start_time", "start", "startTime"], ""))}</td>
-        <td>${Portal.formatTime(Portal.pick(row, ["end_time", "end", "endTime"], ""))}</td>
+        <td>${formatShiftTime12h(Portal.pick(row, ["start_time", "start", "startTime"], ""))}</td>
+        <td>${formatShiftTime12h(Portal.pick(row, ["end_time", "end", "endTime"], ""))}</td>
         <td>${badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], "")))}</td>
       </tr>`).join("");
   };
@@ -563,12 +586,12 @@
   const monthFromDate = (dateKey) => String(dateKey || "").slice(0, 7);
 
   const normalizeCsvTime = (value) => {
-    const raw = String(value || "").trim().replace(/\s+/g, " ");
+    const raw = String(value || "").trim().replace(/\s+/g, " ").replace(/(\d)(AM|PM)$/i, "$1 $2");
     if (!raw) return "";
-    const match = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+    const match = raw.match(/^(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?\s*(AM|PM)?$/i);
     if (!match) return raw;
     let hour = Number(match[1]);
-    const minute = String(match[2]).padStart(2, "0");
+    const minute = String(match[2] || "00").padStart(2, "0");
     const second = String(match[3] || "00").padStart(2, "0");
     const meridiem = String(match[4] || "").toUpperCase();
     if (meridiem === "PM" && hour < 12) hour += 12;
@@ -578,7 +601,7 @@
 
   const parseShiftWindow = (value) => {
     const text = String(value || "").replace(/[\u2013\u2014]/g, "-").replace(/(\d)(AM|PM)/gi, "$1 $2");
-    const parts = text.split("-").map((item) => item.trim()).filter(Boolean);
+    const parts = text.split(/\s*-\s*/).map((item) => item.trim()).filter(Boolean);
     return { start_time: normalizeCsvTime(parts[0]), end_time: normalizeCsvTime(parts[1]) };
   };
 

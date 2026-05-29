@@ -37,7 +37,30 @@
     return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2));
   };
   const dateKey = (value) => String(value || "").slice(0, 10);
-  const noScheduleMessage = "No schedule found for today. Please contact admin.";
+  const noScheduleMessage = "No schedule found for this day. Please contact admin.";
+  const formatShiftTime12h = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return "--";
+    const timePart = raw.includes("T") ? raw.split("T").pop() : raw;
+    const match = timePart.match(/\b(\d{1,2})(?::(\d{1,2}))(?::\d{1,2})?\s*(AM|PM)?\b/i);
+    if (!match) {
+      const parsed = /GMT|T|:\d{2}/i.test(raw) ? new Date(raw) : null;
+      if (parsed && !Number.isNaN(parsed.getTime())) {
+        const hour = parsed.getHours();
+        const suffix = hour >= 12 ? "PM" : "AM";
+        return `${hour % 12 || 12}:${String(parsed.getMinutes()).padStart(2, "0")} ${suffix}`;
+      }
+      return raw;
+    }
+    let hour = Number(match[1]);
+    const minute = Number(match[2] || 0);
+    const meridiem = String(match[3] || "").toUpperCase();
+    if (meridiem === "PM" && hour < 12) hour += 12;
+    if (meridiem === "AM" && hour === 12) hour = 0;
+    const suffix = hour >= 12 ? "PM" : "AM";
+    const hour12 = hour % 12 || 12;
+    return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
+  };
   const nonWorkingMessage = (value) => `Today is your ${String(value || "OFF").toUpperCase()} day.`;
   const isNonWorkingSchedule = (schedule) => {
     const shift = String(Portal.pick(schedule, ["shift_code"], "")).toUpperCase();
@@ -192,7 +215,7 @@
     Portal.setText("shiftName", Portal.pick(shift, ["name", "shift", "title"], "Assigned shift"));
     const start = Portal.pick(shift, ["start", "startTime", "shiftStart"], Portal.pick(today, ["shiftStart"], ""));
     const end = Portal.pick(shift, ["end", "endTime", "shiftEnd"], Portal.pick(today, ["shiftEnd"], ""));
-    Portal.setText("shiftWindow", `${Portal.formatTime(start)} - ${Portal.formatTime(end)}`);
+    Portal.setText("shiftWindow", `${formatShiftTime12h(start)} - ${formatShiftTime12h(end)}`);
     document.getElementById("shiftProgress").style.width = `${shiftProgress(shift)}%`;
     Portal.setText("lateWarning", Portal.pick(today, ["actionBlockMessage"], "") || Portal.pick(today, ["lateWarning", "lateMessage"], Portal.pick(today, ["isLate"], false) ? "Late warning active" : "On-time status monitored"));
 
@@ -358,8 +381,8 @@
       <tr>
         <td>${Portal.formatDate(Portal.pick(row, ["date", "schedule_date"], ""))}</td>
         <td>${Portal.pick(row, ["shift_code", "shift"], "--")}</td>
-        <td>${Portal.formatTime(Portal.pick(row, ["start_time", "start"], ""))}</td>
-        <td>${Portal.formatTime(Portal.pick(row, ["end_time", "end"], ""))}</td>
+        <td>${formatShiftTime12h(Portal.pick(row, ["start_time", "start"], ""))}</td>
+        <td>${formatShiftTime12h(Portal.pick(row, ["end_time", "end"], ""))}</td>
         <td>${badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], "")))}</td>
       </tr>`).join("");
   };

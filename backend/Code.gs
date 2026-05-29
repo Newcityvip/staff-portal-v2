@@ -290,9 +290,24 @@ function normalizeDateKey(v) {
   return s.substring(0, 10);
 }
 
+function getTeamTimezone(team) {
+  const value = safeUpper(team);
+  if (value === "CSP") return "Asia/Manila";
+  if (value === "AFFILIATE") return "Asia/Colombo";
+  return "Asia/Colombo";
+}
+
+function todayDateForTimezone(timezone) {
+  return Utilities.formatDate(new Date(), timezone || TZ, "yyyy-MM-dd");
+}
+
+function nowTimeForTimezone(timezone) {
+  return Utilities.formatDate(new Date(), timezone || TZ, "HH:mm:ss");
+}
+
 function normalizeSheetTime(v) {
   if (Object.prototype.toString.call(v) === "[object Date]") return Utilities.formatDate(v, TZ, "HH:mm:ss");
-  const s = clean(v);
+  const s = clean(v).replace(/\s+/g, " ").replace(/(\d)(AM|PM)$/i, "$1 $2");
   if (!s) return "";
   if (s.indexOf("T") > -1 || s.indexOf("GMT") > -1) {
     const d = new Date(s);
@@ -311,6 +326,18 @@ function normalizeSheetTime(v) {
   const parts = s.split(":");
   if (parts.length >= 2) return pad2(Number(parts[0] || 0)) + ":" + pad2(Number(parts[1] || 0)) + ":" + pad2(Number(parts[2] || 0));
   return s;
+}
+
+function parseScheduleTimeRange(value) {
+  const text = clean(value).replace(/[\u2013\u2014]/g, "-");
+  if (!text || text.indexOf("-") === -1) return { start_time: "", end_time: "" };
+  const parts = text.split(/\s*-\s*/).map(function (part) {
+    return clean(part);
+  }).filter(Boolean);
+  return {
+    start_time: normalizeSheetTime(parts[0] || ""),
+    end_time: normalizeSheetTime(parts[1] || "")
+  };
 }
 
 function formatShiftTime(v) {
@@ -587,11 +614,14 @@ function attendanceActionLocked(data) {
   const staff = getStaffByLogin(loginId);
   if (!staff.ok) return staff;
 
-  const today = clean(data.date || normalizeDateKey(new Date()));
-  const schedule = getScheduleForDate(staff.login_id, today);
+  const staffTimezone = getTeamTimezone(staff.team);
+  const requestedDate = clean(data.date || todayDateForTimezone(staffTimezone));
+  const resolved = resolveAttendanceSchedule(staff, eventType, requestedDate);
+  const today = resolved.date;
+  const schedule = resolved.schedule;
   if (!schedule.ok) {
     Logger.log("Attendance blocked: login_id=" + staff.login_id + ", team=" + staff.team + ", action=" + eventType + ", result=NO_SCHEDULE");
-    return { ok: false, code: "NO_SCHEDULE", message: "No schedule found for today. Please contact admin." };
+    return { ok: false, code: "NO_SCHEDULE", message: "No schedule found for this day. Please contact admin." };
   }
 
   const shiftCode = safeUpper(schedule.shift_code);
@@ -624,7 +654,7 @@ function attendanceActionLocked(data) {
   sh(SHEETS.EVENTS).appendRow([
     eventId,
     today,
-    nowTime(),
+    nowTimeForTimezone(staffTimezone),
     staff.staff_id,
     staff.login_id,
     staff.full_name,
@@ -660,6 +690,23 @@ function attendanceActionLocked(data) {
     state: getAttendanceState(staff.login_id, today),
     daily_score: daily_score
   };
+}
+
+function resolveAttendanceSchedule(staff, eventType, requestedDate) {
+  const dateKey = normalizeDateKey(requestedDate);
+  const schedule = getScheduleForDate(staff.login_id, dateKey);
+  if (schedule.ok) return { date: dateKey, schedule: schedule };
+
+  if (eventType === "CHECK_OUT" || eventType === "BREAK_START" || eventType === "BREAK_END") {
+    const previousDate = addDays(dateKey, -1);
+    const previousSchedule = getScheduleForDate(staff.login_id, previousDate);
+    if (previousSchedule.ok) {
+      const state = getAttendanceState(staff.login_id, previousDate);
+      if (state.hasCheckIn && !state.hasCheckOut) return { date: previousDate, schedule: previousSchedule };
+    }
+  }
+
+  return { date: dateKey, schedule: schedule };
 }
 
 function getAttendanceState(loginId, dateStr) {
@@ -712,7 +759,7 @@ function getStaffDashboard(data) {
   const staff = getStaffByLogin(loginId);
   if (!staff.ok) return staff;
 
-  const today = todayDate();
+  const today = todayDateForTimezone(getTeamTimezone(staff.team));
   const month = normalizeMonthKey(data.month) || monthNow();
   const performanceDetails = getPerformanceDetails(month, staff.team);
   const leaderboard = performanceDetails.map(function (row) {
@@ -1147,6 +1194,7 @@ function uploadScheduleCsv(data) {
       return;
     }
 
+    const range = parseScheduleTimeRange(row.time_range || row.shift_time || row.working_hours || "");
     const status = safeUpper(row.status || "WORKING");
     const isWorking = status === "WORKING";
     const scheduleMonth = clean(row.schedule_month) || scheduleDate.substring(0, 7);
@@ -1159,8 +1207,8 @@ function uploadScheduleCsv(data) {
       clean(row.full_name) || clean(staff.full_name),
       clean(row.team) || clean(staff.team),
       safeUpper(row.shift_code || "GENERAL"),
-      isWorking ? normalizeSheetTime(row.start_time || "09:00:00") : "",
-      isWorking ? normalizeSheetTime(row.end_time || "18:00:00") : "",
+      isWorking ? normalizeSheetTime(row.start_time || range.start_time || "09:00:00") : "",
+      isWorking ? normalizeSheetTime(row.end_time || range.end_time || "18:00:00") : "",
       status,
       adminLoginId,
       nowDateTime(),
@@ -1310,7 +1358,8 @@ function countLateStaff(dateStr, firstIn, teamFilter) {
     const inTime = firstIn[row.login_id];
     if (!inTime) return;
     const grace = 5;
-    if (parseTimeToMinutesSafe(inTime) - parseTimeToMinutesSafe(row.start_time) > grace) count++;
+    const scheduleWindow = getScheduleWindowMinutes(row);
+    if (alignEventMinutesToSchedule(inTime, scheduleWindow) - scheduleWindow.start_minutes > grace) count++;
   });
   return count;
 }
@@ -1572,6 +1621,7 @@ function normalizeScheduleImportRow(input) {
     shift_code: out.shift_code || out.shift || out.shift_name,
     start_time: out.start_time || out.start || out.shift_start,
     end_time: out.end_time || out.end || out.shift_end,
+    time_range: out.time_range || out.shift_time || out.working_hours || out.hours,
     status: out.status || out.day_status,
     uploaded_by: out.uploaded_by,
     uploaded_at: out.uploaded_at,
@@ -1784,7 +1834,9 @@ function calculateDailyAttendanceScore(staff, schedule, state, settings, dateStr
   }
 
   if (state.firstCheckIn) {
-    lateMinutes = Math.max(0, diffMinutes(schedule.start_time, state.firstCheckIn));
+    const scheduleWindow = getScheduleWindowMinutes(schedule);
+    const checkInMinutes = alignEventMinutesToSchedule(state.firstCheckIn, scheduleWindow);
+    lateMinutes = Math.max(0, checkInMinutes - scheduleWindow.start_minutes);
     const grace = safeNumber(settings.LATE_GRACE_MINUTES, 5);
     if (lateMinutes > grace) {
       const step = Math.max(1, safeNumber(settings.LATE_STEP_MINUTES, 5));
@@ -1794,7 +1846,9 @@ function calculateDailyAttendanceScore(staff, schedule, state, settings, dateStr
   }
 
   if (state.lastCheckOut) {
-    earlyCheckoutMinutes = Math.max(0, diffMinutes(state.lastCheckOut, schedule.end_time));
+    const scheduleWindow = getScheduleWindowMinutes(schedule);
+    const checkOutMinutes = alignEventMinutesToSchedule(state.lastCheckOut, scheduleWindow);
+    earlyCheckoutMinutes = Math.max(0, scheduleWindow.end_minutes - checkOutMinutes);
     if (earlyCheckoutMinutes > 0) {
       const step = Math.max(1, safeNumber(settings.EARLY_CHECKOUT_STEP_MINUTES, safeNumber(settings.LATE_STEP_MINUTES, 5)));
       penalty += Math.ceil(earlyCheckoutMinutes / step) * safeNumber(settings.EARLY_CHECKOUT_PENALTY_PER_STEP, 0.25);
@@ -1838,8 +1892,25 @@ function calculateDailyAttendanceScore(staff, schedule, state, settings, dateStr
   return result;
 }
 
+function getScheduleWindowMinutes(schedule) {
+  const startMinutes = parseTimeToMinutesSafe(schedule && schedule.start_time);
+  let endMinutes = parseTimeToMinutesSafe(schedule && schedule.end_time);
+  if (endMinutes <= startMinutes) endMinutes += 1440;
+  return {
+    start_minutes: startMinutes,
+    end_minutes: endMinutes,
+    overnight: endMinutes > 1440
+  };
+}
+
+function alignEventMinutesToSchedule(eventTime, scheduleWindow) {
+  let minutes = parseTimeToMinutesSafe(eventTime);
+  if (scheduleWindow && scheduleWindow.overnight && minutes < scheduleWindow.start_minutes) minutes += 1440;
+  return minutes;
+}
+
 function calculateBreakOveruse(loginId, dateStr, schedule, settings) {
-  const usage = getBreakUsage(loginId, dateStr);
+  const usage = getBreakUsage(loginId, dateStr, schedule);
   const rule = getShiftRule(schedule.shift_code);
   const limits = {
     BREAK: rule.ok ? safeNumber(rule.break_limit_min, 60) : 60,
@@ -1866,10 +1937,11 @@ function calculateBreakOveruse(loginId, dateStr, schedule, settings) {
   };
 }
 
-function getBreakUsage(loginId, dateStr) {
+function getBreakUsage(loginId, dateStr, schedule) {
   const values = getValues(SHEETS.EVENTS);
   const targetDate = normalizeDateKey(dateStr);
   const targetLogin = clean(loginId).toLowerCase();
+  const scheduleWindow = getScheduleWindowMinutes(schedule || {});
   const usage = {
     BREAK: { minutes: 0, count: 0 },
     PRAYER_BREAK: { minutes: 0, count: 0 },
@@ -1886,7 +1958,7 @@ function getBreakUsage(loginId, dateStr) {
     const breakType = safeUpper(row[7]);
     if (!usage[breakType]) continue;
 
-    const eventMinutes = parseTimeToMinutesSafe(row[2]);
+    const eventMinutes = alignEventMinutesToSchedule(row[2], scheduleWindow);
     if (eventType === "BREAK_START") {
       usage[breakType].count++;
       activeStarts[breakType] = eventMinutes;
@@ -1898,7 +1970,7 @@ function getBreakUsage(loginId, dateStr) {
   }
 
   Object.keys(activeStarts).forEach(function (breakType) {
-    usage[breakType].minutes += Math.max(0, parseTimeToMinutesSafe(nowTime()) - activeStarts[breakType]);
+    usage[breakType].minutes += Math.max(0, alignEventMinutesToSchedule(nowTimeForTimezone(getTeamTimezone(schedule && schedule.team)), scheduleWindow) - activeStarts[breakType]);
   });
 
   return usage;

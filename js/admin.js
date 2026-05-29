@@ -601,9 +601,19 @@
 
   const scheduleTimeString = (value) => normalizeCsvTime(value);
 
+  const cleanShiftRangeText = (value) => String(value || "")
+    .replace(/,+$/g, "")
+    .replace(/,+/g, ",")
+    .replace(/\s+/g, " ")
+    .trim();
+
   const parseShiftWindow = (value) => {
-    const text = String(value || "").replace(/[\u2013\u2014]/g, "-").replace(/(\d)(AM|PM)/gi, "$1 $2");
-    const parts = text.split(/\s*-\s*/).map((item) => item.trim()).filter(Boolean);
+    const text = cleanShiftRangeText(value).replace(/[\u2013\u2014]/g, "-").replace(/(\d)(AM|PM)/gi, "$1 $2");
+    const match = text.match(/(\d{1,2}(?::\d{2})?\s*(?:AM|PM)?)\s*-\s*(\d{1,2}(?::\d{2})?\s*(?:AM|PM)?)/i);
+    if (match) {
+      return { start_time: normalizeCsvTime(match[1]), end_time: normalizeCsvTime(match[2]) };
+    }
+    const parts = text.split(/\s*-\s*/).map((item) => cleanShiftRangeText(item)).filter(Boolean);
     return { start_time: normalizeCsvTime(parts[0]), end_time: normalizeCsvTime(parts[1]) };
   };
 
@@ -648,6 +658,11 @@
         };
       }
     });
+    console.table(Object.entries(shiftMap).map(([code, value]) => ({
+      code,
+      start_time: value.start_time,
+      end_time: value.end_time
+    })));
 
     const output = [];
 

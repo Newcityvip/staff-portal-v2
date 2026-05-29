@@ -37,6 +37,18 @@
     return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2));
   };
   const dateKey = (value) => String(value || "").slice(0, 10);
+  const noScheduleMessage = "No schedule found for today. Please contact admin.";
+  const nonWorkingMessage = (value) => `Today is your ${String(value || "OFF").toUpperCase()} day.`;
+  const isNonWorkingSchedule = (schedule) => {
+    const shift = String(Portal.pick(schedule, ["shift_code"], "")).toUpperCase();
+    const status = String(Portal.pick(schedule, ["status"], "")).toUpperCase();
+    return ["OFF", "AL", "UL", "SL", "HOLIDAY"].includes(shift) || ["OFF", "AL", "UL", "SL", "HOLIDAY"].includes(status);
+  };
+  const nonWorkingValue = (schedule) => {
+    const shift = String(Portal.pick(schedule, ["shift_code"], "")).toUpperCase();
+    const status = String(Portal.pick(schedule, ["status"], "")).toUpperCase();
+    return ["OFF", "AL", "UL", "SL", "HOLIDAY"].includes(shift) ? shift : status || "OFF";
+  };
 
   const normalizeDashboard = (data) => {
     const root = data.data || data.dashboard || data;
@@ -58,6 +70,9 @@
     const ownLeader = leaderboard.find((row) => String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase() === loginKey);
     const todayKey = new Date().toISOString().slice(0, 10);
     const todayEvents = attendanceEvents.filter((row) => dateKey(Portal.pick(row, ["event_date", "date", "created_at"], "")) === todayKey);
+    const hasSchedule = schedule && schedule.ok !== false && Boolean(Portal.pick(schedule, ["schedule_date", "shift_code", "status", "start_time", "end_time"], ""));
+    const nonWorking = hasSchedule && isNonWorkingSchedule(schedule);
+    const actionBlockMessage = !hasSchedule ? noScheduleMessage : nonWorking ? nonWorkingMessage(nonWorkingValue(schedule)) : "";
     const dailyAverage = averageScore(dailyScores, ["final_attendance_score", "attendanceScore", "score"]);
     const monthlyAttendanceScore = Portal.pick(root, ["monthly_attendance_score", "attendance_score"], dailyAverage === "--" ? 0 : dailyAverage);
     const kpiScore = Portal.pick(root, ["kpi_score"], Portal.pick(kpi, ["kpi_score_out_of_5", "kpiScore", "score"], 0));
@@ -71,7 +86,9 @@
         ...attendance,
         status: attendance.hasCheckOut ? "Checked out" : attendance.hasCheckIn ? "Checked in" : "Not checked in",
         breakStatus: attendance.activeBreak ? attendance.activeBreak.replaceAll("_", " ") : "Not on break",
-        ipAllowed: true
+        ipAllowed: true,
+        actionBlocked: Boolean(actionBlockMessage),
+        actionBlockMessage
       },
       shift: {
         ...schedule,
@@ -177,7 +194,7 @@
     const end = Portal.pick(shift, ["end", "endTime", "shiftEnd"], Portal.pick(today, ["shiftEnd"], ""));
     Portal.setText("shiftWindow", `${Portal.formatTime(start)} - ${Portal.formatTime(end)}`);
     document.getElementById("shiftProgress").style.width = `${shiftProgress(shift)}%`;
-    Portal.setText("lateWarning", Portal.pick(today, ["lateWarning", "lateMessage"], Portal.pick(today, ["isLate"], false) ? "Late warning active" : "On-time status monitored"));
+    Portal.setText("lateWarning", Portal.pick(today, ["actionBlockMessage"], "") || Portal.pick(today, ["lateWarning", "lateMessage"], Portal.pick(today, ["isLate"], false) ? "Late warning active" : "On-time status monitored"));
 
     const attendanceStatus = Portal.pick(today, ["status", "attendanceStatus", "state"], "Not checked in");
     const breakStatus = Portal.pick(today, ["breakStatus", "currentBreakStatus"], "Not on break");
@@ -356,6 +373,8 @@
   };
 
   const updateActionStates = (today) => {
+    const blocked = Boolean(today.actionBlocked);
+    const blockMessage = Portal.pick(today, ["actionBlockMessage"], noScheduleMessage);
     const checkedIn = today.hasCheckIn === true;
     const checkedOut = today.hasCheckOut === true;
     const activeBreak = Portal.pick(today, ["activeBreak"], "");
@@ -365,16 +384,16 @@
     const selectedCount = Number(counts[selectedBreak] || 0);
     const selectedRule = BREAK_RULES[selectedBreak] || BREAK_RULES.BREAK;
     const selectedLimitReached = selectedCount >= selectedRule.limit;
-    Portal.setText("checkInState", checkedIn ? "Completed" : "Ready");
-    Portal.setText("checkOutState", checkedOut ? "Completed" : checkedIn ? "Ready" : "Pending");
-    Portal.setText("breakStartState", onBreak ? "Running" : selectedLimitReached ? "Limit reached" : checkedIn ? "Available" : "Check in first");
-    Portal.setText("breakEndState", onBreak ? "Ready" : "Inactive");
+    Portal.setText("checkInState", blocked ? blockMessage : checkedIn ? "Completed" : "Ready");
+    Portal.setText("checkOutState", blocked ? "Blocked" : checkedOut ? "Completed" : checkedIn ? "Ready" : "Pending");
+    Portal.setText("breakStartState", blocked ? "Blocked" : onBreak ? "Running" : selectedLimitReached ? "Limit reached" : checkedIn ? "Available" : "Check in first");
+    Portal.setText("breakEndState", blocked ? "Blocked" : onBreak ? "Ready" : "Inactive");
     Portal.setText("breakLimitHint", `${selectedRule.label}: ${selectedCount}/${selectedRule.limit} used, ${selectedRule.minutes} min limit`);
     breakStartedAt = Portal.pick(today, ["breakStartedAt", "breakStart", "currentBreakStart"], breakStartedAt);
-    document.querySelector('[data-action="checkIn"]').disabled = checkedIn;
-    document.querySelector('[data-action="checkOut"]').disabled = !checkedIn || checkedOut;
-    document.querySelector('[data-action="breakStart"]').disabled = !checkedIn || onBreak || checkedOut || selectedLimitReached;
-    document.querySelector('[data-action="breakEnd"]').disabled = !onBreak;
+    document.querySelector('[data-action="checkIn"]').disabled = blocked || checkedIn;
+    document.querySelector('[data-action="checkOut"]').disabled = blocked || !checkedIn || checkedOut;
+    document.querySelector('[data-action="breakStart"]').disabled = blocked || !checkedIn || onBreak || checkedOut || selectedLimitReached;
+    document.querySelector('[data-action="breakEnd"]').disabled = blocked || !onBreak;
   };
 
   const tickBreak = () => {
@@ -414,6 +433,10 @@
     document.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", async () => {
         const action = button.dataset.action;
+        if (state.today?.actionBlocked) {
+          Portal.toast(state.today.actionBlockMessage || noScheduleMessage, "error");
+          return;
+        }
         const eventMap = {
           checkIn: { event_type: "CHECK_IN" },
           checkOut: { event_type: "CHECK_OUT" },
@@ -423,12 +446,13 @@
         button.disabled = true;
         try {
           const ip = await Portal.api.detectIp();
-          await Portal.api.action("attendance_action", {
+          const result = await Portal.api.action("attendance_action", {
             login_id: session.loginId || session.staffId,
             ip,
             user_agent: navigator.userAgent,
             ...(eventMap[action] || {})
           });
+          if (result?.ok === false) throw new Error(result.message || "Action failed");
           Portal.toast(`${button.firstChild.textContent.trim()} recorded`);
           await load(true);
         } catch (error) {

@@ -407,6 +407,40 @@ function adminLogin(data) {
   return { ok: false, message: "Invalid admin login" };
 }
 
+function getAdminByLogin(loginId) {
+  const values = getValues(SHEETS.ADMIN);
+  const target = clean(loginId).toLowerCase();
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    if (clean(row[2]).toLowerCase() === target || clean(row[6]).toLowerCase() === target || clean(row[0]).toLowerCase() === target) {
+      return {
+        ok: true,
+        admin_id: row[0],
+        admin_name: row[1],
+        login_id: row[2],
+        role: row[5],
+        email: row[6]
+      };
+    }
+  }
+  return { ok: false, role: "" };
+}
+
+function getAdminAccess(data) {
+  const loginId = clean(data.admin_login_id || data.login_id || data.admin_id);
+  const admin = getAdminByLogin(loginId);
+  const role = safeUpper(admin.role || data.admin_role || data.account_role || "");
+  const access = {
+    admin_login_id: loginId,
+    role: role || "SUPER_ADMIN",
+    allowed_team: role === "CSP_ADMIN" ? "CSP" : ""
+  };
+  if (access.allowed_team) {
+    Logger.log("CSP_ADMIN filtering: admin_login_id=" + access.admin_login_id + ", role=" + access.role + ", allowed_team=" + access.allowed_team);
+  }
+  return access;
+}
+
 function getStaffByLogin(loginId) {
   const values = getValues(SHEETS.STAFF);
   const target = clean(loginId).toLowerCase();
@@ -551,11 +585,14 @@ function attendanceActionLocked(data) {
 
   const today = clean(data.date || normalizeDateKey(new Date()));
   const schedule = getScheduleForDate(staff.login_id, today);
-  if (!schedule.ok) return { ok: false, message: "No schedule found for today" };
+  if (!schedule.ok) {
+    Logger.log("Attendance blocked: login_id=" + staff.login_id + ", team=" + staff.team + ", action=" + eventType + ", result=NO_SCHEDULE");
+    return { ok: false, code: "NO_SCHEDULE", message: "No schedule found for today. Please contact admin." };
+  }
 
   const shiftCode = safeUpper(schedule.shift_code);
   const scheduleStatus = safeUpper(schedule.status);
-  if (isNonWorkingDay(shiftCode, scheduleStatus)) return { ok: false, message: dayOffMessage(shiftCode, scheduleStatus) };
+  if (isNonWorkingDay(shiftCode, scheduleStatus)) return { ok: false, code: "NON_WORKING_DAY", message: dayOffMessage(shiftCode, scheduleStatus) };
   if (scheduleStatus !== "WORKING") return { ok: false, message: "Today is not a working day: " + scheduleStatus };
 
   const state = getAttendanceState(staff.login_id, today);
@@ -852,12 +889,55 @@ function isNonWorkingDay(shiftCode, status) {
 }
 
 function dayOffMessage(shiftCode, status) {
-  const value = safeUpper(shiftCode || status);
-  if (value === "OFF" || value === "HOLIDAY") return "Today is your OFF day";
-  if (value === "AL") return "Today is your approved leave";
-  if (value === "UL") return "Today is your unpaid leave";
-  if (value === "SL") return "Today is your sick leave";
+  const shift = safeUpper(shiftCode);
+  const state = safeUpper(status);
+  const value = ["OFF", "AL", "UL", "SL", "HOLIDAY"].indexOf(shift) !== -1 ? shift : state;
+  if (["OFF", "AL", "UL", "SL", "HOLIDAY"].indexOf(value) !== -1) return "Today is your " + value + " day.";
   return "Today is not a working day";
+}
+
+function buildStaffAccessIndex(staffRows) {
+  const index = { byLogin: {}, byStaffId: {}, byEmail: {}, byName: {} };
+  (staffRows || listStaffRows()).forEach(function (staff) {
+    const login = clean(staff.login_id).toLowerCase();
+    const staffId = clean(staff.staff_id).toLowerCase();
+    const email = clean(staff.email).toLowerCase();
+    const name = clean(staff.full_name).toLowerCase();
+    if (login) index.byLogin[login] = staff;
+    if (staffId) index.byStaffId[staffId] = staff;
+    if (email) index.byEmail[email] = staff;
+    if (name) index.byName[name] = staff;
+  });
+  return index;
+}
+
+function rowMatchesAllowedTeam(row, allowedTeam, staffIndex) {
+  const teamKey = clean(allowedTeam).toLowerCase();
+  if (!teamKey) return true;
+  if (clean(row.team || row.department).toLowerCase() === teamKey) return true;
+
+  const candidates = [
+    staffIndex.byLogin[clean(row.login_id).toLowerCase()],
+    staffIndex.byLogin[clean(row.admin_login_id).toLowerCase()],
+    staffIndex.byLogin[clean(row.updated_by).toLowerCase()],
+    staffIndex.byStaffId[clean(row.staff_id).toLowerCase()],
+    staffIndex.byStaffId[clean(row.actor_id).toLowerCase()],
+    staffIndex.byStaffId[clean(row.target_id).toLowerCase()],
+    staffIndex.byEmail[clean(row.email).toLowerCase()],
+    staffIndex.byName[clean(row.full_name).toLowerCase()],
+    staffIndex.byName[clean(row.actor_name).toLowerCase()]
+  ].filter(Boolean);
+
+  return candidates.some(function (staff) {
+    return clean(staff.team).toLowerCase() === teamKey;
+  });
+}
+
+function filterRowsForAdmin(rows, access, staffIndex) {
+  if (!access || !access.allowed_team) return rows;
+  return rows.filter(function (row) {
+    return rowMatchesAllowedTeam(row, access.allowed_team, staffIndex);
+  });
 }
 
 /***** ADMIN DASHBOARD + LIST ACTIONS *****/
@@ -867,24 +947,28 @@ function getAdminDashboardFull(data) {
   const ipError = requireAllowedIp(ip);
   if (ipError) return ipError;
 
+  const access = getAdminAccess(data);
   const month = normalizeMonthKey(data.month) || monthNow();
   const today = todayDate();
-  const staffList = listStaffRows();
+  const allStaff = listStaffRows();
+  const staffIndex = buildStaffAccessIndex(allStaff);
+  const staffList = filterRowsForAdmin(allStaff, access, staffIndex);
   let scheduleList = listScheduleRows(month, clean(data.date));
   if (!scheduleList.length && !clean(data.date)) {
     scheduleList = listScheduleRows("", "").filter(function (row) {
       return normalizeMonthKey(row.schedule_month) === month || normalizeDateKey(row.schedule_date) >= today;
     }).slice(0, 500);
   }
-  const attendanceEvents = listAttendanceRows(clean(data.date) || today, safeNumber(data.limit, 250));
-  const dailyScores = listDailyScoreRows(month, safeNumber(data.limit, 250));
-  const kpiList = listKpiRows(month);
-  const quarterScores = listQuarterScoreRows(safeNumber(data.limit, 250));
-  const auditLogs = listAuditRows(safeNumber(data.limit, 100));
-  const telegramLogs = listTelegramRows(safeNumber(data.limit, 100));
+  scheduleList = filterRowsForAdmin(scheduleList, access, staffIndex);
+  const attendanceEvents = filterRowsForAdmin(listAttendanceRows(clean(data.date) || today, safeNumber(data.limit, 250)), access, staffIndex);
+  const dailyScores = filterRowsForAdmin(listDailyScoreRows(month, safeNumber(data.limit, 250)), access, staffIndex);
+  const kpiList = filterRowsForAdmin(listKpiRows(month), access, staffIndex);
+  const quarterScores = filterRowsForAdmin(listQuarterScoreRows(safeNumber(data.limit, 250)), access, staffIndex);
+  const auditLogs = filterRowsForAdmin(listAuditRows(safeNumber(data.limit, 100)), access, staffIndex);
+  const telegramLogs = filterRowsForAdmin(listTelegramRows(safeNumber(data.limit, 100)), access, staffIndex);
   const ipAllowlist = listIpRows();
-  const summary = getTodaySummary(today);
-  const performanceDetails = getPerformanceDetails(month);
+  const summary = getTodaySummary(today, access.allowed_team);
+  const performanceDetails = getPerformanceDetails(month, access.allowed_team);
   const leaderboard = performanceDetails.map(function (row) {
     return {
       login_id: row.login_id,
@@ -928,31 +1012,41 @@ function getAdminDashboardFull(data) {
 function getStaffList(data) {
   const ipError = requireAllowedIp(clean(data.ip));
   if (ipError) return ipError;
-  return { ok: true, staff_list: listStaffRows() };
+  const access = getAdminAccess(data);
+  const staffRows = listStaffRows();
+  return { ok: true, staff_list: filterRowsForAdmin(staffRows, access, buildStaffAccessIndex(staffRows)) };
 }
 
 function getScheduleList(data) {
   const ipError = requireAllowedIp(clean(data.ip));
   if (ipError) return ipError;
-  return { ok: true, schedule_list: listScheduleRows(normalizeMonthKey(data.month), clean(data.date)) };
+  const access = getAdminAccess(data);
+  const staffIndex = buildStaffAccessIndex();
+  return { ok: true, schedule_list: filterRowsForAdmin(listScheduleRows(normalizeMonthKey(data.month), clean(data.date)), access, staffIndex) };
 }
 
 function getAttendanceLogs(data) {
   const ipError = requireAllowedIp(clean(data.ip));
   if (ipError) return ipError;
-  return { ok: true, attendance_events: listAttendanceRows(clean(data.date), safeNumber(data.limit, 250)) };
+  const access = getAdminAccess(data);
+  const staffIndex = buildStaffAccessIndex();
+  return { ok: true, attendance_events: filterRowsForAdmin(listAttendanceRows(clean(data.date), safeNumber(data.limit, 250)), access, staffIndex) };
 }
 
 function getAuditLogs(data) {
   const ipError = requireAllowedIp(clean(data.ip));
   if (ipError) return ipError;
-  return { ok: true, audit_logs: listAuditRows(safeNumber(data.limit, 100)) };
+  const access = getAdminAccess(data);
+  const staffIndex = buildStaffAccessIndex();
+  return { ok: true, audit_logs: filterRowsForAdmin(listAuditRows(safeNumber(data.limit, 100)), access, staffIndex) };
 }
 
 function getTelegramLogs(data) {
   const ipError = requireAllowedIp(clean(data.ip));
   if (ipError) return ipError;
-  return { ok: true, telegram_logs: listTelegramRows(safeNumber(data.limit, 100)) };
+  const access = getAdminAccess(data);
+  const staffIndex = buildStaffAccessIndex();
+  return { ok: true, telegram_logs: filterRowsForAdmin(listTelegramRows(safeNumber(data.limit, 100)), access, staffIndex) };
 }
 
 function getIpAllowlist(data) {
@@ -964,19 +1058,25 @@ function getIpAllowlist(data) {
 function getKpiList(data) {
   const ipError = requireAllowedIp(clean(data.ip));
   if (ipError) return ipError;
-  return { ok: true, kpi_list: listKpiRows(normalizeMonthKey(data.month)) };
+  const access = getAdminAccess(data);
+  const staffIndex = buildStaffAccessIndex();
+  return { ok: true, kpi_list: filterRowsForAdmin(listKpiRows(normalizeMonthKey(data.month)), access, staffIndex) };
 }
 
 function getQuarterScores(data) {
   const ipError = requireAllowedIp(clean(data.ip));
   if (ipError) return ipError;
-  return { ok: true, quarter_scores: listQuarterScoreRows(safeNumber(data.limit, 250)) };
+  const access = getAdminAccess(data);
+  const staffIndex = buildStaffAccessIndex();
+  return { ok: true, quarter_scores: filterRowsForAdmin(listQuarterScoreRows(safeNumber(data.limit, 250)), access, staffIndex) };
 }
 
 function getDailyScores(data) {
   const ipError = requireAllowedIp(clean(data.ip));
   if (ipError) return ipError;
-  return { ok: true, daily_scores: listDailyScoreRows(normalizeMonthKey(data.month), safeNumber(data.limit, 250)) };
+  const access = getAdminAccess(data);
+  const staffIndex = buildStaffAccessIndex();
+  return { ok: true, daily_scores: filterRowsForAdmin(listDailyScoreRows(normalizeMonthKey(data.month), safeNumber(data.limit, 250)), access, staffIndex) };
 }
 
 function uploadScheduleCsv(data) {
@@ -985,6 +1085,7 @@ function uploadScheduleCsv(data) {
   if (ipError) return ipError;
 
   const adminLoginId = clean(data.admin_login_id || data.login_id || "Admin");
+  const access = getAdminAccess({ admin_login_id: adminLoginId });
   const rows = Array.isArray(data.rows) ? data.rows : [];
   const skipped = safeNumber(data.skipped, 0);
   if (!rows.length) return { ok: false, message: "No schedule rows found in CSV", inserted: 0, updated: 0, failed: 0, skipped: skipped };
@@ -1025,6 +1126,11 @@ function uploadScheduleCsv(data) {
     if (!staff || !staff.login_id) {
       failed++;
       errors.push({ row: index + 2, message: "Staff not found: " + (row.full_name || row.login_id || "blank") });
+      return;
+    }
+    if (access.allowed_team && clean(staff.team).toLowerCase() !== clean(access.allowed_team).toLowerCase()) {
+      failed++;
+      errors.push({ row: index + 2, message: "Staff outside allowed team: " + clean(staff.full_name) });
       return;
     }
 
@@ -1140,10 +1246,12 @@ function getActiveStaffCount() {
   return listStaffRows().filter(function (row) { return safeUpper(row.status) === "ACTIVE"; }).length;
 }
 
-function getTodaySummary(dateStr) {
+function getTodaySummary(dateStr, teamFilter) {
   const schedule = getValues(SHEETS.SCHEDULE);
   const events = getValues(SHEETS.EVENTS);
   const targetDate = normalizeDateKey(dateStr);
+  const teamKey = clean(teamFilter).toLowerCase();
+  const staffIndex = buildStaffAccessIndex();
 
   let working = 0;
   let checkedIn = {};
@@ -1152,11 +1260,19 @@ function getTodaySummary(dateStr) {
   let firstIn = {};
 
   for (let i = 1; i < schedule.length; i++) {
-    if (normalizeDateKey(schedule[i][2]) === targetDate && safeUpper(schedule[i][10]) === "WORKING") working++;
+    if (normalizeDateKey(schedule[i][2]) !== targetDate || safeUpper(schedule[i][10]) !== "WORKING") continue;
+    const scheduleRow = mapScheduleRow(schedule[i]);
+    if (teamKey && !rowMatchesAllowedTeam(scheduleRow, teamKey, staffIndex)) continue;
+    working++;
   }
 
   for (let i = 1; i < events.length; i++) {
     if (normalizeDateKey(events[i][1]) !== targetDate) continue;
+    if (teamKey && !rowMatchesAllowedTeam({
+      staff_id: events[i][3],
+      login_id: events[i][4],
+      full_name: events[i][5]
+    }, teamKey, staffIndex)) continue;
     const loginId = clean(events[i][4]);
     const eventType = safeUpper(events[i][6]);
     const breakType = safeUpper(events[i][7]);
@@ -1175,13 +1291,14 @@ function getTodaySummary(dateStr) {
     checked_out: Object.keys(checkedOut).length,
     currently_working: Object.keys(checkedIn).length - Object.keys(checkedOut).length,
     on_break: Object.keys(activeBreak).length,
-    late_staff: countLateStaff(targetDate, firstIn),
+    late_staff: countLateStaff(targetDate, firstIn, teamFilter),
     not_checked_in: Math.max(working - Object.keys(checkedIn).length, 0)
   };
 }
 
-function countLateStaff(dateStr, firstIn) {
-  const schedules = listScheduleRows("", dateStr);
+function countLateStaff(dateStr, firstIn, teamFilter) {
+  const staffIndex = buildStaffAccessIndex();
+  const schedules = filterRowsForAdmin(listScheduleRows("", dateStr), { allowed_team: clean(teamFilter) }, staffIndex);
   let count = 0;
   schedules.forEach(function (row) {
     const inTime = firstIn[row.login_id];
@@ -1470,6 +1587,10 @@ function saveMonthlyKPI(data) {
 
   const staff = getStaffByLogin(staffLoginId);
   if (!staff.ok) return staff;
+  const access = getAdminAccess({ admin_login_id: adminLoginId });
+  if (access.allowed_team && clean(staff.team).toLowerCase() !== clean(access.allowed_team).toLowerCase()) {
+    return { ok: false, message: "This admin can only update CSP team KPI records" };
+  }
 
   const L = safeNumber(data.L_Leadership, 0);
   const E = safeNumber(data.E_Effectiveness, 0);

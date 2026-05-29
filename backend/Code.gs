@@ -1751,7 +1751,7 @@ function sendTelegramAttendance(staff, schedule, eventType, breakType, ip) {
   if (safeUpper(settings.TG_NOTIFY_ENABLED) !== "YES") return;
 
   const token = clean(settings.TG_BOT_TOKEN);
-  const chatId = clean(settings.TG_GROUP_CHAT_ID);
+  const chatId = getTelegramChatIdForStaff(settings, staff);
   if (!token || !chatId) return;
 
   const text =
@@ -1768,11 +1768,17 @@ function sendTelegramAttendance(staff, schedule, eventType, breakType, ip) {
   try {
     const url = "https://api.telegram.org/bot" + token + "/sendMessage";
     const res = UrlFetchApp.fetch(url, { method: "post", muteHttpExceptions: true, payload: { chat_id: chatId, text: text } });
-    sh(SHEETS.TG).appendRow([makeId("TG"), nowDateTime(), "ATTENDANCE", staff.staff_id, staff.login_id, staff.full_name, eventType, text, "SENT", res.getContentText(), ""]);
+    sh(SHEETS.TG).appendRow([makeId("TG"), nowDateTime(), "ATTENDANCE", staff.staff_id, staff.login_id, staff.full_name, eventType, text, "SENT", res.getContentText(), "chat_id=" + chatId]);
     clearSheetCache(SHEETS.TG);
   } catch (err) {
     logInternalError("sendTelegramAttendance", err);
-    sh(SHEETS.TG).appendRow([makeId("TG"), nowDateTime(), "ATTENDANCE", staff.staff_id, staff.login_id, staff.full_name, eventType, text, "FAILED", String(err), ""]);
+    sh(SHEETS.TG).appendRow([makeId("TG"), nowDateTime(), "ATTENDANCE", staff.staff_id, staff.login_id, staff.full_name, eventType, text, "FAILED", String(err), "chat_id=" + chatId]);
     clearSheetCache(SHEETS.TG);
   }
+}
+
+function getTelegramChatIdForStaff(settings, staff) {
+  const teamKey = safeUpper(staff && staff.team).replace(/[^A-Z0-9]/g, "_");
+  const teamChatId = clean(settings["TG_GROUP_CHAT_ID_" + teamKey]);
+  return teamChatId || clean(settings.TG_GROUP_CHAT_ID);
 }

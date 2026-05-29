@@ -278,11 +278,14 @@
       </div>`).join("");
   };
 
-  const renderLogs = (id, rows, columns) => {
+  const renderLogs = (id, rows, columns, options = {}) => {
     const host = document.getElementById(id);
     if (!host) return;
     if (!rows.length) return host.innerHTML = empty("No log records received.", columns.length);
-    host.innerHTML = rows.slice(0, 80).map((row) => `
+    if (options.modalTitle) {
+      ensureViewButton(id, "audit logs", () => openTableModal(options.modalTitle, rows, columns));
+    }
+    host.innerHTML = rows.slice(0, options.limit || 80).map((row) => `
       <tr>${columns.map((column) => `<td>${column.render ? column.render(row) : Portal.pick(row, column.keys, "--")}</td>`).join("")}</tr>`).join("");
   };
 
@@ -431,13 +434,14 @@
       { keys: ["message", "text", "event_type"] },
       { render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
     ]);
-    renderLogs("auditLogs", dashboard.auditLogs, [
-      { render: (row) => Portal.formatTime(Portal.pick(row, ["created_at", "time", "timestamp", "createdAt"], "")) },
-      { keys: ["actor_name", "user", "name", "email"] },
-      { keys: ["action", "event"] },
-      { keys: ["ip", "ipAddress"] },
-      { render: (row) => badge(Portal.pick(row, ["result", "status", "state"], "--"), statusTone(Portal.pick(row, ["result", "status", "state"], ""))) }
-    ]);
+    const auditColumns = [
+      { label: "Time", render: (row) => Portal.formatTime(Portal.pick(row, ["created_at", "time", "timestamp", "createdAt"], "")) },
+      { label: "User", keys: ["actor_name", "user", "name", "email"] },
+      { label: "Action", keys: ["action", "event"] },
+      { label: "IP", keys: ["ip", "ipAddress"] },
+      { label: "Result", render: (row) => badge(Portal.pick(row, ["result", "status", "state"], "--"), statusTone(Portal.pick(row, ["result", "status", "state"], ""))) }
+    ];
+    renderLogs("auditLogs", dashboard.auditLogs, auditColumns, { limit: 5, modalTitle: "Audit Logs" });
     renderIpAllowlist(dashboard.ipAllowlist);
     renderCharts();
   };

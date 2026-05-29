@@ -440,6 +440,12 @@
     });
   };
 
+  const applyDisplayOnlyLabels = () => {
+    const bioBreakOption = document.querySelector('#breakTypeSelect option[value="BIO_BREAK"]');
+    if (bioBreakOption) bioBreakOption.textContent = "Bio Break - 10 min, 3 times";
+  };
+
+  applyDisplayOnlyLabels();
   bindActions();
   const scheduleMonth = document.getElementById("scheduleMonth");
   if (scheduleMonth) {

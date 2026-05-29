@@ -729,6 +729,24 @@
     return { mode: "flat", rows: csvRowsToObjects(rows), errors: [], skipped: 0 };
   };
 
+  const validateRosterTimesBeforeUpload = (rows) => {
+    const expectedEndTimes = {
+      AM: "15:30:00",
+      AM1: "18:30:00",
+      PM1: "21:30:00",
+      PM: "23:30:00",
+      GY: "02:00:00"
+    };
+
+    rows.forEach((row) => {
+      if (row.status !== "WORKING") return;
+      const expected = expectedEndTimes[String(row.shift_code || "").toUpperCase()];
+      if (expected && row.end_time !== expected) {
+        throw new Error(`Roster time parse failed for ${row.shift_code}. Expected end_time ${expected}, got ${row.end_time || "blank"}.`);
+      }
+    });
+  };
+
   const exportTable = (name) => {
     const map = {
       attendance: dashboard.attendance,
@@ -780,12 +798,14 @@
       const parsed = parseScheduleCsv(csv);
       const rows = parsed.rows;
       if (!rows.length) throw new Error("No schedule rows found in CSV.");
-      console.table(rows.slice(0, 10).map((row) => ({
+      validateRosterTimesBeforeUpload(rows);
+      const frontendFirstRows = rows.slice(0, 10).map((row) => ({
         shift_code: row.shift_code,
         start_time: row.start_time,
         end_time: row.end_time,
         status: row.status
-      })));
+      }));
+      console.table(frontendFirstRows);
       const ip = await Portal.api.detectIp();
       const result = await callScheduleUpload({
         admin_login_id: session.loginId || session.staffId,
@@ -795,9 +815,13 @@
         upload_format: parsed.mode,
         parse_errors: parsed.errors,
         skipped: parsed.skipped || 0,
+        frontend_first_10_rows: frontendFirstRows,
         rows,
         schedules: rows
       });
+      console.table(result.frontend_first_10_rows || frontendFirstRows);
+      console.table(result.backend_first_10_received_rows || []);
+      console.table(result.backend_first_10_written_rows || result.written_debug_rows || []);
       const inserted = Number(Portal.pick(result, ["inserted"], 0));
       const updated = Number(Portal.pick(result, ["updated"], 0));
       const failed = Number(Portal.pick(result, ["failed"], 0)) + parsed.errors.length;

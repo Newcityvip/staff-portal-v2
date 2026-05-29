@@ -329,15 +329,8 @@ function normalizeSheetTime(v) {
 }
 
 function normalizeScheduleTimeForSheet(value) {
-  function prefixTextTime(text) {
-    if (!text) return "";
-    text = clean(text);
-    if (text.charAt(0) === "'") return text;
-    return "'" + text;
-  }
-
   if (Object.prototype.toString.call(value) === "[object Date]") {
-    return prefixTextTime(Utilities.formatDate(value, "GMT", "HH:mm:ss"));
+    return forcePlainTimeText(Utilities.formatDate(value, "GMT", "HH:mm:ss"));
   }
 
   const raw = clean(value).replace(/^'/, "").replace(/\s+/g, " ").replace(".", ":").replace(/(\d)(AM|PM)$/i, "$1 $2");
@@ -345,12 +338,12 @@ function normalizeScheduleTimeForSheet(value) {
 
   const strict = raw.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
   if (strict) {
-    return prefixTextTime(pad2(Number(strict[1])) + ":" + pad2(Number(strict[2])) + ":" + pad2(Number(strict[3])));
+    return forcePlainTimeText(pad2(Number(strict[1])) + ":" + pad2(Number(strict[2])) + ":" + pad2(Number(strict[3])));
   }
 
   const short = raw.match(/^(\d{1,2}):(\d{2})$/);
   if (short) {
-    return prefixTextTime(pad2(Number(short[1])) + ":" + pad2(Number(short[2])) + ":00");
+    return forcePlainTimeText(pad2(Number(short[1])) + ":" + pad2(Number(short[2])) + ":00");
   }
 
   const ampm = raw.match(/^(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?\s*(AM|PM)$/i);
@@ -361,10 +354,18 @@ function normalizeScheduleTimeForSheet(value) {
     const meridiem = ampm[4].toUpperCase();
     if (meridiem === "PM" && hour < 12) hour += 12;
     if (meridiem === "AM" && hour === 12) hour = 0;
-    return prefixTextTime(pad2(hour) + ":" + pad2(minute) + ":" + pad2(second));
+    return forcePlainTimeText(pad2(hour) + ":" + pad2(minute) + ":" + pad2(second));
   }
 
-  return prefixTextTime(normalizeSheetTime(raw));
+  return forcePlainTimeText(normalizeSheetTime(raw));
+}
+
+function forcePlainTimeText(v) {
+  if (!v) return "";
+  let s = String(v).trim().replace(/^'/, "");
+  const m = s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return s;
+  return "'" + String(m[1]).padStart(2, "0") + ":" + m[2] + ":" + (m[3] || "00");
 }
 
 function parseScheduleTimeRange(value) {
@@ -1192,6 +1193,7 @@ function uploadScheduleCsv(data) {
   });
 
   const sheet = sh(SHEETS.SCHEDULE);
+  sheet.getRange("I:J").setNumberFormat("@");
   sheet.getRange(2, 9, sheet.getMaxRows(), 2).setNumberFormat("@");
   const existing = sheet.getDataRange().getValues();
   const existingMap = {};
@@ -1205,11 +1207,22 @@ function uploadScheduleCsv(data) {
   const errors = [];
   const insertRecords = [];
   const updateRecords = [];
-  const writtenDebugRows = [];
+  const frontendDebugRows = Array.isArray(data.frontend_first_10_rows) ? data.frontend_first_10_rows.slice(0, 10) : [];
+  const backendReceivedDebugRows = [];
+  const backendWrittenDebugRows = [];
   const pendingInsertIndex = {};
 
   rows.forEach(function (raw, index) {
     const row = normalizeScheduleImportRow(raw);
+    if (backendReceivedDebugRows.length < 10) {
+      backendReceivedDebugRows.push({
+        shift_code: row.shift_code,
+        start_time: row.start_time,
+        end_time: row.end_time,
+        status: row.status
+      });
+    }
+
     if (!row.schedule_date) {
       failed++;
       errors.push({ row: index + 2, message: "Missing schedule_date" });
@@ -1256,8 +1269,11 @@ function uploadScheduleCsv(data) {
       clean(row.notes)
     ];
 
-    if (writtenDebugRows.length < 10) {
-      writtenDebugRows.push({
+    record[8] = forcePlainTimeText(record[8]);
+    record[9] = forcePlainTimeText(record[9]);
+
+    if (backendWrittenDebugRows.length < 10) {
+      backendWrittenDebugRows.push({
         shift_code: record[7],
         start_time: record[8],
         end_time: record[9],
@@ -1288,7 +1304,19 @@ function uploadScheduleCsv(data) {
 
   clearSheetCache(SHEETS.SCHEDULE);
   appendAudit("ADMIN", adminLoginId, adminLoginId, "UPLOAD_SCHEDULE_CSV", "SCHEDULE", "", "", JSON.stringify({ inserted, updated, failed, skipped }), ip, clean(data.fileName));
-  return { ok: true, message: "Schedule CSV processed", inserted: inserted, updated: updated, failed: failed, skipped: skipped, errors: errors, written_debug_rows: writtenDebugRows };
+  return {
+    ok: true,
+    message: "Schedule CSV processed",
+    inserted: inserted,
+    updated: updated,
+    failed: failed,
+    skipped: skipped,
+    errors: errors,
+    frontend_first_10_rows: frontendDebugRows,
+    backend_first_10_received_rows: backendReceivedDebugRows,
+    backend_first_10_written_rows: backendWrittenDebugRows,
+    written_debug_rows: backendWrittenDebugRows
+  };
 }
 
 function normalizePersonName(value) {

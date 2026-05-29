@@ -179,6 +179,10 @@ function normalizeMonthKey(v) {
   return s.substring(0, 7);
 }
 
+function normalizeMonth(v) {
+  return normalizeMonthKey(v);
+}
+
 function makeId(prefix) {
   return prefix + "-" + new Date().getTime() + "-" + Math.floor(Math.random() * 1000);
 }
@@ -739,15 +743,16 @@ function getStaffDashboard(data) {
   })[0] || {};
   const monthlyAttendanceScore = clean(ownPerformance.attendance_score) !== "" ? ownPerformance.attendance_score : 0;
   const kpiScore = clean(ownPerformance.kpi_score_out_of_5) !== "" ? ownPerformance.kpi_score_out_of_5 : 0;
-  const finalScore = clean(ownPerformance.final_score) !== "" ? ownPerformance.final_score : Number(((safeNumber(monthlyAttendanceScore, 0) * 0.4) + (safeNumber(kpiScore, 0) * 0.6)).toFixed(2));
+  const finalScore = clean(ownPerformance.final_score) !== "" ? ownPerformance.final_score : calculateFinalScore(monthlyAttendanceScore, kpiScore);
+  const quarterScoreValue = clean(ownPerformance.quarter_score) !== "" ? ownPerformance.quarter_score : 0;
   const fallbackQuarter = {
-    quarter: "Current",
+    quarter: getQuarterLabelForMonth(month),
     login_id: staff.login_id,
     full_name: staff.full_name,
     attendance_avg: monthlyAttendanceScore,
     kpi_avg: kpiScore,
-    final_score: finalScore,
-    final_grade: getGrade(finalScore),
+    final_score: quarterScoreValue,
+    final_grade: getGrade(quarterScoreValue),
     rank: ownPerformance.rank || "",
     calculated: true
   };
@@ -765,7 +770,7 @@ function getStaffDashboard(data) {
     daily_scores: dailyScores,
     quarter_scores: quarterScores,
     quarter_score: quarterScores[0] || fallbackQuarter,
-    quarter_score_value: quarterScores[0] ? safeNumber(quarterScores[0].final_score, 0) : finalScore,
+    quarter_score_value: quarterScoreValue,
     current_rank: ownPerformance.rank || "",
     rank: ownPerformance.rank || "",
     monthly_attendance_score: monthlyAttendanceScore,
@@ -803,6 +808,10 @@ function averageRows(rows, key) {
   return count ? Number((total / count).toFixed(2)) : "";
 }
 
+function buildPerformanceDetails(month, teamFilter) {
+  return getPerformanceDetails(month, teamFilter);
+}
+
 function getPerformanceDetails(month, teamFilter) {
   month = normalizeMonthKey(month) || monthNow();
   const teamKey = clean(teamFilter).toLowerCase();
@@ -812,10 +821,9 @@ function getPerformanceDetails(month, teamFilter) {
   });
   const dailyRows = listDailyScoreRows(month, 0);
   const kpiRows = listKpiRows(month);
-  const quarterRows = listQuarterScoreRows(0);
   const dailyMap = {};
   const kpiMap = {};
-  const quarterMap = {};
+  const quarterMonths = getQuarterMonthsForMonth(month);
 
   dailyRows.forEach(function (row) {
     const key = clean(row.login_id).toLowerCase();
@@ -829,20 +837,15 @@ function getPerformanceDetails(month, teamFilter) {
     if (key && !kpiMap[key]) kpiMap[key] = row;
   });
 
-  quarterRows.forEach(function (row) {
-    const key = clean(row.login_id).toLowerCase();
-    if (key && !quarterMap[key]) quarterMap[key] = row;
-  });
-
   const rows = activeStaff.map(function (staff) {
     const key = clean(staff.login_id).toLowerCase();
     const staffDaily = dailyMap[key] || [];
     const kpi = kpiMap[key] || null;
-    const quarter = quarterMap[key] || null;
-    const attendanceScore = staffDaily.length ? averageRows(staffDaily, "final_attendance_score") : 0;
+    const workingDailyRows = staffDaily.filter(isWorkingDailyScoreRow);
+    const attendanceScore = calculateMonthlyAttendanceScore(staff.login_id, month);
     const kpiScore = kpi ? safeNumber(kpi.kpi_score_out_of_5, 0) : 0;
-    const finalScore = Number(((safeNumber(attendanceScore, 0) * 0.4) + (kpiScore * 0.6)).toFixed(2));
-    const quarterScore = quarter ? safeNumber(quarter.final_score, 0) : 0;
+    const finalScore = calculateFinalScore(attendanceScore, kpiScore);
+    const quarterScore = calculateQuarterScoreValue(staff.login_id, quarterMonths);
 
     return {
       staff_id: staff.staff_id,
@@ -857,17 +860,20 @@ function getPerformanceDetails(month, teamFilter) {
       kpi_score: kpiScore,
       kpi_status: kpi ? "Scored" : "Not scored yet",
       quarter_score: quarterScore,
-      quarter: quarter ? quarter.quarter : "Current",
+      quarter: getQuarterLabelForMonth(month),
       final_score: finalScore,
       grade: getGrade(finalScore),
-      daily_score_count: staffDaily.length,
+      daily_score_count: workingDailyRows.length,
       has_kpi: Boolean(kpi),
-      has_quarter_score: Boolean(quarter)
+      has_quarter_score: quarterScore > 0
     };
   });
 
   rows.sort(function (a, b) {
-    return safeNumber(b.final_score, 0) - safeNumber(a.final_score, 0) || clean(a.full_name).localeCompare(clean(b.full_name));
+    return safeNumber(b.final_score, 0) - safeNumber(a.final_score, 0) ||
+      safeNumber(b.attendance_score, 0) - safeNumber(a.attendance_score, 0) ||
+      safeNumber(b.kpi_score, 0) - safeNumber(a.kpi_score, 0) ||
+      clean(a.full_name).localeCompare(clean(b.full_name));
   });
   rows.forEach(function (row, index) {
     row.rank = index + 1;
@@ -968,7 +974,7 @@ function getAdminDashboardFull(data) {
   const telegramLogs = filterRowsForAdmin(listTelegramRows(safeNumber(data.limit, 100)), access, staffIndex);
   const ipAllowlist = listIpRows();
   const summary = getTodaySummary(today, access.allowed_team);
-  const performanceDetails = getPerformanceDetails(month, access.allowed_team);
+  const performanceDetails = buildPerformanceDetails(month, access.allowed_team);
   const leaderboard = performanceDetails.map(function (row) {
     return {
       login_id: row.login_id,
@@ -1639,6 +1645,51 @@ function getOwnKPI(loginId, month) {
 
 /***** DAILY + QUARTER SCORE *****/
 
+function round2(value) {
+  return Number(safeNumber(value, 0).toFixed(2));
+}
+
+function clampScore(value) {
+  return Math.max(0, Math.min(5, round2(value)));
+}
+
+function isWorkingDailyScoreRow(row) {
+  if (!row) return false;
+  const status = safeUpper(row.status);
+  const workingStatuses = ["WORKING", "PRESENT", "LATE", "EARLY_CHECKOUT", "BREAK_OVERUSE", "MISSING_CHECK_IN", "MISSING_CHECK_OUT"];
+  return workingStatuses.indexOf(status) !== -1 && !isNonWorkingDay(row.shift_code, row.status);
+}
+
+function calculateMonthlyAttendanceScore(loginId, month) {
+  const targetLogin = clean(loginId).toLowerCase();
+  const targetMonth = normalizeMonthKey(month) || monthNow();
+  const rows = listDailyScoreRows(targetMonth, 0).filter(function (row) {
+    return clean(row.login_id).toLowerCase() === targetLogin && isWorkingDailyScoreRow(row);
+  });
+  let total = 0;
+  rows.forEach(function (row) {
+    total += clampScore(row.final_attendance_score);
+  });
+  const score = rows.length ? round2(total / rows.length) : 0;
+  Logger.log("Monthly score calculation: " + JSON.stringify({
+    login_id: clean(loginId),
+    month: targetMonth,
+    row_count: rows.length,
+    attendance_score: score
+  }));
+  return score;
+}
+
+function calculateFinalScore(attendanceScore, kpiScore) {
+  const score = round2((safeNumber(attendanceScore, 0) * 0.4) + (safeNumber(kpiScore, 0) * 0.6));
+  Logger.log("Final score calculation: " + JSON.stringify({
+    attendance_score: safeNumber(attendanceScore, 0),
+    kpi_score: safeNumber(kpiScore, 0),
+    final_score: score
+  }));
+  return score;
+}
+
 function calculateDailyScore(data) {
   try {
     const loginId = clean(data.login_id);
@@ -1650,35 +1701,12 @@ function calculateDailyScore(data) {
 
     const settings = getSettings();
     const state = getAttendanceState(staff.login_id, dateStr);
-    let base = safeNumber(settings.ATTENDANCE_BASE_SCORE, 5);
-    let penalty = 0;
-    let status = "PRESENT";
-
-    if (safeUpper(schedule.status) !== "WORKING") {
-      status = safeUpper(schedule.status);
-    } else {
-      if (!state.hasCheckIn) {
-        penalty += safeNumber(settings.MISSING_SIGNIN_PENALTY, 1);
-        status = "MISSING_CHECK_IN";
-      }
-      if (state.hasCheckIn && !state.hasCheckOut) {
-        penalty += safeNumber(settings.MISSING_SIGNOUT_PENALTY, 0.5);
-        status = "MISSING_CHECK_OUT";
-      }
-      const lateMin = state.firstCheckIn ? diffMinutes(schedule.start_time, state.firstCheckIn) : 0;
-      if (lateMin > safeNumber(settings.LATE_GRACE_MINUTES, 5)) {
-        const step = safeNumber(settings.LATE_STEP_MINUTES, 5);
-        penalty += Math.ceil((lateMin - safeNumber(settings.LATE_GRACE_MINUTES, 5)) / step) * safeNumber(settings.LATE_PENALTY_PER_STEP, 0.25);
-        status = "LATE";
-      }
-    }
-
-    const finalScore = Math.max(0, base - penalty);
+    const score = calculateDailyAttendanceScore(staff, schedule, state, settings, dateStr);
     const dailyRow = [
       makeId("DAS"), dateStr, clean(schedule.schedule_month), staff.staff_id, staff.login_id, staff.full_name,
       schedule.shift_code, schedule.start_time, schedule.end_time, state.firstCheckIn, state.lastCheckOut,
       "", "", "", "", "", state.hasCheckIn ? "NO" : "YES", state.hasCheckOut ? "NO" : "YES", "",
-      status, base, penalty, finalScore, nowDateTime(), ""
+      score.status, score.base_score, score.penalty, score.final_attendance_score, nowDateTime(), score.notes
     ];
     const sheet = sh(SHEETS.DAILY);
     const values = sheet.getDataRange().getValues();
@@ -1696,11 +1724,184 @@ function calculateDailyScore(data) {
       sheet.appendRow(dailyRow);
     }
     clearSheetCache(SHEETS.DAILY);
-    return { ok: true, message: existingRow ? "Daily score updated" : "Daily score calculated", final_attendance_score: finalScore, penalty: penalty, status: status };
+    return {
+      ok: true,
+      message: existingRow ? "Daily score updated" : "Daily score calculated",
+      final_attendance_score: score.final_attendance_score,
+      penalty: score.penalty,
+      status: score.status,
+      late_minutes: score.late_minutes,
+      early_checkout_minutes: score.early_checkout_minutes,
+      break_overuse_minutes: score.break_overuse_minutes
+    };
   } catch (err) {
     logInternalError("calculateDailyScore", err);
     return { ok: false, message: "Daily score calculation failed. Please try again." };
   }
+}
+
+function calculateDailyAttendanceScore(staff, schedule, state, settings, dateStr) {
+  settings = settings || getSettings();
+  const base = clampScore(safeNumber(settings.ATTENDANCE_BASE_SCORE, 5));
+  const shiftCode = safeUpper(schedule && schedule.shift_code);
+  const scheduleStatus = safeUpper(schedule && schedule.status);
+  let penalty = 0;
+  let status = "PRESENT";
+  let lateMinutes = 0;
+  let earlyCheckoutMinutes = 0;
+  let breakOveruseMinutes = 0;
+
+  if (isNonWorkingDay(shiftCode, scheduleStatus) || scheduleStatus !== "WORKING") {
+    status = isNonWorkingDay(shiftCode, scheduleStatus) ? (shiftCode || scheduleStatus) : scheduleStatus;
+    const nonWorkingResult = {
+      base_score: base,
+      penalty: 0,
+      final_attendance_score: base,
+      status: status,
+      late_minutes: 0,
+      early_checkout_minutes: 0,
+      break_overuse_minutes: 0,
+      notes: "Non-working day"
+    };
+    Logger.log("Daily score calculation: " + JSON.stringify({
+      login_id: staff && staff.login_id,
+      date: normalizeDateKey(dateStr),
+      shift_code: shiftCode,
+      schedule_status: scheduleStatus,
+      result: nonWorkingResult
+    }));
+    return nonWorkingResult;
+  }
+
+  if (!state.hasCheckIn) {
+    penalty += safeNumber(settings.MISSING_SIGNIN_PENALTY, 1);
+    status = "MISSING_CHECK_IN";
+  }
+
+  if (!state.hasCheckOut) {
+    penalty += safeNumber(settings.MISSING_SIGNOUT_PENALTY, 0.5);
+    if (status === "PRESENT") status = "MISSING_CHECK_OUT";
+  }
+
+  if (state.firstCheckIn) {
+    lateMinutes = Math.max(0, diffMinutes(schedule.start_time, state.firstCheckIn));
+    const grace = safeNumber(settings.LATE_GRACE_MINUTES, 5);
+    if (lateMinutes > grace) {
+      const step = Math.max(1, safeNumber(settings.LATE_STEP_MINUTES, 5));
+      penalty += Math.ceil((lateMinutes - grace) / step) * safeNumber(settings.LATE_PENALTY_PER_STEP, 0.25);
+      if (status === "PRESENT") status = "LATE";
+    }
+  }
+
+  if (state.lastCheckOut) {
+    earlyCheckoutMinutes = Math.max(0, diffMinutes(state.lastCheckOut, schedule.end_time));
+    if (earlyCheckoutMinutes > 0) {
+      const step = Math.max(1, safeNumber(settings.EARLY_CHECKOUT_STEP_MINUTES, safeNumber(settings.LATE_STEP_MINUTES, 5)));
+      penalty += Math.ceil(earlyCheckoutMinutes / step) * safeNumber(settings.EARLY_CHECKOUT_PENALTY_PER_STEP, 0.25);
+      if (status === "PRESENT") status = "EARLY_CHECKOUT";
+    }
+  }
+
+  const breakUsage = calculateBreakOveruse(staff.login_id, dateStr, schedule, settings);
+  breakOveruseMinutes = breakUsage.overuse_minutes;
+  if (breakOveruseMinutes > 0) {
+    penalty += breakUsage.penalty;
+    if (status === "PRESENT") status = "BREAK_OVERUSE";
+  }
+
+  const finalScore = clampScore(base - penalty);
+  const result = {
+    base_score: base,
+    penalty: round2(penalty),
+    final_attendance_score: finalScore,
+    status: status,
+    late_minutes: lateMinutes,
+    early_checkout_minutes: earlyCheckoutMinutes,
+    break_overuse_minutes: breakOveruseMinutes,
+    notes: JSON.stringify({
+      late_minutes: lateMinutes,
+      early_checkout_minutes: earlyCheckoutMinutes,
+      break_overuse_minutes: breakOveruseMinutes
+    })
+  };
+
+  Logger.log("Daily score calculation: " + JSON.stringify({
+    login_id: staff && staff.login_id,
+    date: normalizeDateKey(dateStr),
+    shift_code: shiftCode,
+    schedule_status: scheduleStatus,
+    has_check_in: state.hasCheckIn,
+    has_check_out: state.hasCheckOut,
+    result: result
+  }));
+
+  return result;
+}
+
+function calculateBreakOveruse(loginId, dateStr, schedule, settings) {
+  const usage = getBreakUsage(loginId, dateStr);
+  const rule = getShiftRule(schedule.shift_code);
+  const limits = {
+    BREAK: rule.ok ? safeNumber(rule.break_limit_min, 60) : 60,
+    PRAYER_BREAK: rule.ok ? safeNumber(rule.prayer_break_limit_min, 15) : 15,
+    BIO_BREAK: rule.ok ? safeNumber(rule.bio_break_limit_min, 11) : 11
+  };
+  const countLimits = {
+    BREAK: rule.ok ? safeNumber(rule.break_count_limit, 1) : 1,
+    PRAYER_BREAK: rule.ok ? safeNumber(rule.prayer_break_count_limit, 3) : 3,
+    BIO_BREAK: rule.ok ? safeNumber(rule.bio_break_count_limit, 3) : 3
+  };
+  const step = Math.max(1, safeNumber(settings.BREAK_OVERUSE_STEP_MINUTES, safeNumber(settings.LATE_STEP_MINUTES, 5)));
+  let overuseMinutes = 0;
+
+  Object.keys(limits).forEach(function (type) {
+    const item = usage[type] || { minutes: 0, count: 0 };
+    overuseMinutes += Math.max(0, item.minutes - limits[type]);
+    if (item.count > countLimits[type]) overuseMinutes += (item.count - countLimits[type]) * step;
+  });
+
+  return {
+    overuse_minutes: overuseMinutes,
+    penalty: overuseMinutes > 0 ? Math.ceil(overuseMinutes / step) * safeNumber(settings.BREAK_OVERUSE_PENALTY_PER_STEP, 0.25) : 0
+  };
+}
+
+function getBreakUsage(loginId, dateStr) {
+  const values = getValues(SHEETS.EVENTS);
+  const targetDate = normalizeDateKey(dateStr);
+  const targetLogin = clean(loginId).toLowerCase();
+  const usage = {
+    BREAK: { minutes: 0, count: 0 },
+    PRAYER_BREAK: { minutes: 0, count: 0 },
+    BIO_BREAK: { minutes: 0, count: 0 }
+  };
+  const activeStarts = {};
+
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    if (normalizeDateKey(row[1]) !== targetDate) continue;
+    if (clean(row[4]).toLowerCase() !== targetLogin) continue;
+
+    const eventType = safeUpper(row[6]);
+    const breakType = safeUpper(row[7]);
+    if (!usage[breakType]) continue;
+
+    const eventMinutes = parseTimeToMinutesSafe(row[2]);
+    if (eventType === "BREAK_START") {
+      usage[breakType].count++;
+      activeStarts[breakType] = eventMinutes;
+    }
+    if (eventType === "BREAK_END" && activeStarts[breakType] != null) {
+      usage[breakType].minutes += Math.max(0, eventMinutes - activeStarts[breakType]);
+      delete activeStarts[breakType];
+    }
+  }
+
+  Object.keys(activeStarts).forEach(function (breakType) {
+    usage[breakType].minutes += Math.max(0, parseTimeToMinutesSafe(nowTime()) - activeStarts[breakType]);
+  });
+
+  return usage;
 }
 
 function diffMinutes(startTime, endTime) {
@@ -1717,14 +1918,28 @@ function calculateQuarterScore(data) {
 
     for (let i = 1; i < staffValues.length; i++) {
       if (safeUpper(staffValues[i][6]) !== "ACTIVE") continue;
-      const staff = { staff_id: staffValues[i][0], full_name: staffValues[i][1], login_id: staffValues[i][2], team: staffValues[i][4] };
+      const staff = { staff_id: staffValues[i][0], full_name: staffValues[i][1], login_id: staffValues[i][2], team: staffValues[i][4], role: staffValues[i][5] };
+      if (isAdminStaff(staff)) continue;
       const attendanceAvg = averageAttendance(staff.login_id, months);
       const kpiAvg = averageKPI(staff.login_id, months);
-      const finalScore = Number(((attendanceAvg * 0.4) + (kpiAvg * 0.6)).toFixed(2));
+      const finalScore = calculateQuarterScoreValue(staff.login_id, months);
+      Logger.log("Quarter score calculation: " + JSON.stringify({
+        login_id: staff.login_id,
+        quarter: quarter + "-" + year,
+        months: months,
+        attendance_avg: attendanceAvg,
+        kpi_avg: kpiAvg,
+        final_score: finalScore
+      }));
       results.push({ staff: staff, attendance_avg: attendanceAvg, kpi_avg: kpiAvg, final_score: finalScore, final_grade: getGrade(finalScore) });
     }
 
-    results.sort(function (a, b) { return b.final_score - a.final_score; });
+    results.sort(function (a, b) {
+      return safeNumber(b.final_score, 0) - safeNumber(a.final_score, 0) ||
+        safeNumber(b.attendance_avg, 0) - safeNumber(a.attendance_avg, 0) ||
+        safeNumber(b.kpi_avg, 0) - safeNumber(a.kpi_avg, 0) ||
+        clean(a.staff.full_name).localeCompare(clean(b.staff.full_name));
+    });
     const sheet = sh(SHEETS.QUARTER);
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
@@ -1739,38 +1954,74 @@ function calculateQuarterScore(data) {
 }
 
 function getQuarterMonths(year, q) {
+  q = safeUpper(q);
   if (q === "Q1") return [(year - 1) + "-12", year + "-01", year + "-02"];
   if (q === "Q2") return [year + "-03", year + "-04", year + "-05"];
   if (q === "Q3") return [year + "-06", year + "-07", year + "-08"];
   return [year + "-09", year + "-10", year + "-11"];
 }
 
-function averageAttendance(loginId, months) {
-  const monthKeys = months.map(normalizeMonthKey);
-  const values = getValues(SHEETS.DAILY);
+function getQuarterMonthsForMonth(month) {
+  const key = normalizeMonthKey(month) || monthNow();
+  const year = safeNumber(key.substring(0, 4), new Date().getFullYear());
+  const monthNumber = safeNumber(key.substring(5, 7), 1);
+  if (monthNumber === 12) return getQuarterMonths(year + 1, "Q1");
+  if (monthNumber <= 2) return getQuarterMonths(year, "Q1");
+  if (monthNumber <= 5) return getQuarterMonths(year, "Q2");
+  if (monthNumber <= 8) return getQuarterMonths(year, "Q3");
+  return getQuarterMonths(year, "Q4");
+}
+
+function getQuarterLabelForMonth(month) {
+  const key = normalizeMonthKey(month) || monthNow();
+  const year = safeNumber(key.substring(0, 4), new Date().getFullYear());
+  const monthNumber = safeNumber(key.substring(5, 7), 1);
+  if (monthNumber === 12) return "Q1-" + (year + 1);
+  if (monthNumber <= 2) return "Q1-" + year;
+  if (monthNumber <= 5) return "Q2-" + year;
+  if (monthNumber <= 8) return "Q3-" + year;
+  return "Q4-" + year;
+}
+
+function calculateQuarterScoreValue(loginId, months) {
+  const monthKeys = (months || []).map(normalizeMonthKey).filter(Boolean);
+  if (!monthKeys.length) return 0;
+
   let total = 0;
-  let count = 0;
-  for (let i = 1; i < values.length; i++) {
-    if (clean(values[i][4]).toLowerCase() === clean(loginId).toLowerCase() && monthKeys.indexOf(normalizeMonthKey(values[i][2])) !== -1) {
-      total += safeNumber(values[i][22], 0);
-      count++;
-    }
-  }
-  return count ? Number((total / count).toFixed(2)) : 0;
+  monthKeys.forEach(function (month) {
+    const attendanceScore = calculateMonthlyAttendanceScore(loginId, month);
+    const kpi = getOwnKPI(loginId, month);
+    const kpiScore = kpi ? safeNumber(kpi.kpi_score_out_of_5, 0) : 0;
+    total += calculateFinalScore(attendanceScore, kpiScore);
+  });
+
+  const score = round2(total / monthKeys.length);
+  Logger.log("Quarter score calculation: " + JSON.stringify({
+    login_id: clean(loginId),
+    months: monthKeys,
+    quarter_score: score
+  }));
+  return score;
+}
+
+function averageAttendance(loginId, months) {
+  const monthKeys = months.map(normalizeMonthKey).filter(Boolean);
+  let total = 0;
+  monthKeys.forEach(function (month) {
+    total += calculateMonthlyAttendanceScore(loginId, month);
+  });
+  return monthKeys.length ? round2(total / monthKeys.length) : 0;
 }
 
 function averageKPI(loginId, months) {
-  const monthKeys = months.map(normalizeMonthKey);
-  const values = getValues(SHEETS.KPI);
+  const monthKeys = months.map(normalizeMonthKey).filter(Boolean);
+  const targetLogin = clean(loginId).toLowerCase();
   let total = 0;
-  let count = 0;
-  for (let i = 1; i < values.length; i++) {
-    if (clean(values[i][3]).toLowerCase() === clean(loginId).toLowerCase() && monthKeys.indexOf(normalizeMonthKey(values[i][1])) !== -1) {
-      total += safeNumber(values[i][14], 0);
-      count++;
-    }
-  }
-  return count ? Number((total / count).toFixed(2)) : 0;
+  monthKeys.forEach(function (month) {
+    const kpi = getOwnKPI(targetLogin, month);
+    total += kpi ? safeNumber(kpi.kpi_score_out_of_5, 0) : 0;
+  });
+  return monthKeys.length ? round2(total / monthKeys.length) : 0;
 }
 
 function getGrade(score) {

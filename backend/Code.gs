@@ -307,7 +307,7 @@ function nowTimeForTimezone(timezone) {
 
 function normalizeSheetTime(v) {
   if (Object.prototype.toString.call(v) === "[object Date]") return Utilities.formatDate(v, TZ, "HH:mm:ss");
-  const s = clean(v).replace(/\s+/g, " ").replace(/(\d)(AM|PM)$/i, "$1 $2");
+  const s = clean(v).replace(/^'/, "").replace(/\s+/g, " ").replace(/(\d)(AM|PM)$/i, "$1 $2");
   if (!s) return "";
   if (s.indexOf("T") > -1 || s.indexOf("GMT") > -1) {
     const d = new Date(s);
@@ -329,21 +329,28 @@ function normalizeSheetTime(v) {
 }
 
 function normalizeScheduleTimeForSheet(value) {
-  if (Object.prototype.toString.call(value) === "[object Date]") {
-    return Utilities.formatDate(value, "GMT", "HH:mm:ss");
+  function prefixTextTime(text) {
+    if (!text) return "";
+    text = clean(text);
+    if (text.charAt(0) === "'") return text;
+    return "'" + text;
   }
 
-  const raw = clean(value).replace(/\s+/g, " ").replace(".", ":").replace(/(\d)(AM|PM)$/i, "$1 $2");
+  if (Object.prototype.toString.call(value) === "[object Date]") {
+    return prefixTextTime(Utilities.formatDate(value, "GMT", "HH:mm:ss"));
+  }
+
+  const raw = clean(value).replace(/^'/, "").replace(/\s+/g, " ").replace(".", ":").replace(/(\d)(AM|PM)$/i, "$1 $2");
   if (!raw) return "";
 
   const strict = raw.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
   if (strict) {
-    return pad2(Number(strict[1])) + ":" + pad2(Number(strict[2])) + ":" + pad2(Number(strict[3]));
+    return prefixTextTime(pad2(Number(strict[1])) + ":" + pad2(Number(strict[2])) + ":" + pad2(Number(strict[3])));
   }
 
   const short = raw.match(/^(\d{1,2}):(\d{2})$/);
   if (short) {
-    return pad2(Number(short[1])) + ":" + pad2(Number(short[2])) + ":00";
+    return prefixTextTime(pad2(Number(short[1])) + ":" + pad2(Number(short[2])) + ":00");
   }
 
   const ampm = raw.match(/^(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?\s*(AM|PM)$/i);
@@ -354,10 +361,10 @@ function normalizeScheduleTimeForSheet(value) {
     const meridiem = ampm[4].toUpperCase();
     if (meridiem === "PM" && hour < 12) hour += 12;
     if (meridiem === "AM" && hour === 12) hour = 0;
-    return pad2(hour) + ":" + pad2(minute) + ":" + pad2(second);
+    return prefixTextTime(pad2(hour) + ":" + pad2(minute) + ":" + pad2(second));
   }
 
-  return normalizeSheetTime(raw);
+  return prefixTextTime(normalizeSheetTime(raw));
 }
 
 function parseScheduleTimeRange(value) {
@@ -1185,6 +1192,7 @@ function uploadScheduleCsv(data) {
   });
 
   const sheet = sh(SHEETS.SCHEDULE);
+  sheet.getRange(2, 9, sheet.getMaxRows(), 2).setNumberFormat("@");
   const existing = sheet.getDataRange().getValues();
   const existingMap = {};
   for (let i = 1; i < existing.length; i++) {
@@ -1197,6 +1205,7 @@ function uploadScheduleCsv(data) {
   const errors = [];
   const insertRecords = [];
   const updateRecords = [];
+  const writtenDebugRows = [];
   const pendingInsertIndex = {};
 
   rows.forEach(function (raw, index) {
@@ -1247,6 +1256,15 @@ function uploadScheduleCsv(data) {
       clean(row.notes)
     ];
 
+    if (writtenDebugRows.length < 10) {
+      writtenDebugRows.push({
+        shift_code: record[7],
+        start_time: record[8],
+        end_time: record[9],
+        status: record[10]
+      });
+    }
+
     const key = record[2] + "|" + clean(record[4]).toLowerCase();
     if (existingMap[key] && existingMap[key] > 0) {
       updateRecords.push({ rowIndex: existingMap[key], values: record });
@@ -1270,7 +1288,7 @@ function uploadScheduleCsv(data) {
 
   clearSheetCache(SHEETS.SCHEDULE);
   appendAudit("ADMIN", adminLoginId, adminLoginId, "UPLOAD_SCHEDULE_CSV", "SCHEDULE", "", "", JSON.stringify({ inserted, updated, failed, skipped }), ip, clean(data.fileName));
-  return { ok: true, message: "Schedule CSV processed", inserted: inserted, updated: updated, failed: failed, skipped: skipped, errors: errors };
+  return { ok: true, message: "Schedule CSV processed", inserted: inserted, updated: updated, failed: failed, skipped: skipped, errors: errors, written_debug_rows: writtenDebugRows };
 }
 
 function normalizePersonName(value) {

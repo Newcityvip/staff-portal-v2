@@ -589,13 +589,14 @@
     if (!raw) return "";
     const match = raw.match(/^(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?\s*(AM|PM)?$/i);
     if (!match) return raw;
-    let hour = Number(match[1]);
-    const minute = String(Number(match[2] || 0)).padStart(2, "0");
-    const second = String(Number(match[3] || 0)).padStart(2, "0");
+    const hourText = match[1].padStart(2, "0");
+    const minute = (match[2] || "00").padStart(2, "0");
+    const second = (match[3] || "00").padStart(2, "0");
     const meridiem = String(match[4] || "").toUpperCase();
-    if (meridiem === "PM" && hour < 12) hour += 12;
-    if (meridiem === "AM" && hour === 12) hour = 0;
-    return `${String(hour).padStart(2, "0")}:${minute}:${second}`;
+    const amMap = { "12": "00", "01": "01", "02": "02", "03": "03", "04": "04", "05": "05", "06": "06", "07": "07", "08": "08", "09": "09", "10": "10", "11": "11" };
+    const pmMap = { "12": "12", "01": "13", "02": "14", "03": "15", "04": "16", "05": "17", "06": "18", "07": "19", "08": "20", "09": "21", "10": "22", "11": "23" };
+    const hour = meridiem === "AM" ? (amMap[hourText] || hourText) : meridiem === "PM" ? (pmMap[hourText] || hourText) : hourText;
+    return `${hour}:${minute}:${second}`;
   };
 
   const scheduleTimeString = (value) => normalizeCsvTime(value);
@@ -636,7 +637,7 @@
     const errors = [];
     let skipped = 0;
     const shiftMap = {};
-    rows.forEach((row) => {
+    rows.slice(0, headerIndexes[0]).forEach((row) => {
       const code = String(row[0] || "").trim().toUpperCase();
       if (!code || isRosterHeader(row) || NON_WORKING_SHIFT_CODES.has(code)) return;
       const window = parseShiftWindow(row.slice(1).join(","));
@@ -782,7 +783,8 @@
       console.table(rows.slice(0, 10).map((row) => ({
         shift_code: row.shift_code,
         start_time: row.start_time,
-        end_time: row.end_time
+        end_time: row.end_time,
+        status: row.status
       })));
       const ip = await Portal.api.detectIp();
       const result = await callScheduleUpload({

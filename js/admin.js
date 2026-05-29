@@ -585,18 +585,20 @@
   const monthFromDate = (dateKey) => String(dateKey || "").slice(0, 7);
 
   const normalizeCsvTime = (value) => {
-    const raw = String(value || "").trim().replace(/\s+/g, " ").replace(/(\d)(AM|PM)$/i, "$1 $2");
+    const raw = String(value || "").trim().replace(/\s+/g, " ").replace(".", ":").replace(/(\d)(AM|PM)$/i, "$1 $2");
     if (!raw) return "";
     const match = raw.match(/^(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?\s*(AM|PM)?$/i);
     if (!match) return raw;
     let hour = Number(match[1]);
-    const minute = String(match[2] || "00").padStart(2, "0");
-    const second = String(match[3] || "00").padStart(2, "0");
+    const minute = String(Number(match[2] || 0)).padStart(2, "0");
+    const second = String(Number(match[3] || 0)).padStart(2, "0");
     const meridiem = String(match[4] || "").toUpperCase();
     if (meridiem === "PM" && hour < 12) hour += 12;
     if (meridiem === "AM" && hour === 12) hour = 0;
     return `${String(hour).padStart(2, "0")}:${minute}:${second}`;
   };
+
+  const scheduleTimeString = (value) => normalizeCsvTime(value);
 
   const parseShiftWindow = (value) => {
     const text = String(value || "").replace(/[\u2013\u2014]/g, "-").replace(/(\d)(AM|PM)/gi, "$1 $2");
@@ -638,7 +640,12 @@
       const code = String(row[0] || "").trim().toUpperCase();
       if (!code || isRosterHeader(row) || NON_WORKING_SHIFT_CODES.has(code)) return;
       const window = parseShiftWindow(row.slice(1).join(","));
-      if (window.start_time || window.end_time) shiftMap[code] = window;
+      if (window.start_time || window.end_time) {
+        shiftMap[code] = {
+          start_time: scheduleTimeString(window.start_time),
+          end_time: scheduleTimeString(window.end_time)
+        };
+      }
     });
 
     const output = [];
@@ -700,8 +707,8 @@
             full_name: fullName,
             team: "",
             shift_code: shiftCode,
-            start_time: window.start_time || "",
-            end_time: window.end_time || "",
+            start_time: scheduleTimeString(window.start_time),
+            end_time: scheduleTimeString(window.end_time),
             status: "WORKING",
             uploaded_by: session.loginId || session.staffId || "Admin",
             uploaded_at: new Date().toISOString(),
@@ -772,6 +779,11 @@
       const parsed = parseScheduleCsv(csv);
       const rows = parsed.rows;
       if (!rows.length) throw new Error("No schedule rows found in CSV.");
+      console.table(rows.slice(0, 10).map((row) => ({
+        shift_code: row.shift_code,
+        start_time: row.start_time,
+        end_time: row.end_time
+      })));
       const ip = await Portal.api.detectIp();
       const result = await callScheduleUpload({
         admin_login_id: session.loginId || session.staffId,

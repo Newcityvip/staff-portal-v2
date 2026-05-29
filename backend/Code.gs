@@ -328,6 +328,38 @@ function normalizeSheetTime(v) {
   return s;
 }
 
+function normalizeScheduleTimeForSheet(value) {
+  if (Object.prototype.toString.call(value) === "[object Date]") {
+    return Utilities.formatDate(value, "GMT", "HH:mm:ss");
+  }
+
+  const raw = clean(value).replace(/\s+/g, " ").replace(".", ":").replace(/(\d)(AM|PM)$/i, "$1 $2");
+  if (!raw) return "";
+
+  const strict = raw.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+  if (strict) {
+    return pad2(Number(strict[1])) + ":" + pad2(Number(strict[2])) + ":" + pad2(Number(strict[3]));
+  }
+
+  const short = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (short) {
+    return pad2(Number(short[1])) + ":" + pad2(Number(short[2])) + ":00";
+  }
+
+  const ampm = raw.match(/^(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?\s*(AM|PM)$/i);
+  if (ampm) {
+    let hour = Number(ampm[1]);
+    const minute = Number(ampm[2] || 0);
+    const second = Number(ampm[3] || 0);
+    const meridiem = ampm[4].toUpperCase();
+    if (meridiem === "PM" && hour < 12) hour += 12;
+    if (meridiem === "AM" && hour === 12) hour = 0;
+    return pad2(hour) + ":" + pad2(minute) + ":" + pad2(second);
+  }
+
+  return normalizeSheetTime(raw);
+}
+
 function parseScheduleTimeRange(value) {
   const text = clean(value).replace(/[\u2013\u2014]/g, "-");
   if (!text || text.indexOf("-") === -1) return { start_time: "", end_time: "" };
@@ -1207,8 +1239,8 @@ function uploadScheduleCsv(data) {
       clean(row.full_name) || clean(staff.full_name),
       clean(row.team) || clean(staff.team),
       safeUpper(row.shift_code || "GENERAL"),
-      isWorking ? normalizeSheetTime(row.start_time || range.start_time || "09:00:00") : "",
-      isWorking ? normalizeSheetTime(row.end_time || range.end_time || "18:00:00") : "",
+      isWorking ? normalizeScheduleTimeForSheet(row.start_time || range.start_time || "09:00:00") : "",
+      isWorking ? normalizeScheduleTimeForSheet(row.end_time || range.end_time || "18:00:00") : "",
       status,
       adminLoginId,
       nowDateTime(),
@@ -1231,6 +1263,7 @@ function uploadScheduleCsv(data) {
 
   if (insertRecords.length) {
     const startRow = sheet.getLastRow() + 1;
+    sheet.getRange(startRow, 9, insertRecords.length, 2).setNumberFormat("@");
     sheet.getRange(startRow, 1, insertRecords.length, insertRecords[0].length).setValues(insertRecords);
   }
   writeScheduleUpdateRecords(sheet, updateRecords);
@@ -1259,6 +1292,7 @@ function writeScheduleUpdateRecords(sheet, records) {
     if (item.rowIndex === previous + 1) {
       batchRows.push(item.values);
     } else {
+      sheet.getRange(batchStart, 9, batchRows.length, 2).setNumberFormat("@");
       sheet.getRange(batchStart, 1, batchRows.length, batchRows[0].length).setValues(batchRows);
       batchStart = item.rowIndex;
       batchRows = [item.values];
@@ -1267,6 +1301,7 @@ function writeScheduleUpdateRecords(sheet, records) {
   }
 
   if (batchRows.length) {
+    sheet.getRange(batchStart, 9, batchRows.length, 2).setNumberFormat("@");
     sheet.getRange(batchStart, 1, batchRows.length, batchRows[0].length).setValues(batchRows);
   }
 }

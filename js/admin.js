@@ -745,19 +745,11 @@
   };
 
   const validateRosterTimesBeforeUpload = (rows) => {
-    const expectedEndTimes = {
-      AM: "15:30:00",
-      AM1: "18:30:00",
-      PM1: "21:30:00",
-      PM: "23:30:00",
-      GY: "02:00:00"
-    };
-
+    const timePattern = /^\d{2}:\d{2}:\d{2}$/;
     rows.forEach((row) => {
       if (row.status !== "WORKING") return;
-      const expected = expectedEndTimes[String(row.shift_code || "").toUpperCase()];
-      if (expected && row.end_time !== expected) {
-        throw new Error(`Roster time parse failed for ${row.shift_code}. Expected end_time ${expected}, got ${row.end_time || "blank"}.`);
+      if (!timePattern.test(String(row.start_time || "")) || !timePattern.test(String(row.end_time || ""))) {
+        throw new Error(`Roster time parse failed for ${row.shift_code}. Invalid time ${row.start_time || "blank"} - ${row.end_time || "blank"}.`);
       }
     });
   };

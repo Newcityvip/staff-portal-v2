@@ -383,6 +383,7 @@
   };
 
   const formatLoginError = (source, fallbackIp = "") => {
+    if (isAbortLike(source)) return "Request timed out. Please try again.";
     const data = source?.data || source;
     const message = pick(data, ["message", "error"], source?.message || "Unable to sign in. Check credentials and try again.");
     const ip = pick(data, ["ip", "clientIp", "client_ip", "requestIp", "request_ip", "attemptedIp", "attempted_ip", "ipAddress"], fallbackIp);

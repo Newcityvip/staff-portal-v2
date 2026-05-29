@@ -2279,7 +2279,7 @@ function sendTelegramAttendance(staff, schedule, eventType, breakType, ip) {
   const chatId = getTelegramChatIdForStaff(settings, staff);
   if (!token || !chatId) return;
 
-  const text =
+  let text =
     "Staff attendance update\n\n" +
     "Event: " + eventType + (breakType ? " / " + breakType : "") + "\n" +
     "Name: " + staff.full_name + "\n" +
@@ -2289,6 +2289,33 @@ function sendTelegramAttendance(staff, schedule, eventType, breakType, ip) {
     "Shift Time: " + formatShiftTime(schedule.start_time) + " - " + formatShiftTime(schedule.end_time) + "\n" +
     "Time: " + nowDateTime() + "\n" +
     "Office IP: " + ip;
+
+  if (eventType === "BREAK_START") {
+    text =
+      "Break Started\n" +
+      "Name: " + staff.full_name + "\n" +
+      "Break: " + getTelegramBreakName(breakType) + "\n" +
+      "Time: " + nowDateTime();
+  }
+
+  if (eventType === "BREAK_END") {
+    const usage = getTelegramBreakUsage(staff.login_id, normalizeDateKey(schedule.schedule_date || todayDate()), breakType, schedule.shift_code);
+    text =
+      "Break Ended\n" +
+      "Name: " + staff.full_name + "\n" +
+      "Break: " + getTelegramBreakName(breakType) + "\n" +
+      "Back Time: " + nowDateTime() + "\n" +
+      "Used: " + usage.minutes + " min\n" +
+      "Status: " + (usage.overused ? "Overused" : "Normal");
+  }
+
+  if (eventType === "CHECK_OUT") {
+    text =
+      "Check Out\n" +
+      "Name: " + staff.full_name + "\n" +
+      "Time: " + nowDateTime() + "\n" +
+      "Status: " + getTelegramCheckoutStatus(staff.login_id, normalizeDateKey(schedule.schedule_date || todayDate()));
+  }
 
   try {
     const url = "https://api.telegram.org/bot" + token + "/sendMessage";
@@ -2300,6 +2327,58 @@ function sendTelegramAttendance(staff, schedule, eventType, breakType, ip) {
     sh(SHEETS.TG).appendRow([makeId("TG"), nowDateTime(), "ATTENDANCE", staff.staff_id, staff.login_id, staff.full_name, eventType, text, "FAILED", String(err), "chat_id=" + chatId]);
     clearSheetCache(SHEETS.TG);
   }
+}
+
+function getTelegramBreakName(breakType) {
+  const type = safeUpper(breakType);
+  if (type === "PRAYER_BREAK") return "Prayer Break";
+  if (type === "BIO_BREAK") return "Bio Break";
+  return "Break";
+}
+
+function getTelegramBreakUsage(loginId, dateStr, breakType, shiftCode) {
+  const values = getValues(SHEETS.EVENTS);
+  const targetLogin = clean(loginId).toLowerCase();
+  const targetDate = normalizeDateKey(dateStr);
+  const targetBreak = safeUpper(breakType);
+  let startTime = "";
+  let usedMinutes = 0;
+
+  for (let i = 1; i < values.length; i++) {
+    if (normalizeDateKey(values[i][1]) !== targetDate) continue;
+    if (clean(values[i][4]).toLowerCase() !== targetLogin) continue;
+    if (safeUpper(values[i][7]) !== targetBreak) continue;
+
+    const eventType = safeUpper(values[i][6]);
+    const eventTime = normalizeSheetTime(values[i][2]);
+    if (eventType === "BREAK_START") startTime = eventTime;
+    if (eventType === "BREAK_END" && startTime) {
+      usedMinutes = diffMinutes(startTime, eventTime);
+      if (usedMinutes < 0) usedMinutes += 1440;
+      startTime = "";
+    }
+  }
+
+  const rule = getShiftRule(shiftCode);
+  const limit = targetBreak === "PRAYER_BREAK"
+    ? (rule.ok ? safeNumber(rule.prayer_break_limit_min, 15) : 15)
+    : targetBreak === "BIO_BREAK"
+      ? (rule.ok ? safeNumber(rule.bio_break_limit_min, 11) : 11)
+      : (rule.ok ? safeNumber(rule.break_limit_min, 60) : 60);
+
+  return { minutes: Math.max(0, Math.round(usedMinutes)), overused: usedMinutes > limit };
+}
+
+function getTelegramCheckoutStatus(loginId, dateStr) {
+  const rows = listDailyScoreRows(normalizeDateKey(dateStr).substring(0, 7), 250);
+  const targetLogin = clean(loginId).toLowerCase();
+  const targetDate = normalizeDateKey(dateStr);
+  for (let i = 0; i < rows.length; i++) {
+    if (clean(rows[i].login_id).toLowerCase() === targetLogin && normalizeDateKey(rows[i].score_date) === targetDate) {
+      return clean(rows[i].status) || "Completed";
+    }
+  }
+  return "Completed";
 }
 
 function getTelegramChatIdForStaff(settings, staff) {

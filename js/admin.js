@@ -94,6 +94,20 @@
     };
   };
 
+  const mergeStableDashboard = (previous, next) => {
+    if (!previous || !Object.keys(previous).length) return next;
+    const keepArray = (key) => (!next[key] || !next[key].length) && previous[key]?.length ? previous[key] : next[key];
+    const merged = { ...next };
+    ["kpis", "performance", "top", "worst", "dailyLogs", "telegramLogs", "auditLogs"].forEach((key) => {
+      merged[key] = keepArray(key);
+    });
+    if ((!merged.staff || !merged.staff.length) && previous.staff?.length) merged.staff = previous.staff;
+    if ((!merged.schedules || !merged.schedules.length) && previous.schedules?.length) merged.schedules = previous.schedules;
+    if ((!merged.attendance || !merged.attendance.length) && previous.attendance?.length) merged.attendance = previous.attendance;
+    if ((!merged.breaks || !merged.breaks.length) && previous.breaks?.length) merged.breaks = previous.breaks;
+    return merged;
+  };
+
   dashboard = normalizeDashboard(readCachedDashboard() || {});
 
   const renderStats = (stats) => {
@@ -475,7 +489,7 @@
     if (!silent) Portal.setStatus(false, "Loading");
     try {
       const data = await Portal.api.dashboard("admin");
-      dashboard = normalizeDashboard(data);
+      dashboard = mergeStableDashboard(dashboard, normalizeDashboard(data));
       writeCachedDashboard(data);
       renderAll();
     } catch (error) {

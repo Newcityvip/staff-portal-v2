@@ -138,6 +138,47 @@
     };
   };
 
+  const hasOwn = (source, key) => source && Object.prototype.hasOwnProperty.call(source, key);
+  const hasValidNumber = (value) => value !== undefined && value !== null && value !== "" && Number.isFinite(Number(value));
+  const hasMeaningfulBackendValue = (root, key) => {
+    if (!hasOwn(root, key)) return false;
+    const value = root[key];
+    if (value === undefined || value === null || value === "") return false;
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === "object") return Object.keys(value).length > 0;
+    return true;
+  };
+  const rootHasAny = (root, keys) => keys.some((key) => hasMeaningfulBackendValue(root, key));
+  const mergeStableDashboard = (previous, next, rawData) => {
+    if (!previous || !Object.keys(previous).length) return next;
+    const root = rawData?.data || rawData?.dashboard || rawData || {};
+    const previousPerf = previous.performance || {};
+    const nextPerf = next.performance || {};
+    const mergedPerf = { ...nextPerf };
+
+    [
+      { key: "kpiScore", rootKeys: ["kpi_score", "own_kpi", "monthly_kpi", "performance_details"] },
+      { key: "kpiDisplay", rootKeys: ["kpi_score", "own_kpi", "monthly_kpi", "performance_details"] },
+      { key: "monthlyAttendanceScore", rootKeys: ["monthly_attendance_score", "attendance_score", "daily_scores", "performance_details"] },
+      { key: "finalScore", rootKeys: ["final_score", "monthly_attendance_score", "attendance_score", "kpi_score", "own_kpi", "daily_scores", "performance_details"] },
+      { key: "quarterScore", rootKeys: ["quarter_score", "quarter_score_value", "quarter_scores", "performance_details"] },
+      { key: "rank", rootKeys: ["current_rank", "rank", "leaderboard", "performance_details"] }
+    ].forEach((item) => {
+      const nextValue = mergedPerf[item.key];
+      const previousValue = previousPerf[item.key];
+      const backendSuppliedField = rootHasAny(root, item.rootKeys);
+      if ((!backendSuppliedField || !hasValidNumber(nextValue)) && hasValidNumber(previousValue)) {
+        mergedPerf[item.key] = previousValue;
+      }
+    });
+
+    if ((!next.leaderboard || !next.leaderboard.length) && previous.leaderboard?.length) next.leaderboard = previous.leaderboard;
+    if ((!next.history || !next.history.length) && previous.history?.length) next.history = previous.history;
+    if ((!next.timeline || !next.timeline.length) && previous.timeline?.length) next.timeline = previous.timeline;
+    if ((!next.scheduleList || !next.scheduleList.length) && previous.scheduleList?.length) next.scheduleList = previous.scheduleList;
+    return { ...next, performance: mergedPerf };
+  };
+
   state = normalizeDashboard(readCachedDashboard() || {});
 
   const openLeaderboardModal = (rows, loginKey) => {
@@ -437,7 +478,7 @@
     try {
       const month = document.getElementById("scheduleMonth")?.value || new Date().toISOString().slice(0, 7);
       const data = await Portal.api.dashboard("staff", { month });
-      state = normalizeDashboard(data);
+      state = mergeStableDashboard(state, normalizeDashboard(data), data);
       writeCachedDashboard(data);
       renderProfile(state);
     } catch (error) {

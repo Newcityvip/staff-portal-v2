@@ -161,14 +161,19 @@ function normalizeMonthKey(v) {
 
   const named = s.match(/^([A-Za-z]+)\s+(\d{4})$/);
   if (named) {
-    const months = {
-      january: "01", jan: "01", february: "02", feb: "02", march: "03", mar: "03",
-      april: "04", apr: "04", may: "05", june: "06", jun: "06", july: "07", jul: "07",
-      august: "08", aug: "08", september: "09", sep: "09", sept: "09", october: "10", oct: "10",
-      november: "11", nov: "11", december: "12", dec: "12"
-    };
-    const month = months[named[1].toLowerCase()];
+    const month = monthNameToNumber(named[1]);
     if (month) return named[2] + "-" + month;
+  }
+
+  const dayNamed = s.match(/^(?:[A-Za-z]{3,9}\s+)?([A-Za-z]{3,9})\s+\d{1,2}\s+(\d{4})(?:\s|$)/);
+  if (dayNamed) {
+    const dayNamedMonth = monthNameToNumber(dayNamed[1]);
+    if (dayNamedMonth) return dayNamed[2] + "-" + dayNamedMonth;
+  }
+
+  const longDate = new Date(s);
+  if (!isNaN(longDate.getTime()) && /[A-Za-z]/.test(s)) {
+    return Utilities.formatDate(longDate, TZ, "yyyy-MM");
   }
 
   if (s.indexOf("GMT") > -1 || s.indexOf("T") > -1) {
@@ -179,8 +184,40 @@ function normalizeMonthKey(v) {
   return s.substring(0, 7);
 }
 
+function monthNameToNumber(name) {
+  const months = {
+    january: "01", jan: "01", february: "02", feb: "02", march: "03", mar: "03",
+    april: "04", apr: "04", may: "05", june: "06", jun: "06", july: "07", jul: "07",
+    august: "08", aug: "08", september: "09", sep: "09", sept: "09", october: "10", oct: "10",
+    november: "11", nov: "11", december: "12", dec: "12"
+  };
+  return months[clean(name).toLowerCase()] || "";
+}
+
 function normalizeMonth(v) {
   return normalizeMonthKey(v);
+}
+
+function normalizeHeaderKey(v) {
+  return clean(v).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function buildHeaderMap(headers) {
+  const map = {};
+  for (let i = 0; i < headers.length; i++) {
+    const key = normalizeHeaderKey(headers[i]);
+    if (key && map[key] == null) map[key] = i;
+  }
+  return map;
+}
+
+function valueByHeader(row, headerMap, keys, fallbackIndex) {
+  for (let i = 0; i < keys.length; i++) {
+    const key = normalizeHeaderKey(keys[i]);
+    if (headerMap[key] != null) return row[headerMap[key]];
+  }
+  if (fallbackIndex != null && fallbackIndex >= 0) return row[fallbackIndex];
+  return "";
 }
 
 function makeId(prefix) {

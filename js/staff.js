@@ -230,6 +230,65 @@
     search.focus();
   };
 
+  const ensureStaffViewButton = (hostId, label, disabled, onClick) => {
+    const host = document.getElementById(hostId);
+    const panelTitle = host?.closest(".glass-panel")?.querySelector(".panel-title");
+    if (!panelTitle) return;
+    let button = panelTitle.querySelector(`[data-staff-view-all="${hostId}"]`);
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = "mini-btn";
+      button.dataset.staffViewAll = hostId;
+      button.textContent = label;
+      panelTitle.appendChild(button);
+    }
+    button.disabled = Boolean(disabled);
+    button.onclick = onClick;
+  };
+
+  const openStaffTableModal = (title, rows, columns) => {
+    let modal = document.getElementById("staffDataModal");
+    if (!modal) {
+      modal = document.createElement("div");
+      modal.id = "staffDataModal";
+      modal.className = "data-modal";
+      modal.innerHTML = `
+        <div class="data-modal__panel">
+          <div class="data-modal__head">
+            <h2 id="staffDataModalTitle">Records</h2>
+            <button class="mini-btn" type="button" data-modal-close>Close</button>
+          </div>
+          <input id="staffDataModalSearch" class="search-input" placeholder="Search records">
+          <div class="table-wrap data-modal__table">
+            <table>
+              <thead id="staffDataModalHead"></thead>
+              <tbody id="staffDataModalBody"></tbody>
+            </table>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+      modal.addEventListener("click", (event) => {
+        if (event.target === modal || event.target.closest("[data-modal-close]")) modal.classList.remove("open");
+      });
+    }
+    document.getElementById("staffDataModalTitle").textContent = title;
+    document.getElementById("staffDataModalHead").innerHTML = `<tr>${columns.map((column) => `<th>${column.label}</th>`).join("")}</tr>`;
+    const render = () => {
+      const query = document.getElementById("staffDataModalSearch")?.value.trim().toLowerCase() || "";
+      const filtered = query ? rows.filter((row) => JSON.stringify(row).toLowerCase().includes(query)) : rows;
+      document.getElementById("staffDataModalBody").innerHTML = filtered.length ? filtered.map((row) => `
+        <tr>${columns.map((column) => `<td>${column.render ? column.render(row) : Portal.pick(row, column.keys, "--")}</td>`).join("")}</tr>
+      `).join("") : `<tr><td colspan="${columns.length}" class="empty-state">No records match this search.</td></tr>`;
+    };
+    const search = document.getElementById("staffDataModalSearch");
+    search.value = "";
+    search.oninput = render;
+    render();
+    modal.classList.add("open");
+    search.focus();
+  };
+
   const shiftProgress = (shift) => {
     const start = new Date(Portal.pick(shift, ["start", "startTime", "shiftStart"], ""));
     const end = new Date(Portal.pick(shift, ["end", "endTime", "shiftEnd"], ""));
@@ -347,11 +406,17 @@
   const renderTimeline = (rows) => {
     const host = document.getElementById("activityTimeline");
     if (!host) return;
+    ensureStaffViewButton("activityTimeline", "View All", !rows.length, () => openStaffTableModal("Activity Timeline", rows, [
+      { label: "Time", render: (row) => Portal.formatTime(Portal.pick(row, ["event_time", "time", "created_at", "createdAt", "timestamp"], "")) },
+      { label: "Action", keys: ["event_type", "action", "event", "title"] },
+      { label: "Break / Detail", keys: ["break_type", "message", "note", "details", "ip"] },
+      { label: "Status", render: (row) => badge(Portal.pick(row, ["status", "state"], "ok"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
+    ]));
     if (!rows.length) {
       host.innerHTML = `<div class="empty-state">No activity events received yet.</div>`;
       return;
     }
-    host.innerHTML = rows.slice(0, 8).map((row) => `
+    host.innerHTML = rows.slice(0, previewLimit).map((row) => `
       <div class="timeline-row">
         <span class="badge green">${Portal.formatTime(Portal.pick(row, ["event_time", "time", "created_at", "createdAt", "timestamp"], ""))}</span>
         <div><strong>${Portal.pick(row, ["event_type", "action", "event", "title"], "Activity")}</strong><br><small>${Portal.pick(row, ["break_type", "message", "note", "details", "ip"], "")}</small></div>
@@ -363,11 +428,34 @@
     const host = document.getElementById("attendanceHistory");
     if (!host) return;
     Portal.setText("historyCount", `${rows.length} records`);
+    const historyColumns = [
+      { label: "Date", render: (row) => Portal.formatDate(Portal.pick(row, ["score_date", "event_date", "date", "day"], "")) },
+      { label: "In", render: (row) => {
+        const eventType = String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase();
+        const eventTime = Portal.pick(row, ["event_time", "time", "created_at", "createdAt", "timestamp"], "");
+        return Portal.formatTime(eventType && /CHECK_IN|BREAK_START/.test(eventType) ? eventTime : Portal.pick(row, ["checkIn", "in", "check_in", "firstCheckIn"], ""));
+      } },
+      { label: "Out", render: (row) => {
+        const eventType = String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase();
+        const eventTime = Portal.pick(row, ["event_time", "time", "created_at", "createdAt", "timestamp"], "");
+        return Portal.formatTime(eventType && /CHECK_OUT|BREAK_END/.test(eventType) ? eventTime : Portal.pick(row, ["checkOut", "out", "check_out", "lastCheckOut"], ""));
+      } },
+      { label: "Status", render: (row) => {
+        const eventType = String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase();
+        const status = eventType ? eventType.replaceAll("_", " ") : Portal.pick(row, ["status", "state"], "--");
+        return badge(status, statusTone(status));
+      } },
+      { label: "Break", render: (row) => {
+        const eventType = String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase();
+        return eventType ? Portal.pick(row, ["break_type", "shift_code", "ip"], "--") : Portal.pick(row, ["breakDuration", "break", "breakTotal", "penalty", "final_attendance_score"], "--");
+      } }
+    ];
+    ensureStaffViewButton("attendanceHistory", "View All", !rows.length, () => openStaffTableModal("Attendance History", rows, historyColumns));
     if (!rows.length) {
       host.innerHTML = empty("Attendance history is empty.");
       return;
     }
-    host.innerHTML = rows.slice(0, 20).map((row) => {
+    host.innerHTML = rows.slice(0, previewLimit).map((row) => {
       const eventType = String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase();
       const eventTime = Portal.pick(row, ["event_time", "time", "created_at", "createdAt", "timestamp"], "");
       const isEventRow = Boolean(eventType);

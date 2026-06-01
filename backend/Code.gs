@@ -1909,7 +1909,7 @@ function calculateDailyAttendanceScore(staff, schedule, state, settings, dateStr
     status = "MISSING_CHECK_IN";
   }
 
-  if (!state.hasCheckOut) {
+  if (state.hasCheckIn && !state.hasCheckOut) {
     penalty += safeNumber(settings.MISSING_SIGNOUT_PENALTY, 0.5);
     if (status === "PRESENT") status = "MISSING_CHECK_OUT";
   }
@@ -1996,7 +1996,7 @@ function calculateBreakOveruse(loginId, dateStr, schedule, settings) {
   const limits = {
     BREAK: rule.ok ? safeNumber(rule.break_limit_min, 60) : 60,
     PRAYER_BREAK: rule.ok ? safeNumber(rule.prayer_break_limit_min, 15) : 15,
-    BIO_BREAK: rule.ok ? safeNumber(rule.bio_break_limit_min, 11) : 11
+    BIO_BREAK: 10
   };
   const countLimits = {
     BREAK: rule.ok ? safeNumber(rule.break_count_limit, 1) : 1,

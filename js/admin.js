@@ -320,7 +320,7 @@
     if (!host) return;
     if (!rows.length) return host.innerHTML = empty("No log records received.", columns.length);
     if (options.modalTitle) {
-      ensureViewButton(id, "audit logs", () => openTableModal(options.modalTitle, rows, columns));
+      ensureViewButton(id, options.viewLabel || options.modalTitle.toLowerCase(), () => openTableModal(options.modalTitle, rows, columns));
     }
     host.innerHTML = rows.slice(0, options.limit || 80).map((row) => `
       <tr>${columns.map((column) => `<td>${column.render ? column.render(row) : Portal.pick(row, column.keys, "--")}</td>`).join("")}</tr>`).join("");
@@ -464,13 +464,13 @@
       { keys: ["full_name", "name", "staffName", "staff"] },
       { keys: ["event_type", "action", "event"] },
       { render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
-    ]);
+    ], { limit: 5, modalTitle: "Daily Logs", viewLabel: "daily logs" });
     renderLogs("telegramLogs", dashboard.telegramLogs, [
       { render: (row) => Portal.formatTime(Portal.pick(row, ["created_at", "time", "timestamp", "createdAt"], "")) },
       { keys: ["target", "chat", "recipient", "login_id"] },
       { keys: ["message", "text", "event_type"] },
       { render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
-    ]);
+    ], { limit: 5, modalTitle: "Telegram Logs", viewLabel: "telegram logs" });
     const auditColumns = [
       { label: "Time", render: (row) => Portal.formatTime(Portal.pick(row, ["created_at", "time", "timestamp", "createdAt"], "")) },
       { label: "User", keys: ["actor_name", "user", "name", "email"] },

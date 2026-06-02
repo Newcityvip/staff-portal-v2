@@ -52,7 +52,9 @@
     "kpi_score",
     "kpi_score_out_of_5",
     "final_score",
-    "quarter_score"
+    "monthly_final_score",
+    "quarter_score",
+    "ranking_score"
   ].some((key) => hasScoreValue(row[key])));
   const canonicalPerformanceRows = (root) => Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance);
   const performanceIndex = (rows = []) => rows.reduce((map, row) => {
@@ -391,7 +393,7 @@
       <div class="leader-row">
         <span class="leader-rank">${Portal.pick(row, ["rank", "position"], index + 1)}</span>
         <div><strong>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</strong><br><small>${Portal.pick(row, ["department", "team"], "")}</small></div>
-        <strong>${Portal.pick(row, ["final_score", "kpi_score", "kpi_score_out_of_5", "score", "kpi", "quarterScore"], "0")}</strong>
+        <strong>${Portal.pick(row, ["ranking_score", "quarter_score", "final_score", "kpi_score", "kpi_score_out_of_5", "score", "kpi", "quarterScore"], "0")}</strong>
       </div>`).join("");
   };
 
@@ -977,6 +979,7 @@
       await callFirstValid(["save_monthly_kpi"], {
         admin_login_id: session.loginId || session.staffId,
         login_id: payload.staffId,
+        staff_id: payload.staffId,
         kpi_month: payload.month,
         ip,
         L_Leadership: payload.leadership,

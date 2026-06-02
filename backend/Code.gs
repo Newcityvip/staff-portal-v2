@@ -157,9 +157,11 @@ function normalizeMonthKey(v) {
   if (Object.prototype.toString.call(v) === "[object Date]") {
     return Utilities.formatDate(v, TZ, "yyyy-MM");
   }
+  if (isSheetSerialDate(v)) return Utilities.formatDate(sheetSerialDate(v), TZ, "yyyy-MM");
 
   const s = clean(v);
   if (!s) return "";
+  if (/^\d+(\.\d+)?$/.test(s) && isSheetSerialDate(Number(s))) return Utilities.formatDate(sheetSerialDate(Number(s)), TZ, "yyyy-MM");
 
   if (/^\d{4}-\d{2}$/.test(s)) return s;
   if (/^\d{4}-\d{1}$/.test(s)) return s.substring(0, 5) + "0" + s.substring(5);
@@ -327,10 +329,20 @@ function safeNumber(v, fallback) {
   return isNaN(n) ? Number(fallback || 0) : n;
 }
 
+function isSheetSerialDate(v) {
+  return typeof v === "number" && isFinite(v) && v > 20000;
+}
+
+function sheetSerialDate(v) {
+  return new Date(Math.round((Number(v) - 25569) * 86400000));
+}
+
 function normalizeDateKey(v) {
   if (Object.prototype.toString.call(v) === "[object Date]") return Utilities.formatDate(v, TZ, "yyyy-MM-dd");
+  if (isSheetSerialDate(v)) return Utilities.formatDate(sheetSerialDate(v), TZ, "yyyy-MM-dd");
   const s = clean(v);
   if (!s) return "";
+  if (/^\d+(\.\d+)?$/.test(s) && isSheetSerialDate(Number(s))) return Utilities.formatDate(sheetSerialDate(Number(s)), TZ, "yyyy-MM-dd");
   if (s.indexOf("GMT") > -1 || s.indexOf("T") > -1) {
     try {
       return Utilities.formatDate(new Date(s), TZ, "yyyy-MM-dd");
@@ -338,6 +350,8 @@ function normalizeDateKey(v) {
       logInternalError("normalizeDateKey", err);
     }
   }
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime()) && /[A-Za-z]/.test(s)) return Utilities.formatDate(parsed, TZ, "yyyy-MM-dd");
   return s.substring(0, 10);
 }
 
@@ -564,11 +578,34 @@ function getAdminAccess(data) {
 }
 
 function getStaffByLogin(loginId) {
+  return getStaffByIdentifier(loginId);
+}
+
+function getStaffByIdentifier(identifier) {
   const values = getValues(SHEETS.STAFF);
-  const target = clean(loginId).toLowerCase();
+  const target = clean(identifier).toLowerCase();
   for (let i = 1; i < values.length; i++) {
     const row = values[i];
     if (clean(row[2]).toLowerCase() === target || clean(row[3]).toLowerCase() === target) {
+      if (safeUpper(row[6]) !== "ACTIVE") return { ok: false, message: "Staff inactive" };
+      return {
+        ok: true,
+        staff_id: row[0],
+        full_name: row[1],
+        login_id: row[2],
+        email: row[3],
+        team: row[4],
+        role: row[5],
+        status: row[6],
+        manager: row[8],
+        phone: row[9],
+        telegram_user_id: row[10]
+      };
+    }
+  }
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    if (clean(row[0]).toLowerCase() === target) {
       if (safeUpper(row[6]) !== "ACTIVE") return { ok: false, message: "Staff inactive" };
       return {
         ok: true,
@@ -862,7 +899,9 @@ function getStaffDashboard(data) {
       kpi_score_out_of_5: row.kpi_score_out_of_5,
       kpi_score: row.kpi_score,
       final_score: row.final_score,
+      monthly_final_score: row.monthly_final_score,
       quarter_score: row.quarter_score,
+      ranking_score: row.ranking_score,
       rank: row.rank,
       current_rank: row.current_rank || row.rank,
       grade: row.grade,
@@ -874,13 +913,13 @@ function getStaffDashboard(data) {
     return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
   });
   const dailyScores = listDailyScoreRows(month, 300).filter(function (row) {
-    return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
+    return rowMatchesStaffIdentity(row, staff);
   });
   const quarterScores = listQuarterScoreRows(300).filter(function (row) {
-    return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
+    return rowMatchesStaffIdentity(row, staff);
   });
   const ownPerformance = performanceDetails.filter(function (row) {
-    return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
+    return rowMatchesStaffIdentity(row, staff);
   })[0] || {};
   const monthlyAttendanceScore = clean(ownPerformance.attendance_score) !== "" ? ownPerformance.attendance_score : 0;
   const kpiScore = clean(ownPerformance.kpi_score_out_of_5) !== "" ? ownPerformance.kpi_score_out_of_5 : 0;
@@ -1021,16 +1060,25 @@ function averageScoreRows(rows, key) {
 }
 
 function getQuarterScoreForMonth(loginId, month, fallbackScore) {
-  const targetLogin = clean(loginId).toLowerCase();
+  const staff = getStaffByIdentifier(loginId);
+  const identity = staff.ok ? staff : { login_id: loginId };
+  return getQuarterScoreForStaff(identity, month, fallbackScore);
+}
+
+function getQuarterRowsForStaff(staff, month) {
   const targetMonth = normalizeMonth(month);
   const targetQuarter = getQuarterLabelForMonth(targetMonth);
-  const rows = listQuarterScoreRows(0).filter(function (row) {
-    if (clean(row.login_id).toLowerCase() !== targetLogin) return false;
+  return listQuarterScoreRows(0).filter(function (row) {
+    if (!rowMatchesStaffIdentity(row, staff)) return false;
     const fromMonth = normalizeMonth(row.from_month);
     const toMonth = normalizeMonth(row.to_month);
     if (targetQuarter && clean(row.quarter).toLowerCase() === clean(targetQuarter).toLowerCase()) return true;
     return fromMonth && toMonth && targetMonth >= fromMonth && targetMonth <= toMonth;
   });
+}
+
+function getQuarterScoreForStaff(staff, month, fallbackScore) {
+  const rows = getQuarterRowsForStaff(staff, month);
   if (!rows.length) return round2(fallbackScore);
   const row = rows[0];
   const score = clean(row.quarter_score) !== "" ? row.quarter_score : row.final_score;
@@ -1040,10 +1088,13 @@ function getQuarterScoreForMonth(loginId, month, fallbackScore) {
 function buildScoreDebug(month, dailyRows, kpiRows, performanceRows) {
   return {
     selected_month: normalizeMonth(month),
+    selected_quarter: getQuarterLabelForMonth(month),
     daily_rows_found: (dailyRows || []).length,
     kpi_rows_found: (kpiRows || []).length,
+    quarter_rows_found: listQuarterScoreRows(0).length,
     sample_daily_headers: getSheetHeaders(SHEETS.DAILY).slice(0, 30),
     sample_kpi_headers: getSheetHeaders(SHEETS.KPI).slice(0, 30),
+    sample_quarter_headers: getSheetHeaders(SHEETS.QUARTER).slice(0, 30),
     sample_score_rows: (performanceRows || []).slice(0, 5).map(function (row) {
       return {
         login_id: row.login_id,
@@ -1062,6 +1113,67 @@ function buildPerformanceDetails(month, teamFilter) {
   return getPerformanceDetails(resolveScoreMonth(month), teamFilter);
 }
 
+function identityKeys(row) {
+  const keys = [];
+  const login = clean(row && row.login_id).toLowerCase();
+  const staffId = clean(row && row.staff_id).toLowerCase();
+  if (login) keys.push("login:" + login);
+  if (staffId) keys.push("staff:" + staffId);
+  return keys;
+}
+
+function lookupKeysForStaff(staff) {
+  const login = clean(staff && staff.login_id).toLowerCase();
+  const staffId = clean(staff && staff.staff_id).toLowerCase();
+  const keys = [];
+  if (login) keys.push("login:" + login);
+  if (staffId) keys.push("staff:" + staffId);
+  return keys;
+}
+
+function addScoreRowToMap(map, row) {
+  identityKeys(row).forEach(function (key) {
+    if (!map[key]) map[key] = [];
+    map[key].push(row);
+  });
+}
+
+function getScoreRowsForStaff(map, staff) {
+  const seen = {};
+  const rows = [];
+  lookupKeysForStaff(staff).forEach(function (key) {
+    (map[key] || []).forEach(function (row) {
+      const rowKey = identityKeys(row).join("|") || JSON.stringify(row);
+      if (seen[rowKey]) return;
+      seen[rowKey] = true;
+      rows.push(row);
+    });
+  });
+  return rows;
+}
+
+function setLatestScoreRow(map, row) {
+  identityKeys(row).forEach(function (key) {
+    map[key] = row;
+  });
+}
+
+function getLatestScoreRowForStaff(map, staff) {
+  const keys = lookupKeysForStaff(staff);
+  for (let i = 0; i < keys.length; i++) {
+    if (map[keys[i]]) return map[keys[i]];
+  }
+  return null;
+}
+
+function rowMatchesStaffIdentity(row, staff) {
+  return getScoreRowsForStaff((function () {
+    const map = {};
+    addScoreRowToMap(map, row);
+    return map;
+  })(), staff).length > 0;
+}
+
 function getPerformanceDetails(month, teamFilter) {
   month = resolveScoreMonth(month);
   const teamKey = clean(teamFilter).toLowerCase();
@@ -1075,26 +1187,36 @@ function getPerformanceDetails(month, teamFilter) {
   const kpiMap = {};
 
   dailyRows.forEach(function (row) {
-    const key = clean(row.login_id).toLowerCase();
-    if (!key) return;
-    if (!dailyMap[key]) dailyMap[key] = [];
-    dailyMap[key].push(row);
+    addScoreRowToMap(dailyMap, row);
   });
 
   kpiRows.forEach(function (row) {
-    const key = clean(row.login_id).toLowerCase();
-    if (key) kpiMap[key] = row;
+    setLatestScoreRow(kpiMap, row);
   });
 
   const rows = activeStaff.map(function (staff) {
-    const key = clean(staff.login_id).toLowerCase();
-    const staffDaily = dailyMap[key] || [];
-    const kpi = kpiMap[key] || null;
+    const staffDaily = getScoreRowsForStaff(dailyMap, staff);
+    const kpi = getLatestScoreRowForStaff(kpiMap, staff);
     const workingDailyRows = staffDaily.filter(isWorkingDailyScoreRow);
     const attendanceScore = averageScoreRows(workingDailyRows, "final_attendance_score");
     const kpiScore = kpi ? safeNumber(kpi.kpi_score_out_of_5, 0) : 0;
-    const finalScore = calculateFinalScore(attendanceScore, kpiScore);
-    const quarterScore = getQuarterScoreForMonth(staff.login_id, month, finalScore);
+    const monthlyFinalScore = calculateFinalScore(attendanceScore, kpiScore);
+    const quarterRows = getQuarterRowsForStaff(staff, month);
+    const quarterScore = getQuarterScoreForStaff(staff, month, monthlyFinalScore);
+    Logger.log("Score pipeline: " + JSON.stringify({
+      selected_month: month,
+      selected_quarter: getQuarterLabelForMonth(month),
+      login_id: staff.login_id,
+      staff_id: staff.staff_id,
+      matched_daily_rows: staffDaily.length,
+      matched_working_daily_rows: workingDailyRows.length,
+      matched_kpi_rows: kpi ? 1 : 0,
+      matched_quarter_rows: quarterRows.length,
+      attendance_score: attendanceScore,
+      kpi_score: kpiScore,
+      monthly_final_score: monthlyFinalScore,
+      quarter_score: quarterScore
+    }));
 
     return {
       staff_id: staff.staff_id,
@@ -1112,16 +1234,19 @@ function getPerformanceDetails(month, teamFilter) {
       kpi_status: kpi ? "Scored" : "Not scored yet",
       quarter_score: quarterScore,
       quarter: getQuarterLabelForMonth(month),
-      final_score: finalScore,
-      grade: getGrade(finalScore),
+      final_score: monthlyFinalScore,
+      monthly_final_score: monthlyFinalScore,
+      ranking_score: quarterScore,
+      grade: getGrade(monthlyFinalScore),
       daily_score_count: workingDailyRows.length,
       has_kpi: Boolean(kpi),
-      has_quarter_score: quarterScore > 0
+      has_quarter_score: quarterRows.length > 0
     };
   });
 
   rows.sort(function (a, b) {
-    return safeNumber(b.final_score, 0) - safeNumber(a.final_score, 0) ||
+    return safeNumber(b.ranking_score, 0) - safeNumber(a.ranking_score, 0) ||
+      safeNumber(b.final_score, 0) - safeNumber(a.final_score, 0) ||
       safeNumber(b.attendance_score, 0) - safeNumber(a.attendance_score, 0) ||
       safeNumber(b.kpi_score, 0) - safeNumber(a.kpi_score, 0) ||
       clean(a.full_name).localeCompare(clean(b.full_name));
@@ -1238,7 +1363,9 @@ function getAdminDashboardFull(data) {
       kpi_score_out_of_5: row.kpi_score_out_of_5,
       kpi_score: row.kpi_score,
       final_score: row.final_score,
+      monthly_final_score: row.monthly_final_score,
       quarter_score: row.quarter_score,
+      ranking_score: row.ranking_score,
       rank: row.rank,
       current_rank: row.current_rank || row.rank,
       grade: row.grade,
@@ -1731,7 +1858,7 @@ function listDailyScoreRows(month, limit) {
       status: valueByHeader(rowValues, headerMap, ["attendance_status", "status"], null),
       base_score: valueByHeader(rowValues, headerMap, ["base_score"], null),
       penalty: valueByHeader(rowValues, headerMap, ["total_penalty", "penalty"], null),
-      final_attendance_score: valueByHeader(rowValues, headerMap, ["final_attendance_score"], null),
+      final_attendance_score: valueByHeader(rowValues, headerMap, ["final_attendance_score", "final_attendance", "attendance_score"], null),
       created_at: valueByHeader(rowValues, headerMap, ["calculated_at", "created_at"], null),
       notes: valueByHeader(rowValues, headerMap, ["notes"], null)
     });
@@ -1766,7 +1893,7 @@ function listKpiRows(month) {
       I_Initiative: valueByHeader(rowValues, headerMap, ["I_Initiative", "Initiative"], null),
       Penalty: valueByHeader(rowValues, headerMap, ["Penalty"], null),
       raw_score: valueByHeader(rowValues, headerMap, ["kpi_total_raw", "raw_score"], null),
-      kpi_score_out_of_5: valueByHeader(rowValues, headerMap, ["kpi_score_out_of_5"], null),
+      kpi_score_out_of_5: valueByHeader(rowValues, headerMap, ["kpi_score_out_of_5", "kpi_score"], null),
       updated_by: valueByHeader(rowValues, headerMap, ["submitted_by", "updated_by"], null),
       created_at: valueByHeader(rowValues, headerMap, ["submitted_at", "created_at"], null),
       updated_at: valueByHeader(rowValues, headerMap, ["updated_at"], null),
@@ -1787,8 +1914,8 @@ function listQuarterScoreRows(limit) {
     rows.push({
       quarter_score_id: valueByHeader(rowValues, headerMap, ["quarter_id", "quarter_score_id"], null),
       quarter: valueByHeader(rowValues, headerMap, ["quarter_label", "quarter"], null),
-      from_month: valueByHeader(rowValues, headerMap, ["quarter_start_month", "from_month"], null),
-      to_month: valueByHeader(rowValues, headerMap, ["quarter_end_month", "to_month"], null),
+      from_month: valueByHeader(rowValues, headerMap, ["quarter_start_month", "quarter_start_mo", "from_month"], null),
+      to_month: valueByHeader(rowValues, headerMap, ["quarter_end_month", "quarter_end_mo", "to_month"], null),
       staff_id: valueByHeader(rowValues, headerMap, ["staff_id"], null),
       login_id: valueByHeader(rowValues, headerMap, ["login_id"], null),
       full_name: valueByHeader(rowValues, headerMap, ["full_name", "name"], null),
@@ -1905,11 +2032,11 @@ function saveMonthlyKPI(data) {
   if (ipError) return ipError;
 
   const adminLoginId = clean(data.admin_login_id);
-  const staffLoginId = clean(data.login_id);
-  const month = normalizeMonthKey(data.kpi_month);
-  if (!adminLoginId || !staffLoginId || !month) return { ok: false, message: "Missing admin, staff, or month" };
+  const staffIdentifier = clean(data.login_id || data.staff_id || data.staffId || data.email);
+  const month = normalizeMonthKey(data.kpi_month || data.month);
+  if (!adminLoginId || !staffIdentifier || !month) return { ok: false, message: "Missing admin, staff, or month" };
 
-  const staff = getStaffByLogin(staffLoginId);
+  const staff = getStaffByIdentifier(staffIdentifier);
   if (!staff.ok) return staff;
   const access = getAdminAccess({ admin_login_id: adminLoginId });
   if (access.allowed_team && clean(staff.team).toLowerCase() !== clean(access.allowed_team).toLowerCase()) {
@@ -1928,8 +2055,13 @@ function saveMonthlyKPI(data) {
 
   const sheet = sh(SHEETS.KPI);
   const values = sheet.getDataRange().getValues();
+  const headers = values[0] || [];
+  const headerMap = buildHeaderMap(headers);
   for (let i = 1; i < values.length; i++) {
-    if (normalizeMonthKey(values[i][1]) === month && clean(values[i][3]).toLowerCase() === clean(staff.login_id).toLowerCase()) {
+    const rowStaffId = valueByHeader(values[i], headerMap, ["staff_id"], 2);
+    const rowLoginId = valueByHeader(values[i], headerMap, ["login_id"], 3);
+    if (normalizeMonthKey(values[i][1]) === month &&
+      (clean(rowLoginId).toLowerCase() === clean(staff.login_id).toLowerCase() || clean(rowStaffId).toLowerCase() === clean(staff.staff_id).toLowerCase())) {
       sheet.getRange(i + 1, 7, 1, 13).setValues([[L, E, P, C, PR, I, Penalty, raw, score, adminLoginId, nowDateTime(), nowDateTime(), clean(data.notes)]]);
       clearSheetCache(SHEETS.KPI);
       appendAudit("ADMIN", adminLoginId, adminLoginId, "UPDATE_KPI", "KPI", staff.login_id, "", JSON.stringify(data), ip, "");
@@ -1945,9 +2077,10 @@ function saveMonthlyKPI(data) {
 
 function getOwnKPI(loginId, month) {
   const targetMonth = normalizeMonth(month);
-  const targetLogin = clean(loginId).toLowerCase();
+  const staff = getStaffByIdentifier(loginId);
+  const identity = staff.ok ? staff : { login_id: loginId };
   const rows = listKpiRows(targetMonth).filter(function (row) {
-    return clean(row.login_id).toLowerCase() === targetLogin;
+    return rowMatchesStaffIdentity(row, identity);
   });
   return rows.length ? rows[rows.length - 1] : null;
 }
@@ -1970,10 +2103,11 @@ function isWorkingDailyScoreRow(row) {
 }
 
 function calculateMonthlyAttendanceScore(loginId, month) {
-  const targetLogin = clean(loginId).toLowerCase();
+  const staff = getStaffByIdentifier(loginId);
+  const identity = staff.ok ? staff : { login_id: loginId };
   const targetMonth = resolveScoreMonth(month);
   const rows = listDailyScoreRows(targetMonth, 0).filter(function (row) {
-    return clean(row.login_id).toLowerCase() === targetLogin && isWorkingDailyScoreRow(row);
+    return rowMatchesStaffIdentity(row, identity) && isWorkingDailyScoreRow(row);
   });
   let total = 0;
   rows.forEach(function (row) {
@@ -2346,10 +2480,9 @@ function averageAttendance(loginId, months) {
 
 function averageKPI(loginId, months) {
   const monthKeys = months.map(normalizeMonthKey).filter(Boolean);
-  const targetLogin = clean(loginId).toLowerCase();
   let total = 0;
   monthKeys.forEach(function (month) {
-    const kpi = getOwnKPI(targetLogin, month);
+    const kpi = getOwnKPI(loginId, month);
     total += kpi ? safeNumber(kpi.kpi_score_out_of_5, 0) : 0;
   });
   return monthKeys.length ? round2(total / monthKeys.length) : 0;
@@ -2374,7 +2507,9 @@ function getLeaderboard(month) {
       kpi_score_out_of_5: safeNumber(row.kpi_score_out_of_5, 0),
       kpi_score: safeNumber(row.kpi_score, 0),
       final_score: row.final_score,
+      monthly_final_score: row.monthly_final_score,
       quarter_score: row.quarter_score,
+      ranking_score: row.ranking_score,
       rank: row.rank,
       current_rank: row.current_rank || row.rank,
       grade: row.grade,

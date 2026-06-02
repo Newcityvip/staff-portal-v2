@@ -88,8 +88,10 @@
     "kpiDisplay",
     "final_score",
     "finalScore",
+    "monthly_final_score",
     "quarter_score",
-    "quarterScore"
+    "quarterScore",
+    "ranking_score"
   ].some((key) => hasScoreValue(row[key]));
   const hasCanonicalScoreRows = (root) => Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance).length > 0;
 

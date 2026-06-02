@@ -1034,6 +1034,43 @@ function getNextShiftStaffRows(access, staffIndex) {
   });
 }
 
+function getActiveBreakRows(dateStr, access, staffIndex) {
+  const targetDate = normalizeDateKey(dateStr || todayDate());
+  const rows = filterRowsForAdmin(listAttendanceRows(targetDate, 0), access, staffIndex);
+  const closed = {};
+  const active = {};
+
+  rows.forEach(function (row) {
+    const key = clean(row.login_id).toLowerCase() || clean(row.staff_id).toLowerCase();
+    if (!key || active[key]) return;
+    const eventType = safeUpper(row.event_type);
+    if (eventType === "BREAK_END") {
+      closed[key] = true;
+      return;
+    }
+    if (eventType !== "BREAK_START" || closed[key]) return;
+    const staff = staffIndex.byLogin[clean(row.login_id).toLowerCase()] || staffIndex.byStaffId[clean(row.staff_id).toLowerCase()] || {};
+    active[key] = {
+      staff_id: row.staff_id || staff.staff_id,
+      login_id: row.login_id || staff.login_id,
+      full_name: row.full_name || staff.full_name,
+      name: row.full_name || staff.full_name,
+      team: row.team || staff.team || "",
+      event_date: row.event_date,
+      event_time: row.event_time,
+      break_type: row.break_type || "BREAK",
+      breakStart: row.event_time,
+      start: row.event_time,
+      status: "ON_BREAK",
+      ip: row.ip
+    };
+  });
+
+  return Object.keys(active).map(function (key) { return active[key]; }).sort(function (a, b) {
+    return (normalizeDateKey(b.event_date) + " " + normalizeSheetTime(b.event_time)).localeCompare(normalizeDateKey(a.event_date) + " " + normalizeSheetTime(a.event_time));
+  });
+}
+
 function averageRows(rows, key) {
   let total = 0;
   let count = 0;
@@ -1110,7 +1147,7 @@ function buildScoreDebug(month, dailyRows, kpiRows, performanceRows) {
 }
 
 function buildPerformanceDetails(month, teamFilter) {
-  return getPerformanceDetails(resolveScoreMonth(month), teamFilter);
+  return buildCanonicalPerformanceDetails(resolveScoreMonth(month), teamFilter);
 }
 
 function identityKeys(row) {
@@ -1175,6 +1212,10 @@ function rowMatchesStaffIdentity(row, staff) {
 }
 
 function getPerformanceDetails(month, teamFilter) {
+  return buildCanonicalPerformanceDetails(month, teamFilter);
+}
+
+function buildCanonicalPerformanceDetails(month, teamFilter) {
   month = resolveScoreMonth(month);
   const teamKey = clean(teamFilter).toLowerCase();
   const activeStaff = listStaffRows().filter(function (staff) {
@@ -1344,6 +1385,7 @@ function getAdminDashboardFull(data) {
   }
   scheduleList = filterRowsForAdmin(scheduleList, access, staffIndex);
   const attendanceEvents = filterRowsForAdmin(listAttendanceRows(clean(data.date) || today, safeNumber(data.limit, 250)), access, staffIndex);
+  const breakBoard = getActiveBreakRows(clean(data.date) || today, access, staffIndex);
   const dailyScores = filterRowsForAdmin(listDailyScoreRows(month, safeNumber(data.limit, 250)), access, staffIndex);
   const kpiList = filterRowsForAdmin(listKpiRows(month), access, staffIndex);
   const quarterScores = filterRowsForAdmin(listQuarterScoreRows(safeNumber(data.limit, 250)), access, staffIndex);
@@ -1388,6 +1430,8 @@ function getAdminDashboardFull(data) {
     schedule_list: scheduleList,
     next_shift_staff: nextShiftStaff,
     attendance_events: attendanceEvents,
+    breakBoard: breakBoard,
+    breaks: breakBoard,
     daily_scores: dailyScores,
     kpi_list: kpiList,
     quarter_scores: quarterScores,
@@ -1841,7 +1885,7 @@ function listDailyScoreRows(month, limit) {
     const rowValues = values[i];
     const scoreDate = valueByHeader(rowValues, headerMap, ["score_date"], null);
     const scoreMonth = valueByHeader(rowValues, headerMap, ["score_month", "schedule_month", "month"], null);
-    const rowMonth = normalizeMonth(scoreMonth) || normalizeMonth(scoreDate);
+    const rowMonth = normalizeMonth(scoreDate) || normalizeMonth(scoreMonth);
     if (targetMonth && rowMonth !== targetMonth) continue;
     rows.push({
       daily_score_id: valueByHeader(rowValues, headerMap, ["score_id", "daily_score_id"], null),

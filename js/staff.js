@@ -16,6 +16,7 @@
   let refreshInFlight = false;
   let breakStartedAt = null;
   let scheduleMonthTouched = false;
+  let loggedPerformanceDetails = false;
   const BREAK_RULES = {
     BREAK: { label: "Break", limit: 1, minutes: 60 },
     BIO_BREAK: { label: "Bio Break", limit: 3, minutes: 11 },
@@ -101,6 +102,10 @@
     const schedule = root.today_schedule || root.schedule || root.shift || {};
     const attendance = root.attendance_state || root.today || root.attendance || root.current || {};
     const performanceDetails = Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance);
+    if (performanceDetails.length && !loggedPerformanceDetails) {
+      console.table(performanceDetails.slice(0, 10));
+      loggedPerformanceDetails = true;
+    }
     const kpi = root.own_kpi || root.performance || root.kpi || {};
     const fallbackLeaderboard = Portal.normalizeArray(root.leaderboard || root.rankings);
     const leaderboard = performanceDetails.length ? performanceDetails : fallbackLeaderboard;

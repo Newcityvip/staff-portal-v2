@@ -14,6 +14,7 @@
   let dashboard = {};
   let refreshTimer;
   let refreshInFlight = false;
+  let loggedPerformanceDetails = false;
 
   const empty = (message, span = 8) => `<tr><td colspan="${span}" class="empty-state">${message}</td></tr>`;
   const badge = (text, tone = "") => `<span class="badge ${tone}">${text || "--"}</span>`;
@@ -79,11 +80,19 @@
     const kpiList = Portal.normalizeArray(root.kpi_list || root.kpis || root.kpi || root.monthlyKpi || root.kpi_rows);
     const quarterScores = Portal.normalizeArray(root.quarter_scores || root.quarterScores || root.quarter);
     const performanceDetails = canonicalPerformanceRows(root);
+    if (performanceDetails.length && !loggedPerformanceDetails) {
+      console.table(performanceDetails.slice(0, 10));
+      loggedPerformanceDetails = true;
+    }
     const nextShiftStaff = Portal.normalizeArray(root.next_shift_staff || root.nextShiftStaff || root.next_shifts);
     const dailyScores = Portal.normalizeArray(root.daily_scores || root.dailyScores);
     const auditLogs = Portal.normalizeArray(root.audit_logs || root.auditLogs || root.audit);
     const telegramLogs = Portal.normalizeArray(root.telegram_logs || root.telegramLogs);
     const ipAllowlist = root.ip_allowlist || root.ipAllowlist || root.allowlist || [];
+    const hasBreakBoard = Object.prototype.hasOwnProperty.call(root, "breakBoard") || Object.prototype.hasOwnProperty.call(root, "breaks");
+    const breakRows = hasBreakBoard
+      ? Portal.normalizeArray(root.breakBoard || root.breaks)
+      : attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() === "BREAK_START");
     const rankingRows = performanceDetails.length ? performanceDetails : Portal.normalizeArray(root.topPerformers || root.leaderboard || root.rankings || quarterScores || kpiList);
     const worstRows = performanceDetails.length ? performanceDetails.slice().reverse() : Portal.normalizeArray(root.worstPerformers || root.lowPerformers || root.needsCoaching);
     const sortedWorst = worstRows.length
@@ -101,9 +110,7 @@
         missingCheckout: summary.missing_checkout || Math.max(Number(summary.checked_in || 0) - Number(summary.checked_out || 0), 0)
       },
       attendance: attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() !== "BREAK_START"),
-      breaks: Portal.normalizeArray(root.breakBoard || root.breaks).length
-        ? Portal.normalizeArray(root.breakBoard || root.breaks)
-        : attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() === "BREAK_START"),
+      breaks: breakRows,
       staff: enrichedStaff,
       schedules: scheduleList,
       nextShiftStaff,
@@ -223,7 +230,14 @@
     const host = document.getElementById("attendanceBoard");
     if (!host) return;
     if (!rows.length) return host.innerHTML = empty("No live attendance records received.", 5);
-    host.innerHTML = rows.map((row) => `
+    ensureViewButton("attendanceBoard", "live attendance", () => openTableModal("Live Attendance Board", rows, [
+      { label: "Staff", keys: ["name", "full_name", "staffName", "staff"] },
+      { label: "Team", keys: ["department", "team"] },
+      { label: "Status", render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) },
+      { label: "Time", render: (row) => Portal.formatTime(Portal.pick(row, ["checkIn", "check_in", "in", "event_time", "time"], "")) },
+      { label: "IP", keys: ["ip", "ipAddress"] }
+    ]));
+    host.innerHTML = rows.slice(0, previewLimit).map((row) => `
       <tr>
         <td>${Portal.pick(row, ["name", "full_name", "staffName", "staff"], "Staff")}</td>
         <td>${Portal.pick(row, ["department", "team"], "--")}</td>
@@ -237,7 +251,13 @@
     const host = document.getElementById("breakBoard");
     if (!host) return;
     if (!rows.length) return host.innerHTML = empty("No active break records received.", 4);
-    host.innerHTML = rows.map((row) => `
+    ensureViewButton("breakBoard", "live break", () => openTableModal("Live Break Board", rows, [
+      { label: "Staff", keys: ["name", "full_name", "staffName", "staff"] },
+      { label: "Start", render: (row) => Portal.formatTime(Portal.pick(row, ["breakStart", "start", "startedAt", "event_time", "time"], "")) },
+      { label: "Duration", keys: ["duration", "breakDuration"] },
+      { label: "Status", render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
+    ]));
+    host.innerHTML = rows.slice(0, previewLimit).map((row) => `
       <tr>
         <td>${Portal.pick(row, ["name", "full_name", "staffName", "staff"], "Staff")}</td>
         <td>${Portal.formatTime(Portal.pick(row, ["breakStart", "start", "startedAt", "event_time", "time"], ""))}</td>

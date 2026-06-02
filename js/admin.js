@@ -41,6 +41,32 @@
     const hour12 = hour % 12 || 12;
     return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
   };
+  const loginValue = (row) => String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase();
+  const hasScoreValue = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0;
+  };
+  const hasNonZeroScores = (rows = []) => rows.some((row) => [
+    "attendance_score",
+    "monthly_attendance_score",
+    "kpi_score",
+    "kpi_score_out_of_5",
+    "final_score",
+    "quarter_score"
+  ].some((key) => hasScoreValue(row[key])));
+  const canonicalPerformanceRows = (root) => Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance);
+  const performanceIndex = (rows = []) => rows.reduce((map, row) => {
+    const key = loginValue(row);
+    if (key) map[key] = row;
+    return map;
+  }, {});
+  const enrichStaffWithPerformance = (staffRows = [], performanceRows = []) => {
+    const byLogin = performanceIndex(performanceRows);
+    return staffRows.map((row) => {
+      const perf = byLogin[loginValue(row)] || {};
+      return { ...row, ...perf, status: Portal.pick(row, ["status", "state"], Portal.pick(perf, ["status"], "")) };
+    });
+  };
 
   const normalizeDashboard = (data) => {
     const root = data.data || data.dashboard || data;
@@ -50,7 +76,7 @@
     const attendanceEvents = Portal.normalizeArray(root.attendance_events || root.attendanceBoard || root.attendance || root.onlineStaff);
     const kpiList = Portal.normalizeArray(root.kpi_list || root.kpis || root.kpi || root.monthlyKpi || root.kpi_rows);
     const quarterScores = Portal.normalizeArray(root.quarter_scores || root.quarterScores || root.quarter);
-    const performanceDetails = Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance);
+    const performanceDetails = canonicalPerformanceRows(root);
     const nextShiftStaff = Portal.normalizeArray(root.next_shift_staff || root.nextShiftStaff || root.next_shifts);
     const dailyScores = Portal.normalizeArray(root.daily_scores || root.dailyScores);
     const auditLogs = Portal.normalizeArray(root.audit_logs || root.auditLogs || root.audit);
@@ -60,15 +86,9 @@
     const worstRows = performanceDetails.length ? performanceDetails.slice().reverse() : Portal.normalizeArray(root.worstPerformers || root.lowPerformers || root.needsCoaching);
     const sortedWorst = worstRows.length
       ? worstRows
-      : rankingRows.slice().sort((a, b) => Number(Portal.pick(a, ["final_score", "kpi_score_out_of_5", "score", "kpi"], 0)) - Number(Portal.pick(b, ["final_score", "kpi_score_out_of_5", "score", "kpi"], 0)));
-    const performanceByLogin = performanceDetails.reduce((map, row) => {
-      map[String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase()] = row;
-      return map;
-    }, {});
-    const enrichedStaff = staffList.map((row) => {
-      const perf = performanceByLogin[String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase()] || {};
-      return { ...row, ...perf, status: Portal.pick(row, ["status", "state"], Portal.pick(perf, ["status"], "")) };
-    });
+      : rankingRows.slice().sort((a, b) => Number(Portal.pick(a, ["final_score", "kpi_score", "kpi_score_out_of_5", "score", "kpi"], 0)) - Number(Portal.pick(b, ["final_score", "kpi_score", "kpi_score_out_of_5", "score", "kpi"], 0)));
+    const enrichedStaff = enrichStaffWithPerformance(staffList, performanceDetails);
+    const canonicalKpis = performanceDetails.length ? performanceDetails : kpiList;
     return {
       stats: root.stats || root.counters || {
         totalStaff: root.staff_count || summary.total_staff || staffList.length,
@@ -85,7 +105,7 @@
       staff: enrichedStaff,
       schedules: scheduleList,
       nextShiftStaff,
-      kpis: kpiList,
+      kpis: canonicalKpis,
       performance: performanceDetails,
       top: rankingRows,
       worst: sortedWorst,
@@ -103,6 +123,19 @@
     ["kpis", "performance", "top", "worst", "nextShiftStaff", "dailyLogs", "telegramLogs", "auditLogs"].forEach((key) => {
       merged[key] = keepArray(key);
     });
+    if ((!next.performance || !next.performance.length) && previous.performance?.length && hasNonZeroScores(previous.performance)) {
+      merged.performance = previous.performance;
+      merged.top = previous.top?.length ? previous.top : previous.performance;
+      merged.worst = previous.worst?.length ? previous.worst : previous.performance.slice().reverse();
+      merged.kpis = previous.performance;
+      if (next.staff?.length) merged.staff = enrichStaffWithPerformance(next.staff, previous.performance);
+    }
+    if (next.performance?.length && hasNonZeroScores(next.performance)) {
+      merged.staff = enrichStaffWithPerformance(next.staff || previous.staff || [], next.performance);
+      merged.kpis = next.performance;
+      merged.top = next.top?.length ? next.top : next.performance;
+      merged.worst = next.worst?.length ? next.worst : next.performance.slice().reverse();
+    }
     if ((!merged.staff || !merged.staff.length) && previous.staff?.length) merged.staff = previous.staff;
     if ((!merged.schedules || !merged.schedules.length) && previous.schedules?.length) merged.schedules = previous.schedules;
     if ((!merged.attendance || !merged.attendance.length) && previous.attendance?.length) merged.attendance = previous.attendance;
@@ -222,7 +255,7 @@
       { label: "Team", keys: ["department", "team"] },
       { label: "Role", keys: ["role", "position"] },
       { label: "Attendance", keys: ["attendance_score", "monthly_attendance_score"] },
-      { label: "KPI", keys: ["kpi_score_out_of_5", "kpi", "kpiScore"] },
+      { label: "KPI", keys: ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore"] },
       { label: "Final", keys: ["final_score", "score"] },
       { label: "Rank", keys: ["rank", "position"] },
       { label: "Status", render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
@@ -232,7 +265,7 @@
         <td>${Portal.pick(row, ["name", "full_name", "fullName", "staffName"], "Staff")}</td>
         <td>${Portal.pick(row, ["role", "position"], "--")}</td>
         <td>${Portal.pick(row, ["department", "team"], "--")}</td>
-        <td>F ${Portal.pick(row, ["final_score", "score"], "0")} / A ${Portal.pick(row, ["attendance_score", "monthly_attendance_score"], "0")} / K ${Portal.pick(row, ["kpi_score_out_of_5", "kpi", "kpiScore"], "0")}</td>
+        <td>F ${Portal.pick(row, ["final_score", "score"], "0")} / A ${Portal.pick(row, ["attendance_score", "monthly_attendance_score"], "0")} / K ${Portal.pick(row, ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore"], "0")}</td>
         <td>${badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], "")))}</td>
       </tr>`).join("");
   };
@@ -268,7 +301,9 @@
 
   const ensureNextShiftPanel = () => {
     if (document.getElementById("nextShiftStaff")) return;
+    const staffPanel = document.getElementById("staffTable")?.closest(".glass-panel");
     const schedulePanel = document.getElementById("scheduleTable")?.closest(".glass-panel");
+    schedulePanel?.classList.add("full-span");
     const panel = document.createElement("article");
     panel.className = "glass-panel table-panel";
     panel.innerHTML = `
@@ -279,7 +314,7 @@
           <tbody id="nextShiftStaff"></tbody>
         </table>
       </div>`;
-    schedulePanel?.insertAdjacentElement("afterend", panel);
+    (staffPanel || schedulePanel)?.insertAdjacentElement("afterend", panel);
   };
 
   const renderNextShiftStaff = (rows) => {
@@ -321,7 +356,7 @@
       { label: "Team", keys: ["team", "department"] },
       { label: "Month", keys: ["kpi_month", "month", "period"] },
       { label: "Attendance", keys: ["attendance_score", "monthly_attendance_score"] },
-      { label: "KPI", keys: ["kpi_score_out_of_5", "kpi_score", "kpi", "kpiScore"] },
+      { label: "KPI", keys: ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore"] },
       { label: "Final", keys: ["final_score", "score"] },
       { label: "Quarter", keys: ["quarter_score", "quarterScore"] },
       { label: "Rank", keys: ["rank", "position"] }
@@ -330,7 +365,7 @@
       <tr>
         <td>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</td>
         <td>${Portal.pick(row, ["kpi_month", "month", "period"], new Date().toISOString().slice(0, 7))}</td>
-        <td>${Portal.pick(row, ["kpi_score_out_of_5", "kpi_score", "kpi", "kpiScore"], "0")}</td>
+        <td>${Portal.pick(row, ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore"], "0")}</td>
         <td>${Portal.pick(row, ["final_score", "score"], "0")}</td>
         <td>${Portal.pick(row, ["rank", "position"], "--")}</td>
       </tr>`).join("");
@@ -348,7 +383,7 @@
       { label: "Staff", keys: ["full_name", "name", "staffName", "staff"] },
       { label: "Team", keys: ["department", "team"] },
       { label: "Attendance", keys: ["attendance_score", "monthly_attendance_score"] },
-      { label: "KPI", keys: ["kpi_score_out_of_5", "kpi", "kpiScore"] },
+      { label: "KPI", keys: ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore"] },
       { label: "Final", keys: ["final_score", "score"] },
       { label: "Quarter", keys: ["quarter_score", "quarterScore"] }
     ]));
@@ -356,7 +391,7 @@
       <div class="leader-row">
         <span class="leader-rank">${Portal.pick(row, ["rank", "position"], index + 1)}</span>
         <div><strong>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</strong><br><small>${Portal.pick(row, ["department", "team"], "")}</small></div>
-        <strong>${Portal.pick(row, ["final_score", "kpi_score_out_of_5", "score", "kpi", "quarterScore"], "0")}</strong>
+        <strong>${Portal.pick(row, ["final_score", "kpi_score", "kpi_score_out_of_5", "score", "kpi", "quarterScore"], "0")}</strong>
       </div>`).join("");
   };
 
@@ -444,7 +479,7 @@
     if (!canvas) return;
     const { ctx, width, height } = prepareCanvas(canvas);
     const scores = rows
-      .map((row) => Number(Portal.pick(row, ["kpi_score_out_of_5", "kpi", "kpiScore", "score"], NaN)))
+      .map((row) => Number(Portal.pick(row, ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore", "score"], NaN)))
       .filter((score) => Number.isFinite(score));
 
     ctx.clearRect(0, 0, width, height);
@@ -535,8 +570,11 @@
     if (!silent) Portal.setStatus(false, "Loading");
     try {
       const data = await Portal.api.dashboard("admin", { month: "" });
+      const root = data?.data || data?.dashboard || data || {};
+      const incomingPerformance = canonicalPerformanceRows(root);
+      const hadPerformance = dashboard.performance?.length;
       dashboard = mergeStableDashboard(dashboard, normalizeDashboard(data));
-      writeCachedDashboard(data);
+      if (incomingPerformance.length || !hadPerformance) writeCachedDashboard(data);
       renderAll();
     } catch (error) {
       Portal.setStatus(false, "API issue");

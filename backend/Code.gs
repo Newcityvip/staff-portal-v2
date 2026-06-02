@@ -928,6 +928,7 @@ function getStaffDashboard(data) {
     kpi_score: kpiScore,
     kpi_status: ownPerformance.kpi_status || (ownKpi ? "Scored" : "Not scored yet"),
     final_score: finalScore,
+    performance_details: performanceDetails,
     leaderboard: leaderboard,
     own_kpi: ownKpi,
     score_debug: scoreDebug

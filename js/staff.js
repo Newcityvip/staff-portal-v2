@@ -73,14 +73,35 @@
     const status = String(Portal.pick(schedule, ["status"], "")).toUpperCase();
     return ["OFF", "AL", "UL", "SL", "HOLIDAY"].includes(shift) ? shift : status || "OFF";
   };
+  const loginValue = (row) => String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase();
+  const hasScoreValue = (value) => {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0;
+  };
+  const hasNonZeroScore = (row = {}) => [
+    "attendance_score",
+    "monthly_attendance_score",
+    "monthlyAttendanceScore",
+    "kpi_score",
+    "kpi_score_out_of_5",
+    "kpiScore",
+    "kpiDisplay",
+    "final_score",
+    "finalScore",
+    "quarter_score",
+    "quarterScore"
+  ].some((key) => hasScoreValue(row[key]));
+  const hasCanonicalScoreRows = (root) => Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance).length > 0;
 
   const normalizeDashboard = (data) => {
     const root = data.data || data.dashboard || data;
     const staff = root.staff || root.profile || root.user || session.raw || {};
     const schedule = root.today_schedule || root.schedule || root.shift || {};
     const attendance = root.attendance_state || root.today || root.attendance || root.current || {};
+    const performanceDetails = Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance);
     const kpi = root.own_kpi || root.performance || root.kpi || {};
-    const leaderboard = Portal.normalizeArray(root.leaderboard || root.rankings);
+    const fallbackLeaderboard = Portal.normalizeArray(root.leaderboard || root.rankings);
+    const leaderboard = performanceDetails.length ? performanceDetails : fallbackLeaderboard;
     const attendanceEvents = Portal.normalizeArray(root.attendance_events || root.timeline || root.activity || root.logs);
     const dailyScores = Portal.normalizeArray(root.daily_scores || root.history || root.attendanceHistory || root.records);
     const quarterScores = Portal.normalizeArray(root.quarter_scores || root.quarterScores);
@@ -91,19 +112,27 @@
     const currentMonth = new Date().toISOString().slice(0, 7);
     const scheduleList = selectedMonth === currentMonth && nextSchedule.length ? nextSchedule : monthlySchedule;
     const loginKey = String(Portal.pick(staff, ["login_id"], session.loginId || session.staffId || "")).toLowerCase();
-    const ownLeader = leaderboard.find((row) => String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase() === loginKey);
+    const ownPerformance = performanceDetails.find((row) => loginValue(row) === loginKey) || {};
+    const ownLeader = leaderboard.find((row) => loginValue(row) === loginKey);
     const todayKey = new Date().toISOString().slice(0, 10);
     const todayEvents = attendanceEvents.filter((row) => dateKey(Portal.pick(row, ["event_date", "date", "created_at"], "")) === todayKey);
     const hasSchedule = schedule && schedule.ok !== false && Boolean(Portal.pick(schedule, ["schedule_date", "shift_code", "status", "start_time", "end_time"], ""));
     const nonWorking = hasSchedule && isNonWorkingSchedule(schedule);
     const actionBlockMessage = !hasSchedule ? noScheduleMessage : nonWorking ? nonWorkingMessage(nonWorkingValue(schedule)) : "";
     const dailyAverage = averageScore(dailyScores, ["final_attendance_score", "attendanceScore", "score"]);
-    const monthlyAttendanceScore = Portal.pick(root, ["monthly_attendance_score", "attendance_score"], dailyAverage === "--" ? 0 : dailyAverage);
-    const kpiScore = Portal.pick(root, ["kpi_score"], Portal.pick(kpi, ["kpi_score_out_of_5", "kpiScore", "score"], 0));
+    const monthlyAttendanceScore = performanceDetails.length
+      ? Portal.pick(ownPerformance, ["attendance_score", "monthly_attendance_score"], 0)
+      : Portal.pick(root, ["monthly_attendance_score", "attendance_score"], dailyAverage === "--" ? 0 : dailyAverage);
+    const kpiScore = performanceDetails.length
+      ? Portal.pick(ownPerformance, ["kpi_score", "kpi_score_out_of_5"], 0)
+      : Portal.pick(root, ["kpi_score"], Portal.pick(kpi, ["kpi_score_out_of_5", "kpiScore", "score"], 0));
     const kpiDisplay = kpiScore;
-    const finalScore = numeric(monthlyAttendanceScore) !== null && numeric(kpiScore) !== null
+    const calculatedFinalScore = numeric(monthlyAttendanceScore) !== null && numeric(kpiScore) !== null
       ? Number((numeric(monthlyAttendanceScore) * 0.4 + numeric(kpiScore) * 0.6).toFixed(2))
       : Portal.pick(root, ["final_score"], 0);
+    const finalScore = performanceDetails.length ? Portal.pick(ownPerformance, ["final_score"], calculatedFinalScore) : calculatedFinalScore;
+    const canonicalQuarterScore = Portal.pick(ownPerformance, ["quarter_score"], Portal.pick(quarterScore, ["final_score", "quarter_score", "score"], Portal.pick(root, ["quarter_score_value", "quarter_score"], finalScore)));
+    const canonicalRank = Portal.pick(ownPerformance, ["current_rank", "rank"], Portal.pick(root, ["current_rank", "rank"], Portal.pick(ownLeader || {}, ["current_rank", "rank", "position"], Portal.pick(kpi, ["rank"], "--"))));
     return {
       staff,
       today: {
@@ -122,10 +151,11 @@
       },
       performance: {
         ...kpi,
+        ...ownPerformance,
         kpiScore,
         kpiDisplay,
-        quarterScore: Portal.pick(quarterScore, ["final_score", "quarter_score", "score"], Portal.pick(root, ["quarter_score_value", "quarter_score"], finalScore)),
-        rank: Portal.pick(root, ["current_rank", "rank"], Portal.pick(ownLeader || {}, ["rank", "position"], Portal.pick(kpi, ["rank"], "--"))),
+        quarterScore: canonicalQuarterScore,
+        rank: canonicalRank,
         monthlyAttendanceScore,
         finalScore,
         quarter: Portal.pick(quarterScore, ["quarter"], "")
@@ -133,6 +163,7 @@
       history: attendanceEvents.length ? attendanceEvents : dailyScores,
       scheduleList,
       tomorrowSchedule: root.tomorrow_schedule || {},
+      performanceDetails,
       leaderboard,
       timeline: todayEvents.length ? todayEvents : attendanceEvents,
       ip: root.ip || root.ipStatus || { allowed: true, message: "IP allowed" }
@@ -153,9 +184,13 @@
   const mergeStableDashboard = (previous, next, rawData) => {
     if (!previous || !Object.keys(previous).length) return next;
     const root = rawData?.data || rawData?.dashboard || rawData || {};
+    const canonicalRows = Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance);
+    const canonicalHasRows = canonicalRows.length > 0;
     const previousPerf = previous.performance || {};
     const nextPerf = next.performance || {};
     const mergedPerf = { ...nextPerf };
+    const loginKey = String(Portal.pick(next.staff || previous.staff || {}, ["login_id"], session.loginId || session.staffId || "")).toLowerCase();
+    const canonicalOwnRow = canonicalRows.find((row) => loginValue(row) === loginKey);
 
     [
       { key: "kpiScore", rootKeys: ["kpi_score", "own_kpi", "monthly_kpi", "performance_details"] },
@@ -173,7 +208,14 @@
       }
     });
 
-    if ((!next.leaderboard || !next.leaderboard.length) && previous.leaderboard?.length) next.leaderboard = previous.leaderboard;
+    if (hasNonZeroScore(previousPerf) && !hasNonZeroScore(mergedPerf) && (!canonicalHasRows || !canonicalOwnRow)) {
+      Object.assign(mergedPerf, previousPerf);
+    }
+
+    if ((!canonicalHasRows && previous.performanceDetails?.length) || (!next.performanceDetails || !next.performanceDetails.length)) {
+      next.performanceDetails = canonicalHasRows ? next.performanceDetails : previous.performanceDetails;
+    }
+    if ((!canonicalHasRows || !next.leaderboard || !next.leaderboard.length) && previous.leaderboard?.length) next.leaderboard = previous.leaderboard;
     if ((!next.history || !next.history.length) && previous.history?.length) next.history = previous.history;
     if ((!next.timeline || !next.timeline.length) && previous.timeline?.length) next.timeline = previous.timeline;
     if ((!next.scheduleList || !next.scheduleList.length) && previous.scheduleList?.length) next.scheduleList = previous.scheduleList;
@@ -217,7 +259,7 @@
             <td>${Portal.pick(row, ["name", "staffName", "full_name", "staff"], "Staff")}</td>
             <td>${Portal.pick(row, ["department", "team"], "--")}</td>
             <td>${Portal.pick(row, ["attendance_score", "monthly_attendance_score"], "0")}</td>
-            <td>${Portal.pick(row, ["kpi_score_out_of_5", "kpi_score", "kpi", "kpiScore"], "0")}</td>
+            <td>${Portal.pick(row, ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore"], "0")}</td>
             <td>${Portal.pick(row, ["final_score", "score"], "0")}</td>
             <td>${Portal.pick(row, ["rank", "position"], index + 1)}</td>
           </tr>`;
@@ -325,12 +367,12 @@
     Portal.setText("attendanceStatus", attendanceStatus);
     Portal.setText("breakStatus", breakStatus);
     Portal.setText("monthlyScore", Portal.pick(performance, ["monthlyAttendanceScore", "monthly_attendance_score", "attendanceScore", "monthlyScore"], "0"));
-    Portal.setText("kpiScore", Portal.pick(performance, ["kpiDisplay", "kpi_score_out_of_5", "kpi", "kpiScore", "score"], "0"));
+    Portal.setText("kpiScore", Portal.pick(performance, ["kpiDisplay", "kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore", "score"], "0"));
     Portal.setText("quarterScore", Portal.pick(performance, ["quarterScore", "quarter_score", "final_score", "quarter"], "0"));
     Portal.setText("rankPosition", Portal.pick(performance, ["rank", "rankPosition", "position"], "--"));
     const finalScore = Portal.pick(performance, ["finalScore", "final_score"], "0");
     const attendanceScore = Portal.pick(performance, ["monthlyAttendanceScore", "monthly_attendance_score", "attendanceScore", "monthlyScore"], "0");
-    const kpiScore = Portal.pick(performance, ["kpiDisplay", "kpi_score_out_of_5", "kpi", "kpiScore", "score"], "0");
+    const kpiScore = Portal.pick(performance, ["kpiDisplay", "kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore", "score"], "0");
     const quarterScore = Portal.pick(performance, ["quarterScore", "quarter_score", "final_score", "quarter"], finalScore);
     const rank = Portal.pick(performance, ["rank", "rankPosition", "position"], "--");
     Portal.setText("summaryAttendanceScore", scoreText(attendanceScore));
@@ -399,7 +441,7 @@
       <div class="leader-row ${rowLogin && rowLogin === loginKey ? "is-current-user" : ""}">
         <span class="leader-rank">${Portal.pick(row, ["rank", "position"], index + 1)}</span>
         <div><strong>${Portal.pick(row, ["name", "staffName", "full_name", "staff"], "Staff")}</strong><br><small>${Portal.pick(row, ["department", "team"], "")}</small></div>
-        <strong>${Portal.pick(row, ["final_score", "score", "kpi", "kpi_score_out_of_5", "quarterScore"], "0")}</strong>
+        <strong>${Portal.pick(row, ["final_score", "score", "kpi_score", "kpi", "kpi_score_out_of_5", "quarterScore"], "0")}</strong>
       </div>`;
     }).join("");
   };
@@ -572,7 +614,7 @@
       const selectedMonth = root.selected_month || root.score_debug?.selected_month || "";
       if (monthInput && !scheduleMonthTouched && selectedMonth) monthInput.value = selectedMonth;
       state = mergeStableDashboard(state, normalizeDashboard(data), data);
-      writeCachedDashboard(data);
+      if (hasCanonicalScoreRows(root) || !state.performanceDetails?.length) writeCachedDashboard(data);
       renderProfile(state);
     } catch (error) {
       Portal.setStatus(false, "API issue");

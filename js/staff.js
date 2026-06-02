@@ -15,6 +15,7 @@
   let refreshTimer;
   let refreshInFlight = false;
   let breakStartedAt = null;
+  let scheduleMonthTouched = false;
   const BREAK_RULES = {
     BREAK: { label: "Break", limit: 1, minutes: 60 },
     BIO_BREAK: { label: "Bio Break", limit: 3, minutes: 11 },
@@ -86,7 +87,7 @@
     const quarterScore = root.quarter_score || quarterScores[0] || {};
     const nextSchedule = Portal.normalizeArray(root.next_7_schedule || root.upcoming_schedule || root.nextSchedule);
     const monthlySchedule = Portal.normalizeArray(root.monthly_schedule);
-    const selectedMonth = document.getElementById("scheduleMonth")?.value || new Date().toISOString().slice(0, 7);
+    const selectedMonth = document.getElementById("scheduleMonth")?.value || root.selected_month || root.score_debug?.selected_month || new Date().toISOString().slice(0, 7);
     const currentMonth = new Date().toISOString().slice(0, 7);
     const scheduleList = selectedMonth === currentMonth && nextSchedule.length ? nextSchedule : monthlySchedule;
     const loginKey = String(Portal.pick(staff, ["login_id"], session.loginId || session.staffId || "")).toLowerCase();
@@ -564,8 +565,12 @@
     refreshInFlight = true;
     if (!silent) Portal.setStatus(false, "Loading");
     try {
-      const month = document.getElementById("scheduleMonth")?.value || new Date().toISOString().slice(0, 7);
+      const monthInput = document.getElementById("scheduleMonth");
+      const month = scheduleMonthTouched ? monthInput?.value || "" : "";
       const data = await Portal.api.dashboard("staff", { month });
+      const root = data?.data || data?.dashboard || data || {};
+      const selectedMonth = root.selected_month || root.score_debug?.selected_month || "";
+      if (monthInput && !scheduleMonthTouched && selectedMonth) monthInput.value = selectedMonth;
       state = mergeStableDashboard(state, normalizeDashboard(data), data);
       writeCachedDashboard(data);
       renderProfile(state);
@@ -625,8 +630,10 @@
   bindActions();
   const scheduleMonth = document.getElementById("scheduleMonth");
   if (scheduleMonth) {
-    scheduleMonth.value = new Date().toISOString().slice(0, 7);
-    scheduleMonth.addEventListener("change", () => load());
+    scheduleMonth.addEventListener("change", () => {
+      scheduleMonthTouched = true;
+      load();
+    });
   }
   document.getElementById("breakTypeSelect")?.addEventListener("change", () => updateActionStates(state.today || {}));
   load();

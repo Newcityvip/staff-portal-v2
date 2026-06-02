@@ -51,6 +51,7 @@
     const kpiList = Portal.normalizeArray(root.kpi_list || root.kpis || root.kpi || root.monthlyKpi || root.kpi_rows);
     const quarterScores = Portal.normalizeArray(root.quarter_scores || root.quarterScores || root.quarter);
     const performanceDetails = Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance);
+    const nextShiftStaff = Portal.normalizeArray(root.next_shift_staff || root.nextShiftStaff || root.next_shifts);
     const dailyScores = Portal.normalizeArray(root.daily_scores || root.dailyScores);
     const auditLogs = Portal.normalizeArray(root.audit_logs || root.auditLogs || root.audit);
     const telegramLogs = Portal.normalizeArray(root.telegram_logs || root.telegramLogs);
@@ -83,6 +84,7 @@
         : attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() === "BREAK_START"),
       staff: enrichedStaff,
       schedules: scheduleList,
+      nextShiftStaff,
       kpis: kpiList,
       performance: performanceDetails,
       top: rankingRows,
@@ -98,7 +100,7 @@
     if (!previous || !Object.keys(previous).length) return next;
     const keepArray = (key) => (!next[key] || !next[key].length) && previous[key]?.length ? previous[key] : next[key];
     const merged = { ...next };
-    ["kpis", "performance", "top", "worst", "dailyLogs", "telegramLogs", "auditLogs"].forEach((key) => {
+    ["kpis", "performance", "top", "worst", "nextShiftStaff", "dailyLogs", "telegramLogs", "auditLogs"].forEach((key) => {
       merged[key] = keepArray(key);
     });
     if ((!merged.staff || !merged.staff.length) && previous.staff?.length) merged.staff = previous.staff;
@@ -264,10 +266,53 @@
       </tr>`).join("");
   };
 
+  const ensureNextShiftPanel = () => {
+    if (document.getElementById("nextShiftStaff")) return;
+    const schedulePanel = document.getElementById("scheduleTable")?.closest(".glass-panel");
+    const panel = document.createElement("article");
+    panel.className = "glass-panel table-panel";
+    panel.innerHTML = `
+      <div class="panel-title"><h2>Next Shift Staff</h2><span>Upcoming</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Staff</th><th>Team</th><th>Date</th><th>Shift</th><th>Start</th><th>End</th><th>Status</th></tr></thead>
+          <tbody id="nextShiftStaff"></tbody>
+        </table>
+      </div>`;
+    schedulePanel?.insertAdjacentElement("afterend", panel);
+  };
+
+  const renderNextShiftStaff = (rows) => {
+    ensureNextShiftPanel();
+    const host = document.getElementById("nextShiftStaff");
+    if (!host) return;
+    if (!rows.length) return host.innerHTML = empty("No upcoming working shifts found.", 7);
+    const columns = [
+      { label: "Staff", keys: ["staff", "full_name", "name", "staffName"] },
+      { label: "Team", keys: ["team", "department"] },
+      { label: "Date", keys: ["date", "schedule_date"] },
+      { label: "Shift", keys: ["shift", "shift_code"] },
+      { label: "Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["start", "start_time"], "")) },
+      { label: "End", render: (row) => formatShiftTime12h(Portal.pick(row, ["end", "end_time"], "")) },
+      { label: "Status", render: (row) => badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], ""))) }
+    ];
+    ensureViewButton("nextShiftStaff", "next shift staff", () => openTableModal("Next Shift Staff", rows, columns));
+    host.innerHTML = rows.slice(0, previewLimit).map((row) => `
+      <tr>
+        <td>${Portal.pick(row, ["staff", "full_name", "name", "staffName"], "Staff")}</td>
+        <td>${Portal.pick(row, ["team", "department"], "--")}</td>
+        <td>${Portal.pick(row, ["date", "schedule_date"], "--")}</td>
+        <td>${Portal.pick(row, ["shift", "shift_code"], "--")}</td>
+        <td>${formatShiftTime12h(Portal.pick(row, ["start", "start_time"], ""))}</td>
+        <td>${formatShiftTime12h(Portal.pick(row, ["end", "end_time"], ""))}</td>
+        <td>${badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], "")))}</td>
+      </tr>`).join("");
+  };
+
   const renderKpi = (rows) => {
     const host = document.getElementById("kpiTable");
     const performanceRows = dashboard.performance || [];
-    const sourceRows = rows.length ? rows : performanceRows;
+    const sourceRows = performanceRows.length ? performanceRows : rows;
     Portal.setText("kpiRows", `${sourceRows.length} rows`);
     if (!host) return;
     if (!sourceRows.length) return host.innerHTML = empty("No KPI rows received.", 5);
@@ -456,6 +501,7 @@
     renderBreaks(dashboard.breaks);
     renderStaff(dashboard.staff);
     renderSchedules(dashboard.schedules);
+    renderNextShiftStaff(dashboard.nextShiftStaff || []);
     renderKpi(dashboard.kpis);
     renderLeaders("topPerformers", dashboard.top);
     renderLeaders("worstPerformers", dashboard.worst);
@@ -488,7 +534,7 @@
     refreshInFlight = true;
     if (!silent) Portal.setStatus(false, "Loading");
     try {
-      const data = await Portal.api.dashboard("admin");
+      const data = await Portal.api.dashboard("admin", { month: "" });
       dashboard = mergeStableDashboard(dashboard, normalizeDashboard(data));
       writeCachedDashboard(data);
       renderAll();

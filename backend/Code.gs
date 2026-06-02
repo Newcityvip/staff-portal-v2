@@ -144,6 +144,15 @@ function monthNow() {
   return Utilities.formatDate(new Date(), TZ, "yyyy-MM");
 }
 
+function resolveScoreMonth(month) {
+  const requestedMonth = normalizeMonthKey(month);
+  if (requestedMonth) return requestedMonth;
+
+  const settings = getSettings();
+  const defaultMonth = normalizeMonthKey(settings.DEFAULT_MONTH);
+  return defaultMonth || monthNow();
+}
+
 function normalizeMonthKey(v) {
   if (Object.prototype.toString.call(v) === "[object Date]") {
     return Utilities.formatDate(v, TZ, "yyyy-MM");
@@ -837,7 +846,7 @@ function getStaffDashboard(data) {
   if (!staff.ok) return staff;
 
   const today = todayDateForTimezone(getTeamTimezone(staff.team));
-  const month = normalizeMonthKey(data.month) || monthNow();
+  const month = resolveScoreMonth(data.month);
   const performanceDetails = getPerformanceDetails(month, staff.team);
   const leaderboard = performanceDetails.map(function (row) {
     return {
@@ -933,11 +942,11 @@ function averageRows(rows, key) {
 }
 
 function buildPerformanceDetails(month, teamFilter) {
-  return getPerformanceDetails(month, teamFilter);
+  return getPerformanceDetails(resolveScoreMonth(month), teamFilter);
 }
 
 function getPerformanceDetails(month, teamFilter) {
-  month = normalizeMonthKey(month) || monthNow();
+  month = resolveScoreMonth(month);
   const teamKey = clean(teamFilter).toLowerCase();
   const activeStaff = listStaffRows().filter(function (staff) {
     if (safeUpper(staff.status) !== "ACTIVE" || isAdminStaff(staff)) return false;
@@ -1078,7 +1087,7 @@ function getAdminDashboardFull(data) {
   if (ipError) return ipError;
 
   const access = getAdminAccess(data);
-  const month = normalizeMonthKey(data.month) || monthNow();
+  const month = resolveScoreMonth(data.month);
   const today = todayDate();
   const allStaff = listStaffRows();
   const staffIndex = buildStaffAccessIndex(allStaff);
@@ -1830,7 +1839,7 @@ function isWorkingDailyScoreRow(row) {
 
 function calculateMonthlyAttendanceScore(loginId, month) {
   const targetLogin = clean(loginId).toLowerCase();
-  const targetMonth = normalizeMonthKey(month) || monthNow();
+  const targetMonth = resolveScoreMonth(month);
   const rows = listDailyScoreRows(targetMonth, 0).filter(function (row) {
     return clean(row.login_id).toLowerCase() === targetLogin && isWorkingDailyScoreRow(row);
   });
@@ -2152,7 +2161,7 @@ function getQuarterMonths(year, q) {
 }
 
 function getQuarterMonthsForMonth(month) {
-  const key = normalizeMonthKey(month) || monthNow();
+  const key = resolveScoreMonth(month);
   const year = safeNumber(key.substring(0, 4), new Date().getFullYear());
   const monthNumber = safeNumber(key.substring(5, 7), 1);
   if (monthNumber === 12) return getQuarterMonths(year + 1, "Q1");
@@ -2163,7 +2172,7 @@ function getQuarterMonthsForMonth(month) {
 }
 
 function getQuarterLabelForMonth(month) {
-  const key = normalizeMonthKey(month) || monthNow();
+  const key = resolveScoreMonth(month);
   const year = safeNumber(key.substring(0, 4), new Date().getFullYear());
   const monthNumber = safeNumber(key.substring(5, 7), 1);
   if (monthNumber === 12) return "Q1-" + (year + 1);
@@ -2224,7 +2233,7 @@ function getGrade(score) {
 }
 
 function getLeaderboard(month) {
-  const list = getPerformanceDetails(month).map(function (row) {
+  const list = getPerformanceDetails(resolveScoreMonth(month)).map(function (row) {
     return {
       login_id: row.login_id,
       full_name: row.full_name,

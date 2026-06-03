@@ -249,6 +249,9 @@
     { label: "Shift", keys: ["shift_code", "shift"] },
     { label: "Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["start_time", "start"], "")) },
     { label: "End", render: (row) => formatShiftTime12h(Portal.pick(row, ["end_time", "end"], "")) },
+    { label: "Check In", render: (row) => formatShiftTime12h(Portal.pick(row, ["check_in_time", "check_in"], "")) },
+    { label: "Check Out", render: (row) => formatShiftTime12h(Portal.pick(row, ["check_out_time", "check_out"], "")) },
+    { label: "Break Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["break_start_time", "break_start"], "")) },
     { label: "Status", render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
   ];
   const bindSummaryCard = (id, title, rows) => {
@@ -277,7 +280,7 @@
     const details = dashboard.summaryDetails || {};
     bindSummaryCard("totalStaff", "Total Staff", details.total_staff || dashboard.staff);
     bindSummaryCard("onlineStaff", "Online Staff", details.online_staff);
-    bindSummaryCard("checkedInToday", "Checked In Today", details.checked_in);
+    bindSummaryCard("checkedInToday", "Checked In Today", details.checked_in_today || details.checked_in);
     bindSummaryCard("onBreak", "On Break", details.on_break);
     bindSummaryCard("lateStaff", "Late Staff", details.late_staff);
     bindSummaryCard("missingCheckout", "Missing Checkout", details.missing_checkout);

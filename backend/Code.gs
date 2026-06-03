@@ -317,7 +317,16 @@ function appendAudit(actorType, actorId, actorName, action, module, targetId, ol
 }
 
 function clean(v) {
-  return String(v == null ? "" : v).trim();
+  return String(v == null ? "" : v).replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+}
+
+function normalizeIdentityValue(v) {
+  return String(v == null ? "" : v)
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/\u00A0/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
 }
 
 function safeUpper(v) {
@@ -1022,13 +1031,11 @@ function getNextShiftStaffRows(access, staffIndex) {
     return clean(a.full_name).localeCompare(clean(b.full_name));
   });
 
-  const byLogin = {};
-  rows.forEach(function (row) {
-    const key = clean(row.login_id).toLowerCase() || clean(row.staff_id).toLowerCase() || clean(row.full_name).toLowerCase();
-    if (!key || byLogin[key]) return;
-    byLogin[key] = {
+  return rows.map(function (row) {
+    return {
       staff: row.full_name,
       full_name: row.full_name,
+      staff_id: row.staff_id,
       login_id: row.login_id,
       team: row.team,
       date: normalizeDateKey(row.schedule_date),
@@ -1041,12 +1048,6 @@ function getNextShiftStaffRows(access, staffIndex) {
       end_time: row.end_time,
       status: row.status
     };
-  });
-
-  return Object.keys(byLogin).map(function (key) { return byLogin[key]; }).sort(function (a, b) {
-    const dateCompare = normalizeDateKey(a.schedule_date).localeCompare(normalizeDateKey(b.schedule_date));
-    if (dateCompare) return dateCompare;
-    return parseTimeToMinutesSafe(a.start_time) - parseTimeToMinutesSafe(b.start_time);
   });
 }
 
@@ -1186,13 +1187,13 @@ function buildPerformanceDetails(month, teamFilter) {
 }
 
 function normalizeScoreName(value) {
-  return clean(value).toLowerCase().replace(/\s+/g, " ");
+  return normalizeIdentityValue(value);
 }
 
 function identityKeys(row) {
   const keys = [];
-  const login = clean(row && row.login_id).toLowerCase();
-  const staffId = clean(row && row.staff_id).toLowerCase();
+  const login = normalizeIdentityValue(row && row.login_id);
+  const staffId = normalizeIdentityValue(row && row.staff_id);
   const fullName = normalizeScoreName(row && row.full_name);
   if (login) keys.push("login:" + login);
   if (staffId) keys.push("staff:" + staffId);
@@ -1201,8 +1202,8 @@ function identityKeys(row) {
 }
 
 function lookupKeysForStaff(staff) {
-  const login = clean(staff && staff.login_id).toLowerCase();
-  const staffId = clean(staff && staff.staff_id).toLowerCase();
+  const login = normalizeIdentityValue(staff && staff.login_id);
+  const staffId = normalizeIdentityValue(staff && staff.staff_id);
   const fullName = normalizeScoreName(staff && staff.full_name);
   const keys = [];
   if (login) keys.push("login:" + login);
@@ -1429,10 +1430,10 @@ function dayOffMessage(shiftCode, status) {
 function buildStaffAccessIndex(staffRows) {
   const index = { byLogin: {}, byStaffId: {}, byEmail: {}, byName: {} };
   (staffRows || listStaffRows()).forEach(function (staff) {
-    const login = clean(staff.login_id).toLowerCase();
-    const staffId = clean(staff.staff_id).toLowerCase();
+    const login = normalizeIdentityValue(staff.login_id);
+    const staffId = normalizeIdentityValue(staff.staff_id);
     const email = clean(staff.email).toLowerCase();
-    const name = clean(staff.full_name).toLowerCase();
+    const name = normalizeIdentityValue(staff.full_name);
     if (login) index.byLogin[login] = staff;
     if (staffId) index.byStaffId[staffId] = staff;
     if (email) index.byEmail[email] = staff;
@@ -1447,15 +1448,15 @@ function rowMatchesAllowedTeam(row, allowedTeam, staffIndex) {
   if (clean(row.team || row.department).toLowerCase() === teamKey) return true;
 
   const candidates = [
-    staffIndex.byLogin[clean(row.login_id).toLowerCase()],
-    staffIndex.byLogin[clean(row.admin_login_id).toLowerCase()],
-    staffIndex.byLogin[clean(row.updated_by).toLowerCase()],
-    staffIndex.byStaffId[clean(row.staff_id).toLowerCase()],
-    staffIndex.byStaffId[clean(row.actor_id).toLowerCase()],
-    staffIndex.byStaffId[clean(row.target_id).toLowerCase()],
+    staffIndex.byLogin[normalizeIdentityValue(row.login_id)],
+    staffIndex.byLogin[normalizeIdentityValue(row.admin_login_id)],
+    staffIndex.byLogin[normalizeIdentityValue(row.updated_by)],
+    staffIndex.byStaffId[normalizeIdentityValue(row.staff_id)],
+    staffIndex.byStaffId[normalizeIdentityValue(row.actor_id)],
+    staffIndex.byStaffId[normalizeIdentityValue(row.target_id)],
     staffIndex.byEmail[clean(row.email).toLowerCase()],
-    staffIndex.byName[clean(row.full_name).toLowerCase()],
-    staffIndex.byName[clean(row.actor_name).toLowerCase()]
+    staffIndex.byName[normalizeIdentityValue(row.full_name)],
+    staffIndex.byName[normalizeIdentityValue(row.actor_name)]
   ].filter(Boolean);
 
   return candidates.some(function (staff) {
@@ -1851,7 +1852,7 @@ function getTodaySummary(dateStr, teamFilter) {
   const nonWorkingCodes = ["OFF", "AL", "SL", "UL", "NP"];
   const staffByIdentity = {};
   const putStaffKey = function (value, staff) {
-    const key = clean(value).toLowerCase();
+    const key = normalizeIdentityValue(value);
     if (key) staffByIdentity[key] = staff;
   };
   staffRows.forEach(function (staff) {
@@ -1862,30 +1863,36 @@ function getTodaySummary(dateStr, teamFilter) {
   const detailFor = function (row, extra) {
     const identity = scheduleIdentityKey(row);
     const staff = staffByIdentity[identity] || {};
+    const scheduleDate = normalizeDateKey(row.schedule_date || row.event_date || targetDate);
     return Object.assign({
       staff_id: row.staff_id || staff.staff_id || "",
       login_id: row.login_id || staff.login_id || "",
       full_name: row.full_name || staff.full_name || "",
       team: row.team || staff.team || "",
       role: staff.role || "",
-      date: targetDate,
+      schedule_date: scheduleDate || targetDate,
+      date: scheduleDate || targetDate,
       shift_code: row.shift_code || "",
       start_time: row.start_time || "",
       end_time: row.end_time || "",
-      status: row.status || ""
+      status: row.status || "",
+      check_in_time: "",
+      check_out_time: "",
+      break_start_time: ""
     }, extra || {});
   };
 
   let working = 0;
-  let notWorkingToday = 0;
   const workingScheduleByIdentity = {};
   let checkedIn = {};
   let checkedOut = {};
+  let checkOutTime = {};
   let activeBreak = {};
   let firstIn = {};
   const details = {
     total_staff: [],
     online_staff: [],
+    checked_in_today: [],
     checked_in: [],
     on_break: [],
     late_staff: [],
@@ -1903,7 +1910,6 @@ function getTodaySummary(dateStr, teamFilter) {
     const status = safeUpper(row.status);
     const shift = safeUpper(row.shift_code);
     if (nonWorkingCodes.indexOf(status) > -1 || nonWorkingCodes.indexOf(shift) > -1) {
-      notWorkingToday++;
       details.not_working_today.push(detailFor(row, { status: status || shift }));
       return;
     }
@@ -1922,15 +1928,18 @@ function getTodaySummary(dateStr, teamFilter) {
     if (eventType === "CHECK_IN") {
       checkedIn[identity] = true;
       if (!firstIn[identity]) firstIn[identity] = normalizeSheetTime(row.event_time);
-      if (!details.checked_in.some(function (item) { return scheduleIdentityKey(item) === identity; })) {
-        details.checked_in.push(detailFor(row, { check_in: row.event_time, status: "CHECKED_IN" }));
+      if (!details.checked_in_today.some(function (item) { return scheduleIdentityKey(item) === identity; })) {
+        details.checked_in_today.push(detailFor(row, { check_in_time: row.event_time, check_in: row.event_time, status: "CHECKED_IN" }));
       }
     }
-    if (eventType === "CHECK_OUT") checkedOut[identity] = true;
+    if (eventType === "CHECK_OUT") {
+      checkedOut[identity] = true;
+      checkOutTime[identity] = row.event_time;
+    }
     if (eventType === "BREAK_START") {
       activeBreak[identity] = breakType;
       details.on_break = details.on_break.filter(function (item) { return scheduleIdentityKey(item) !== identity; });
-      details.on_break.push(detailFor(row, { break_type: breakType, break_start: row.event_time, status: "ON_BREAK" }));
+      details.on_break.push(detailFor(row, { break_type: breakType, break_start_time: row.event_time, break_start: row.event_time, status: "ON_BREAK" }));
     }
     if (eventType === "BREAK_END") {
       delete activeBreak[identity];
@@ -1939,8 +1948,6 @@ function getTodaySummary(dateStr, teamFilter) {
   });
 
   let currentlyWorking = 0;
-  let missingCheckout = 0;
-  let lateStaff = 0;
   Object.keys(checkedIn).forEach(function (identity) {
     const schedule = workingScheduleByIdentity[identity];
     if (!schedule || checkedOut[identity]) return;
@@ -1948,11 +1955,10 @@ function getTodaySummary(dateStr, teamFilter) {
     const alignedNow = window.overnight && nowMinutes < window.start_minutes ? nowMinutes + 1440 : nowMinutes;
     if (alignedNow >= window.start_minutes && alignedNow <= window.end_minutes) {
       currentlyWorking++;
-      details.online_staff.push(detailFor(schedule, { check_in: firstIn[identity], status: "ONLINE" }));
+      details.online_staff.push(detailFor(schedule, { check_in_time: firstIn[identity], check_in: firstIn[identity], check_out_time: checkOutTime[identity] || "", status: "ONLINE" }));
     }
     if (alignedNow > window.end_minutes) {
-      missingCheckout++;
-      details.missing_checkout.push(detailFor(schedule, { check_in: firstIn[identity], status: "MISSING_CHECKOUT" }));
+      details.missing_checkout.push(detailFor(schedule, { check_in_time: firstIn[identity], check_in: firstIn[identity], check_out_time: checkOutTime[identity] || "", status: "MISSING_CHECKOUT" }));
     }
   });
 
@@ -1961,23 +1967,24 @@ function getTodaySummary(dateStr, teamFilter) {
     if (!schedule) return;
     const window = getScheduleWindowMinutes(schedule);
     if (alignEventMinutesToSchedule(firstIn[identity], window) > window.start_minutes) {
-      lateStaff++;
-      details.late_staff.push(detailFor(schedule, { check_in: firstIn[identity], status: "LATE" }));
+      details.late_staff.push(detailFor(schedule, { check_in_time: firstIn[identity], check_in: firstIn[identity], check_out_time: checkOutTime[identity] || "", status: "LATE" }));
     }
   });
 
+  details.checked_in = details.checked_in_today;
+
   return {
-    total_staff: staffRows.filter(function (row) { return safeUpper(row.status) === "ACTIVE"; }).length,
+    total_staff: details.total_staff.length,
     working_staff: working,
-    checked_in: Object.keys(checkedIn).length,
+    checked_in: details.checked_in_today.length,
     checked_out: Object.keys(checkedOut).length,
-    currently_working: currentlyWorking,
-    online_staff: currentlyWorking,
-    on_break: Object.keys(activeBreak).length,
-    late_staff: lateStaff,
-    missing_checkout: missingCheckout,
+    currently_working: details.online_staff.length,
+    online_staff: details.online_staff.length,
+    on_break: details.on_break.length,
+    late_staff: details.late_staff.length,
+    missing_checkout: details.missing_checkout.length,
     not_checked_in: Math.max(working - Object.keys(checkedIn).length, 0),
-    not_working_today: notWorkingToday,
+    not_working_today: details.not_working_today.length,
     summary_details: details
   };
 }
@@ -1997,8 +2004,8 @@ function countLateStaff(dateStr, firstIn, teamFilter) {
 }
 
 function scheduleIdentityKey(row) {
-  return clean(row && row.login_id).toLowerCase() ||
-    clean(row && row.staff_id).toLowerCase() ||
+  return normalizeIdentityValue(row && row.login_id) ||
+    normalizeIdentityValue(row && row.staff_id) ||
     normalizeScoreName(row && row.full_name);
 }
 

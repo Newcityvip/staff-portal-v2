@@ -1114,6 +1114,7 @@ function buildScoreDebug(month, dailyRows, kpiRows, performanceRows, extra) {
     selected_quarter: getQuarterLabelForMonth(month),
     staff_count: (performanceRows || []).length,
     matched_staff_count: extra.matched_staff_count || 0,
+    score_debug_missing: extra.score_debug_missing || [],
     daily_rows_found: (dailyRows || []).length,
     kpi_rows_found: (kpiRows || []).length,
     canonical_rows_built: (performanceRows || []).length,
@@ -1178,40 +1179,83 @@ function lookupKeysForStaff(staff) {
   return keys;
 }
 
+function ensureScoreMapBuckets(map) {
+  if (!map.__login) map.__login = {};
+  if (!map.__staff) map.__staff = {};
+  if (!map.__name) map.__name = {};
+}
+
+function pushScoreBucket(bucket, key, row) {
+  if (!key) return;
+  if (!bucket[key]) bucket[key] = [];
+  bucket[key].push(row);
+}
+
 function addScoreRowToMap(map, row) {
+  ensureScoreMapBuckets(map);
+  pushScoreBucket(map.__login, normalizeIdentityValue(row && row.login_id), row);
+  pushScoreBucket(map.__staff, normalizeIdentityValue(row && row.staff_id), row);
+  pushScoreBucket(map.__name, normalizeScoreName(row && row.full_name), row);
   identityKeys(row).forEach(function (key) {
     if (!map[key]) map[key] = [];
     map[key].push(row);
   });
 }
 
-function getScoreRowsForStaff(map, staff) {
+function uniqueScoreRows(rows) {
   const seen = {};
-  const rows = [];
+  const unique = [];
+  (rows || []).forEach(function (row) {
+    const rowKey = clean(row.daily_score_id || row.kpi_id || row.quarter_id) ||
+      [clean(row.score_date), clean(row.kpi_month || row.score_month), identityKeys(row).join("|")].join("|") ||
+      JSON.stringify(row);
+    if (seen[rowKey]) return;
+    seen[rowKey] = true;
+    unique.push(row);
+  });
+  return unique;
+}
+
+function getScoreRowsForStaff(map, staff) {
+  ensureScoreMapBuckets(map);
+  const login = normalizeIdentityValue(staff && staff.login_id);
+  const staffId = normalizeIdentityValue(staff && staff.staff_id);
+  const fullName = normalizeScoreName(staff && staff.full_name);
+  if (login && map.__login[login] && map.__login[login].length) return uniqueScoreRows(map.__login[login]);
+  if (staffId && map.__staff[staffId] && map.__staff[staffId].length) return uniqueScoreRows(map.__staff[staffId]);
+  if (fullName && map.__name[fullName] && map.__name[fullName].length) return uniqueScoreRows(map.__name[fullName]);
+
   const keys = lookupKeysForStaff(staff);
   for (let i = 0; i < keys.length; i++) {
     const bucket = map[keys[i]] || [];
     if (!bucket.length) continue;
-    bucket.forEach(function (row) {
-      const rowKey = clean(row.daily_score_id || row.kpi_id || row.quarter_id) ||
-        [clean(row.score_date), clean(row.kpi_month || row.score_month), identityKeys(row).join("|")].join("|") ||
-        JSON.stringify(row);
-      if (seen[rowKey]) return;
-      seen[rowKey] = true;
-      rows.push(row);
-    });
-    if (rows.length) return rows;
+    return uniqueScoreRows(bucket);
   }
-  return rows;
+  return [];
 }
 
 function setLatestScoreRow(map, row) {
+  ensureScoreMapBuckets(map);
+  const login = normalizeIdentityValue(row && row.login_id);
+  const staffId = normalizeIdentityValue(row && row.staff_id);
+  const fullName = normalizeScoreName(row && row.full_name);
+  if (login) map.__login[login] = row;
+  if (staffId) map.__staff[staffId] = row;
+  if (fullName) map.__name[fullName] = row;
   identityKeys(row).forEach(function (key) {
     map[key] = row;
   });
 }
 
 function getLatestScoreRowForStaff(map, staff) {
+  ensureScoreMapBuckets(map);
+  const login = normalizeIdentityValue(staff && staff.login_id);
+  const staffId = normalizeIdentityValue(staff && staff.staff_id);
+  const fullName = normalizeScoreName(staff && staff.full_name);
+  if (login && map.__login[login]) return map.__login[login];
+  if (staffId && map.__staff[staffId]) return map.__staff[staffId];
+  if (fullName && map.__name[fullName]) return map.__name[fullName];
+
   const keys = lookupKeysForStaff(staff);
   for (let i = 0; i < keys.length; i++) {
     if (map[keys[i]]) return map[keys[i]];
@@ -1263,6 +1307,7 @@ function getCanonicalScores(month, teamFilter) {
   });
 
   const matchedDailyKeys = {};
+  const scoreDebugMissing = [];
   const rows = activeStaff.map(function (staff) {
     const staffDaily = getScoreRowsForStaff(dailyMap, staff);
     staffDaily.forEach(function (row) {
@@ -1287,6 +1332,13 @@ function getCanonicalScores(month, teamFilter) {
       monthly_final_score: monthlyFinalScore,
       quarter_score: quarterScore
     }));
+    if (clean(staff.login_id) && !staffDaily.length) {
+      scoreDebugMissing.push({
+        login_id: staff.login_id,
+        staff_id: staff.staff_id,
+        full_name: staff.full_name
+      });
+    }
 
     return {
       staff_id: staff.staff_id,
@@ -1339,6 +1391,7 @@ function getCanonicalScores(month, teamFilter) {
   const matchedStaffCount = rows.filter(function (row) {
     return safeNumber(row.daily_score_count, 0) > 0 || row.has_kpi || row.has_quarter_score;
   }).length;
+  Logger.log("score_debug_missing: " + JSON.stringify(scoreDebugMissing));
   return {
     month: month,
     rows: rows,
@@ -1347,6 +1400,7 @@ function getCanonicalScores(month, teamFilter) {
     quarterRows: listQuarterScoreRows(0),
     debug: buildScoreDebug(month, dailyRows, kpiRows, rows, {
       matched_staff_count: matchedStaffCount,
+      score_debug_missing: scoreDebugMissing,
       first_10_unmatched_daily_rows: unmatchedDailyRows
     })
   };

@@ -116,7 +116,8 @@
     hasRealScoresInDashboard(readCachedScores()) ||
     hasValidScorePayload(readCachedDashboard());
   const isSoftRefreshError = (error) =>
-    Portal.isAbortLike(error) || /timeout|timed out|signal is aborted|aborted/i.test(String(error?.message || error || ""));
+    Portal.isAbortLike(error) ||
+    /timeout|timed out|signal is aborted|aborted|cannot read properties of null/i.test(String(error?.message || error || ""));
   const applyCachedScores = (target, cached) => {
     if (!cached || !hasRealScoresInDashboard(cached)) return target;
     target.performance = cached.performance || target.performance;
@@ -190,7 +191,8 @@
         checkedInToday: summary.checked_in,
         onBreak: summary.on_break,
         lateStaff: summary.late_staff,
-        missingCheckout: summary.missing_checkout || Math.max(Number(summary.checked_in || 0) - Number(summary.checked_out || 0), 0)
+        missingCheckout: summary.missing_checkout,
+        notWorkingToday: summary.not_working_today
       },
       attendance: attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() !== "BREAK_START"),
       breaks: breakRows,
@@ -246,6 +248,7 @@
     Portal.setText("onBreak", Portal.pick(stats, ["onBreak", "on_break", "breaks"], "--"));
     Portal.setText("lateStaff", Portal.pick(stats, ["lateStaff", "late_staff", "late"], "--"));
     Portal.setText("missingCheckout", Portal.pick(stats, ["missingCheckout", "missing_checkout", "missingCheckOut"], "--"));
+    Portal.setText("notWorkingToday", Portal.pick(stats, ["notWorkingToday", "not_working_today", "offToday"], "--"));
   };
 
   const ensureViewButton = (hostId, label, onClick) => {

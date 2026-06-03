@@ -1000,7 +1000,9 @@ function getNextShiftStaffRows(access, staffIndex) {
   const today = todayDate();
   const nowMinutes = parseTimeToMinutesSafe(nowTime());
   const nonWorkingCodes = ["", "OFF", "AL", "UL", "SL", "NP", "LEAVE", "HOLIDAY"];
-  const rows = filterRowsForAdmin(listScheduleRows("", ""), access, staffIndex).filter(function (row) {
+  const teamKey = clean(access && access.allowed_team).toLowerCase();
+  const rows = listScheduleRows("", "").filter(function (row) {
+    if (teamKey && clean(row.team).toLowerCase() !== teamKey) return false;
     const status = safeUpper(row.status);
     const shift = safeUpper(row.shift_code);
     if (status !== "WORKING") return false;
@@ -1524,7 +1526,6 @@ function getAdminDashboardFull(data) {
 
   summary.total_staff = staffList.filter(function (row) { return safeUpper(row.status) === "ACTIVE"; }).length;
   summary.online_staff = summary.currently_working;
-  summary.missing_checkout = Math.max(Number(summary.checked_in || 0) - Number(summary.checked_out || 0), 0);
 
   return {
     ok: true,
@@ -1835,52 +1836,86 @@ function getActiveStaffCount() {
 }
 
 function getTodaySummary(dateStr, teamFilter) {
-  const schedule = getValues(SHEETS.SCHEDULE);
-  const events = getValues(SHEETS.EVENTS);
   const targetDate = normalizeDateKey(dateStr);
   const teamKey = clean(teamFilter).toLowerCase();
+  const access = teamKey ? { allowed_team: teamKey } : null;
   const staffIndex = buildStaffAccessIndex();
+  const staffRows = filterRowsForAdmin(listStaffRows(), access, staffIndex);
+  const scheduleRows = listScheduleRows("", targetDate).filter(function (row) {
+    return !teamKey || clean(row.team).toLowerCase() === teamKey;
+  });
+  const eventRows = listAttendanceRows(targetDate, 0).slice().reverse().filter(function (row) {
+    return !teamKey || rowMatchesAllowedTeam(row, teamKey, staffIndex);
+  });
+  const nowMinutes = parseTimeToMinutesSafe(nowTime());
+  const nonWorkingCodes = ["OFF", "AL", "SL", "UL", "NP"];
 
   let working = 0;
+  let notWorkingToday = 0;
+  const workingScheduleByIdentity = {};
   let checkedIn = {};
   let checkedOut = {};
   let activeBreak = {};
   let firstIn = {};
 
-  for (let i = 1; i < schedule.length; i++) {
-    if (normalizeDateKey(schedule[i][2]) !== targetDate || safeUpper(schedule[i][10]) !== "WORKING") continue;
-    const scheduleRow = mapScheduleRow(schedule[i]);
-    if (teamKey && !rowMatchesAllowedTeam(scheduleRow, teamKey, staffIndex)) continue;
-    working++;
-  }
-
-  for (let i = 1; i < events.length; i++) {
-    if (normalizeDateKey(events[i][1]) !== targetDate) continue;
-    if (teamKey && !rowMatchesAllowedTeam({
-      staff_id: events[i][3],
-      login_id: events[i][4],
-      full_name: events[i][5]
-    }, teamKey, staffIndex)) continue;
-    const loginId = clean(events[i][4]);
-    const eventType = safeUpper(events[i][6]);
-    const breakType = safeUpper(events[i][7]);
-    if (eventType === "CHECK_IN") {
-      checkedIn[loginId] = true;
-      if (!firstIn[loginId]) firstIn[loginId] = normalizeSheetTime(events[i][2]);
+  scheduleRows.forEach(function (row) {
+    const status = safeUpper(row.status);
+    const shift = safeUpper(row.shift_code);
+    if (nonWorkingCodes.indexOf(status) > -1 || nonWorkingCodes.indexOf(shift) > -1) {
+      notWorkingToday++;
+      return;
     }
-    if (eventType === "CHECK_OUT") checkedOut[loginId] = true;
-    if (eventType === "BREAK_START") activeBreak[loginId] = breakType;
-    if (eventType === "BREAK_END") delete activeBreak[loginId];
-  }
+    if (status !== "WORKING" || isNonWorkingDay(row.shift_code, row.status)) return;
+    const identity = scheduleIdentityKey(row);
+    if (!identity) return;
+    working++;
+    if (!workingScheduleByIdentity[identity]) workingScheduleByIdentity[identity] = row;
+  });
+
+  eventRows.forEach(function (row) {
+    const identity = scheduleIdentityKey(row);
+    if (!identity) return;
+    const eventType = safeUpper(row.event_type);
+    const breakType = safeUpper(row.break_type);
+    if (eventType === "CHECK_IN") {
+      checkedIn[identity] = true;
+      if (!firstIn[identity]) firstIn[identity] = normalizeSheetTime(row.event_time);
+    }
+    if (eventType === "CHECK_OUT") checkedOut[identity] = true;
+    if (eventType === "BREAK_START") activeBreak[identity] = breakType;
+    if (eventType === "BREAK_END") delete activeBreak[identity];
+  });
+
+  let currentlyWorking = 0;
+  let missingCheckout = 0;
+  let lateStaff = 0;
+  Object.keys(checkedIn).forEach(function (identity) {
+    const schedule = workingScheduleByIdentity[identity];
+    if (!schedule || checkedOut[identity]) return;
+    const window = getScheduleWindowMinutes(schedule);
+    if (nowMinutes >= window.start_minutes && nowMinutes <= window.end_minutes) currentlyWorking++;
+    if (nowMinutes > window.end_minutes) missingCheckout++;
+  });
+
+  Object.keys(firstIn).forEach(function (identity) {
+    const schedule = workingScheduleByIdentity[identity];
+    if (!schedule) return;
+    const window = getScheduleWindowMinutes(schedule);
+    if (alignEventMinutesToSchedule(firstIn[identity], window) > window.start_minutes) lateStaff++;
+  });
 
   return {
+    total_staff: staffRows.filter(function (row) { return safeUpper(row.status) === "ACTIVE"; }).length,
     working_staff: working,
     checked_in: Object.keys(checkedIn).length,
     checked_out: Object.keys(checkedOut).length,
-    currently_working: Object.keys(checkedIn).length - Object.keys(checkedOut).length,
+    currently_working: currentlyWorking,
+    online_staff: currentlyWorking,
     on_break: Object.keys(activeBreak).length,
-    late_staff: countLateStaff(targetDate, firstIn, teamFilter),
-    not_checked_in: Math.max(working - Object.keys(checkedIn).length, 0)
+    late_staff: lateStaff,
+    missing_checkout: missingCheckout,
+    not_checked_in: Math.max(working - Object.keys(checkedIn).length, 0),
+    not_working_today: notWorkingToday
   };
 }
 
@@ -1896,6 +1931,12 @@ function countLateStaff(dateStr, firstIn, teamFilter) {
     if (alignEventMinutesToSchedule(inTime, scheduleWindow) - scheduleWindow.start_minutes > grace) count++;
   });
   return count;
+}
+
+function scheduleIdentityKey(row) {
+  return clean(row && row.login_id).toLowerCase() ||
+    clean(row && row.staff_id).toLowerCase() ||
+    normalizeScoreName(row && row.full_name);
 }
 
 /***** LIST MAPPERS *****/

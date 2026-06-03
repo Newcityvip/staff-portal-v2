@@ -156,7 +156,8 @@
     hasRealScoresInState(readCachedScores()) ||
     hasValidScorePayload(readCachedDashboard());
   const isSoftRefreshError = (error) =>
-    Portal.isAbortLike(error) || /timeout|timed out|signal is aborted|aborted/i.test(String(error?.message || error || ""));
+    Portal.isAbortLike(error) ||
+    /timeout|timed out|signal is aborted|aborted|cannot read properties of null/i.test(String(error?.message || error || ""));
   const applyCachedScores = (target, cached) => {
     if (!cached || !hasRealScoresInState(cached)) return target;
     target.performance = cached.performance || target.performance;

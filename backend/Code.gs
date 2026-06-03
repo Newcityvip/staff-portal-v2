@@ -321,12 +321,17 @@ function clean(v) {
 }
 
 function normalizeIdentityValue(v) {
+  return normalizeIdentity(v);
+}
+
+function normalizeIdentity(v) {
   return String(v == null ? "" : v)
     .replace(/[\u200B-\u200D\uFEFF]/g, "")
     .replace(/\u00A0/g, " ")
     .trim()
     .toLowerCase()
-    .replace(/\s+/g, " ");
+    .replace(/\s+/g, " ")
+    .replace(/[^a-z0-9]/g, "");
 }
 
 function safeUpper(v) {
@@ -591,86 +596,48 @@ function getStaffByLogin(loginId) {
 }
 
 function getStaffByIdentifier(identifier) {
-  const values = getValues(SHEETS.STAFF);
-  const target = clean(identifier).toLowerCase();
-  for (let i = 1; i < values.length; i++) {
-    const row = values[i];
-    if (clean(row[2]).toLowerCase() === target || clean(row[3]).toLowerCase() === target) {
-      if (safeUpper(row[6]) !== "ACTIVE") return { ok: false, message: "Staff inactive" };
-      return {
-        ok: true,
-        staff_id: row[0],
-        full_name: row[1],
-        login_id: row[2],
-        email: row[3],
-        team: row[4],
-        role: row[5],
-        status: row[6],
-        manager: row[8],
-        phone: row[9],
-        telegram_user_id: row[10]
-      };
-    }
-  }
-  for (let i = 1; i < values.length; i++) {
-    const row = values[i];
-    if (clean(row[0]).toLowerCase() === target) {
-      if (safeUpper(row[6]) !== "ACTIVE") return { ok: false, message: "Staff inactive" };
-      return {
-        ok: true,
-        staff_id: row[0],
-        full_name: row[1],
-        login_id: row[2],
-        email: row[3],
-        team: row[4],
-        role: row[5],
-        status: row[6],
-        manager: row[8],
-        phone: row[9],
-        telegram_user_id: row[10]
-      };
-    }
+  const target = normalizeIdentity(identifier);
+  const targetEmail = clean(identifier).toLowerCase();
+  const staffRows = listStaffRows();
+  const match = staffRows.filter(function (row) {
+    return normalizeIdentity(row.login_id) === target ||
+      normalizeIdentity(row.staff_id) === target ||
+      normalizeIdentity(row.full_name) === target ||
+      clean(row.email).toLowerCase() === targetEmail;
+  })[0];
+  if (match) {
+    if (safeUpper(match.status) !== "ACTIVE") return { ok: false, message: "Staff inactive" };
+    return Object.assign({ ok: true }, match);
   }
   return { ok: false, message: "Staff not found" };
 }
 
 /***** SCHEDULE *****/
 
-function getScheduleForDate(loginId, dateStr) {
-  const values = getValues(SHEETS.SCHEDULE);
+function getScheduleForDate(identity, dateStr) {
   const key = normalizeDateKey(dateStr);
-  const target = clean(loginId).toLowerCase();
-
-  for (let i = 1; i < values.length; i++) {
-    const row = values[i];
-    if (normalizeDateKey(row[2]) === key && clean(row[4]).toLowerCase() === target) {
-      return mapScheduleRow(row);
-    }
-  }
-  return { ok: false, message: "No schedule found" };
+  const staffIdentity = typeof identity === "object" && identity ? identity : { login_id: identity };
+  const row = listScheduleRows("", key).filter(function (scheduleRow) {
+    return rowMatchesStaffIdentity(scheduleRow, staffIdentity);
+  })[0];
+  return row || { ok: false, message: "No schedule found" };
 }
 
-function getMonthlySchedule(loginId, month) {
-  const values = getValues(SHEETS.SCHEDULE);
-  const target = clean(loginId).toLowerCase();
+function getMonthlySchedule(identity, month) {
+  const staffIdentity = typeof identity === "object" && identity ? identity : { login_id: identity };
   const targetMonth = normalizeMonthKey(month);
-  const list = [];
-
-  for (let i = 1; i < values.length; i++) {
-    const row = values[i];
-    if (normalizeMonthKey(row[1]) === targetMonth && clean(row[4]).toLowerCase() === target) {
-      const mapped = mapScheduleRow(row);
-      list.push({
-        date: mapped.schedule_date,
-        schedule_date: mapped.schedule_date,
-        shift_code: mapped.shift_code,
-        start_time: mapped.start_time,
-        end_time: mapped.end_time,
-        status: mapped.status
-      });
-    }
-  }
-  return list;
+  return listScheduleRows(targetMonth, "").filter(function (row) {
+    return rowMatchesStaffIdentity(row, staffIdentity);
+  }).map(function (mapped) {
+    return {
+      date: mapped.schedule_date,
+      schedule_date: mapped.schedule_date,
+      shift_code: mapped.shift_code,
+      start_time: mapped.start_time,
+      end_time: mapped.end_time,
+      status: mapped.status
+    };
+  });
 }
 
 function getShiftRule(shiftCode) {
@@ -831,14 +798,14 @@ function attendanceActionLocked(data) {
 
 function resolveAttendanceSchedule(staff, eventType, requestedDate) {
   const dateKey = normalizeDateKey(requestedDate);
-  const schedule = getScheduleForDate(staff.login_id, dateKey);
+  const schedule = getScheduleForDate(staff, dateKey);
   if (schedule.ok) return { date: dateKey, schedule: schedule };
 
   if (eventType === "CHECK_OUT" || eventType === "BREAK_START" || eventType === "BREAK_END") {
     const previousDate = addDays(dateKey, -1);
-    const previousSchedule = getScheduleForDate(staff.login_id, previousDate);
+    const previousSchedule = getScheduleForDate(staff, previousDate);
     if (previousSchedule.ok) {
-      const state = getAttendanceState(staff.login_id, previousDate);
+      const state = getAttendanceState(staff, previousDate);
       if (state.hasCheckIn && !state.hasCheckOut) return { date: previousDate, schedule: previousSchedule };
     }
   }
@@ -846,10 +813,9 @@ function resolveAttendanceSchedule(staff, eventType, requestedDate) {
   return { date: dateKey, schedule: schedule };
 }
 
-function getAttendanceState(loginId, dateStr) {
-  const values = getValues(SHEETS.EVENTS);
+function getAttendanceState(identity, dateStr) {
   const targetDate = normalizeDateKey(dateStr);
-  const targetLogin = clean(loginId).toLowerCase();
+  const staffIdentity = typeof identity === "object" && identity ? identity : { login_id: identity };
 
   let hasCheckIn = false;
   let hasCheckOut = false;
@@ -858,14 +824,14 @@ function getAttendanceState(loginId, dateStr) {
   let firstCheckIn = "";
   let lastCheckOut = "";
 
-  for (let i = 1; i < values.length; i++) {
-    const row = values[i];
-    if (normalizeDateKey(row[1]) !== targetDate) continue;
-    if (clean(row[4]).toLowerCase() !== targetLogin) continue;
+  const rows = listAttendanceRows(targetDate, 0).filter(function (row) {
+    return rowMatchesStaffIdentity(row, staffIdentity);
+  }).slice().reverse();
 
-    const eventType = safeUpper(row[6]);
-    const breakType = safeUpper(row[7]);
-    const eventTime = normalizeSheetTime(row[2]) || clean(row[2]);
+  rows.forEach(function (row) {
+    const eventType = safeUpper(row.event_type);
+    const breakType = safeUpper(row.break_type);
+    const eventTime = normalizeSheetTime(row.event_time) || clean(row.event_time);
 
     if (eventType === "CHECK_IN") {
       hasCheckIn = true;
@@ -880,7 +846,7 @@ function getAttendanceState(loginId, dateStr) {
       if (counts[breakType] != null) counts[breakType]++;
     }
     if (eventType === "BREAK_END" && activeBreak === breakType) activeBreak = "";
-  }
+  });
 
   return { hasCheckIn, hasCheckOut, activeBreak, counts, firstCheckIn, lastCheckOut };
 }
@@ -920,7 +886,7 @@ function getStaffDashboard(data) {
   });
   const ownKpi = getOwnKPI(staff.login_id, month);
   const attendanceEvents = listAttendanceRows("", 300).filter(function (row) {
-    return clean(row.login_id).toLowerCase() === clean(staff.login_id).toLowerCase();
+    return rowMatchesStaffIdentity(row, staff);
   });
   const dailyScores = listDailyScoreRows(month, 300).filter(function (row) {
     return rowMatchesStaffIdentity(row, staff);
@@ -960,12 +926,12 @@ function getStaffDashboard(data) {
     selected_month: month,
     staff: staff,
     today: today,
-    today_schedule: getScheduleForDate(staff.login_id, today),
-    tomorrow_schedule: getScheduleForDate(staff.login_id, addDays(today, 1)),
-    attendance_state: getAttendanceState(staff.login_id, today),
-    monthly_schedule: getMonthlySchedule(staff.login_id, month),
-    next_7_schedule: getNextSchedule(staff.login_id, today, 7),
-    upcoming_schedule: getNextSchedule(staff.login_id, today, 0),
+    today_schedule: getScheduleForDate(staff, today),
+    tomorrow_schedule: getScheduleForDate(staff, addDays(today, 1)),
+    attendance_state: getAttendanceState(staff, today),
+    monthly_schedule: getMonthlySchedule(staff, month),
+    next_7_schedule: getNextSchedule(staff, today, 7),
+    upcoming_schedule: getNextSchedule(staff, today, 0),
     attendance_events: attendanceEvents,
     daily_scores: dailyScores,
     quarter_scores: quarterScores,
@@ -990,11 +956,11 @@ function getStaffDashboard(data) {
   };
 }
 
-function getNextSchedule(loginId, fromDate, days) {
-  const target = clean(loginId).toLowerCase();
+function getNextSchedule(identity, fromDate, days) {
+  const staffIdentity = typeof identity === "object" && identity ? identity : { login_id: identity };
   const from = normalizeDateKey(fromDate);
   const rows = listScheduleRows("", "").filter(function (row) {
-    return clean(row.login_id).toLowerCase() === target && normalizeDateKey(row.schedule_date) >= from;
+    return rowMatchesStaffIdentity(row, staffIdentity) && normalizeDateKey(row.schedule_date) >= from;
   });
   rows.sort(function (a, b) {
     const dateCompare = normalizeDateKey(a.schedule_date).localeCompare(normalizeDateKey(b.schedule_date));
@@ -1018,8 +984,8 @@ function getNextShiftStaffRows(access, staffIndex) {
     if (nonWorkingCodes.indexOf(status) > -1 || nonWorkingCodes.indexOf(shift) > -1) return false;
     if (isNonWorkingDay(row.shift_code, row.status)) return false;
     const dateKey = normalizeDateKey(row.schedule_date);
-    if (!dateKey || dateKey < today) return false;
-    if (dateKey === today && parseTimeToMinutesSafe(row.start_time) < nowMinutes) return false;
+    if (dateKey !== today) return false;
+    if (parseTimeToMinutesSafe(row.start_time) <= nowMinutes) return false;
     return true;
   });
 
@@ -1058,7 +1024,7 @@ function getActiveBreakRows(dateStr, access, staffIndex) {
   const active = {};
 
   rows.forEach(function (row) {
-    const key = clean(row.login_id).toLowerCase() || clean(row.staff_id).toLowerCase();
+    const key = scheduleIdentityKey(row);
     if (!key || active[key]) return;
     const eventType = safeUpper(row.event_type);
     if (eventType === "BREAK_END") {
@@ -1066,7 +1032,7 @@ function getActiveBreakRows(dateStr, access, staffIndex) {
       return;
     }
     if (eventType !== "BREAK_START" || closed[key]) return;
-    const staff = staffIndex.byLogin[clean(row.login_id).toLowerCase()] || staffIndex.byStaffId[clean(row.staff_id).toLowerCase()] || {};
+    const staff = staffIndex.byLogin[normalizeIdentity(row.login_id)] || staffIndex.byStaffId[normalizeIdentity(row.staff_id)] || staffIndex.byName[normalizeIdentity(row.full_name)] || {};
     active[key] = {
       staff_id: row.staff_id || staff.staff_id,
       login_id: row.login_id || staff.login_id,
@@ -2412,11 +2378,11 @@ function calculateDailyScore(data) {
     const dateStr = clean(data.date) || todayDate();
     const staff = getStaffByLogin(loginId);
     if (!staff.ok) return staff;
-    const schedule = getScheduleForDate(staff.login_id, dateStr);
+    const schedule = getScheduleForDate(staff, dateStr);
     if (!schedule.ok) return schedule;
 
     const settings = getSettings();
-    const state = getAttendanceState(staff.login_id, dateStr);
+    const state = getAttendanceState(staff, dateStr);
     const score = calculateDailyAttendanceScore(staff, schedule, state, settings, dateStr);
     const dailyRow = [
       makeId("DAS"), dateStr, clean(schedule.schedule_month), staff.staff_id, staff.login_id, staff.full_name,

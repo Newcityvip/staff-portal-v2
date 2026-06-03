@@ -4,16 +4,24 @@
   if (session.role !== "staff") location.href = "admin.html";
 
   const CACHE_KEY = `spv2_staff_dashboard_last_good_${session.loginId || session.staffId || "staff"}`;
+  const SCORE_CACHE_KEY = `spv2_staff_scores_last_good_${session.loginId || session.staffId || "staff"}`;
   const readCachedDashboard = () => {
     try { return JSON.parse(localStorage.getItem(CACHE_KEY) || "null"); } catch (error) { return null; }
   };
   const writeCachedDashboard = (data) => {
     try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch (error) {}
   };
+  const readCachedScores = () => {
+    try { return JSON.parse(localStorage.getItem(SCORE_CACHE_KEY) || "null"); } catch (error) { return null; }
+  };
+  const writeCachedScores = (data) => {
+    try { localStorage.setItem(SCORE_CACHE_KEY, JSON.stringify(data)); } catch (error) {}
+  };
 
   let state = {};
   let refreshTimer;
   let refreshInFlight = false;
+  let lastScoreRefreshAt = 0;
   let breakStartedAt = null;
   let scheduleMonthTouched = false;
   let loggedPerformanceDetails = false;
@@ -94,6 +102,7 @@
     "quarterScore",
     "ranking_score"
   ].some((key) => hasScoreValue(row[key]));
+  const hasNonZeroScoreRows = (rows = []) => Portal.normalizeArray(rows).some(hasNonZeroScore);
   const hasCanonicalScoreRows = (root) => Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance).length > 0;
   const scoreFieldKeys = [
     "attendance_score",
@@ -124,6 +133,35 @@
       root.own_kpi,
       root.kpi
     ].some(hasScoreFields);
+  };
+  const hasRealScorePayload = (payload) => {
+    const root = payloadRoot(payload);
+    return hasNonZeroScoreRows(root.performance_details || root.performanceDetails || root.performance) ||
+      hasNonZeroScoreRows(root.leaderboard || root.rankings) ||
+      hasNonZeroScore(root.staff_score) ||
+      hasNonZeroScore(root.score) ||
+      hasNonZeroScore(root.performance_summary) ||
+      hasNonZeroScore(root.own_kpi) ||
+      hasNonZeroScore(root);
+  };
+  const hasRealScoresInState = (dashboardState = {}) =>
+    hasNonZeroScore(dashboardState.performance) ||
+    hasNonZeroScoreRows(dashboardState.performanceDetails) ||
+    hasNonZeroScoreRows(dashboardState.leaderboard);
+  const applyCachedScores = (target, cached) => {
+    if (!cached || !hasRealScoresInState(cached)) return target;
+    target.performance = cached.performance || target.performance;
+    target.performanceDetails = cached.performanceDetails || target.performanceDetails;
+    target.leaderboard = cached.leaderboard || target.leaderboard;
+    return target;
+  };
+  const cacheScoresFromState = (dashboardState) => {
+    if (!hasRealScoresInState(dashboardState)) return;
+    writeCachedScores({
+      performance: dashboardState.performance,
+      performanceDetails: dashboardState.performanceDetails,
+      leaderboard: dashboardState.leaderboard
+    });
   };
 
   const normalizeDashboard = (data) => {
@@ -262,7 +300,7 @@
     return { ...next, performance: mergedPerf };
   };
 
-  state = normalizeDashboard(readCachedDashboard() || {});
+  state = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
 
   const openLeaderboardModal = (rows, loginKey) => {
     let modal = document.getElementById("staffLeaderboardModal");
@@ -656,20 +694,26 @@
       const selectedMonth = root.selected_month || root.score_debug?.selected_month || "";
       if (monthInput && !scheduleMonthTouched && selectedMonth) monthInput.value = selectedMonth;
       const scorePayloadValid = hasValidScorePayload(data);
+      const scorePayloadReal = hasRealScorePayload(data);
+      const cachedRealScores = hasRealScoresInState(state);
+      const allowScoreRefresh = !silent || !lastScoreRefreshAt || Date.now() - lastScoreRefreshAt >= 60000;
       const nextState = normalizeDashboard(data);
-      if (!scorePayloadValid && Object.keys(state || {}).length) {
-        nextState.performance = state.performance;
-        nextState.performanceDetails = state.performanceDetails;
-        nextState.leaderboard = state.leaderboard;
+      if (Object.keys(state || {}).length && (!allowScoreRefresh || !scorePayloadValid || (cachedRealScores && !scorePayloadReal))) {
+        applyCachedScores(nextState, state);
+        applyCachedScores(nextState, readCachedScores());
       }
       state = mergeStableDashboard(state, nextState, data);
-      if (scorePayloadValid || !state.performanceDetails?.length) writeCachedDashboard(data);
+      if (allowScoreRefresh && scorePayloadValid && (!cachedRealScores || scorePayloadReal)) {
+        lastScoreRefreshAt = Date.now();
+        cacheScoresFromState(state);
+      }
+      if ((scorePayloadValid && (!cachedRealScores || scorePayloadReal)) || !state.performanceDetails?.length) writeCachedDashboard(data);
       renderProfile(state);
     } catch (error) {
       Portal.setStatus(false, "API issue");
       if (!Portal.isAbortLike(error) && !/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load staff dashboard", "error");
       if (!Object.keys(state || {}).length) {
-        state = normalizeDashboard(readCachedDashboard() || {});
+        state = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
         renderProfile(state);
       }
     } finally {

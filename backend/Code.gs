@@ -889,7 +889,8 @@ function getStaffDashboard(data) {
 
   const today = todayDateForTimezone(getTeamTimezone(staff.team));
   const month = resolveScoreMonth(data.month);
-  const performanceDetails = getPerformanceDetails(month, staff.team);
+  const canonicalScores = getCanonicalScores(month, staff.team);
+  const performanceDetails = canonicalScores.rows;
   const leaderboard = performanceDetails.map(function (row) {
     return {
       login_id: row.login_id,
@@ -925,7 +926,7 @@ function getStaffDashboard(data) {
   const kpiScore = clean(ownPerformance.kpi_score_out_of_5) !== "" ? ownPerformance.kpi_score_out_of_5 : 0;
   const finalScore = clean(ownPerformance.final_score) !== "" ? ownPerformance.final_score : calculateFinalScore(monthlyAttendanceScore, kpiScore);
   const quarterScoreValue = clean(ownPerformance.quarter_score) !== "" ? ownPerformance.quarter_score : 0;
-  const scoreDebug = buildScoreDebug(month, listDailyScoreRows(month, 0), listKpiRows(month), performanceDetails);
+  const scoreDebug = canonicalScores.debug;
   const quarterLabel = getQuarterLabelForMonth(month);
   const selectedQuarterScore = quarterScores.filter(function (row) {
     const fromMonth = normalizeMonth(row.from_month);
@@ -1137,12 +1138,26 @@ function getQuarterScoreForStaff(staff, month, fallbackScore) {
 
 function buildScoreDebug(month, dailyRows, kpiRows, performanceRows) {
   return {
+    month: normalizeMonth(month),
     resolved_month: normalizeMonth(month),
     selected_month: normalizeMonth(month),
     selected_quarter: getQuarterLabelForMonth(month),
+    staff_count: (performanceRows || []).length,
     daily_rows_found: (dailyRows || []).length,
     kpi_rows_found: (kpiRows || []).length,
+    canonical_rows_built: (performanceRows || []).length,
     performance_rows_built: (performanceRows || []).length,
+    first_5_scores: (performanceRows || []).slice(0, 5).map(function (row) {
+      return {
+        login_id: row.login_id,
+        full_name: row.full_name,
+        attendance_score: row.attendance_score,
+        kpi_score: row.kpi_score,
+        final_score: row.final_score,
+        quarter_score: row.quarter_score,
+        rank: row.rank
+      };
+    }),
     quarter_rows_found: listQuarterScoreRows(0).length,
     sample_daily_headers: getSheetHeaders(SHEETS.DAILY).slice(0, 30),
     sample_kpi_headers: getSheetHeaders(SHEETS.KPI).slice(0, 30),
@@ -1168,18 +1183,14 @@ function buildPerformanceDetails(month, teamFilter) {
 function identityKeys(row) {
   const keys = [];
   const login = clean(row && row.login_id).toLowerCase();
-  const staffId = clean(row && row.staff_id).toLowerCase();
   if (login) keys.push("login:" + login);
-  if (staffId) keys.push("staff:" + staffId);
   return keys;
 }
 
 function lookupKeysForStaff(staff) {
   const login = clean(staff && staff.login_id).toLowerCase();
-  const staffId = clean(staff && staff.staff_id).toLowerCase();
   const keys = [];
   if (login) keys.push("login:" + login);
-  if (staffId) keys.push("staff:" + staffId);
   return keys;
 }
 
@@ -1229,10 +1240,10 @@ function rowMatchesStaffIdentity(row, staff) {
 }
 
 function getPerformanceDetails(month, teamFilter) {
-  return buildCanonicalPerformanceDetails(month, teamFilter);
+  return getCanonicalScores(month, teamFilter).rows;
 }
 
-function buildCanonicalPerformanceDetails(month, teamFilter) {
+function getCanonicalScores(month, teamFilter) {
   month = resolveScoreMonth(month);
   const teamKey = clean(teamFilter).toLowerCase();
   const activeStaff = listStaffRows().filter(function (staff) {
@@ -1311,7 +1322,18 @@ function buildCanonicalPerformanceDetails(month, teamFilter) {
     row.rank = index + 1;
     row.current_rank = row.rank;
   });
-  return rows;
+  return {
+    month: month,
+    rows: rows,
+    dailyRows: dailyRows,
+    kpiRows: kpiRows,
+    quarterRows: listQuarterScoreRows(0),
+    debug: buildScoreDebug(month, dailyRows, kpiRows, rows)
+  };
+}
+
+function buildCanonicalPerformanceDetails(month, teamFilter) {
+  return getCanonicalScores(month, teamFilter).rows;
 }
 
 function mergePerformanceIntoStaffRows(staffRows, performanceRows) {
@@ -1421,18 +1443,19 @@ function getAdminDashboardFull(data) {
   scheduleList = filterRowsForAdmin(scheduleList, access, staffIndex);
   const attendanceEvents = filterRowsForAdmin(listAttendanceRows(clean(data.date) || today, safeNumber(data.limit, 250)), access, staffIndex);
   const breakBoard = getActiveBreakRows(clean(data.date) || today, access, staffIndex);
-  const allDailyScoresForMonth = filterRowsForAdmin(listDailyScoreRows(month, 0), access, staffIndex);
+  const canonicalScores = getCanonicalScores(month, access.allowed_team);
+  const performanceDetails = canonicalScores.rows;
+  const allDailyScoresForMonth = filterRowsForAdmin(canonicalScores.dailyRows, access, staffIndex);
   const dailyScores = allDailyScoresForMonth.slice(0, safeNumber(data.limit, 250));
-  const kpiList = filterRowsForAdmin(listKpiRows(month), access, staffIndex);
+  const kpiList = filterRowsForAdmin(canonicalScores.kpiRows, access, staffIndex);
   const quarterScores = filterRowsForAdmin(listQuarterScoreRows(safeNumber(data.limit, 250)), access, staffIndex);
   const auditLogs = filterRowsForAdmin(listAuditRows(safeNumber(data.limit, 100)), access, staffIndex);
   const telegramLogs = filterRowsForAdmin(listTelegramRows(safeNumber(data.limit, 100)), access, staffIndex);
   const ipAllowlist = listIpRows();
   const summary = getTodaySummary(today, access.allowed_team);
-  const performanceDetails = buildPerformanceDetails(month, access.allowed_team);
   const scoredStaffList = mergePerformanceIntoStaffRows(staffList, performanceDetails);
   const nextShiftStaff = getNextShiftStaffRows(access, staffIndex);
-  const scoreDebug = buildScoreDebug(month, allDailyScoresForMonth, kpiList, performanceDetails);
+  const scoreDebug = canonicalScores.debug;
   const leaderboard = performanceDetails.map(function (row) {
     return {
       login_id: row.login_id,
@@ -1470,7 +1493,7 @@ function getAdminDashboardFull(data) {
     breakBoard: breakBoard,
     breaks: breakBoard,
     daily_scores: dailyScores,
-    kpi_list: kpiList,
+    kpi_list: leaderboard,
     quarter_scores: quarterScores,
     audit_logs: auditLogs,
     telegram_logs: telegramLogs,

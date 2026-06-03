@@ -4,16 +4,24 @@
   if (session.role !== "admin") location.href = "staff.html";
 
   const CACHE_KEY = "spv2_admin_dashboard_last_good";
+  const SCORE_CACHE_KEY = "spv2_admin_scores_last_good";
   const readCachedDashboard = () => {
     try { return JSON.parse(localStorage.getItem(CACHE_KEY) || "null"); } catch (error) { return null; }
   };
   const writeCachedDashboard = (data) => {
     try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch (error) {}
   };
+  const readCachedScores = () => {
+    try { return JSON.parse(localStorage.getItem(SCORE_CACHE_KEY) || "null"); } catch (error) { return null; }
+  };
+  const writeCachedScores = (data) => {
+    try { localStorage.setItem(SCORE_CACHE_KEY, JSON.stringify(data)); } catch (error) {}
+  };
 
   let dashboard = {};
   let refreshTimer;
   let refreshInFlight = false;
+  let lastScoreRefreshAt = 0;
   let loggedPerformanceDetails = false;
 
   const empty = (message, span = 8) => `<tr><td colspan="${span}" class="empty-state">${message}</td></tr>`;
@@ -47,7 +55,7 @@
     const number = Number(value);
     return Number.isFinite(number) && number > 0;
   };
-  const hasNonZeroScores = (rows = []) => rows.some((row) => [
+  const hasNonZeroScores = (rows = []) => Portal.normalizeArray(rows).some((row) => [
     "attendance_score",
     "monthly_attendance_score",
     "kpi_score",
@@ -84,6 +92,40 @@
       root.own_kpi,
       root.kpi
     ].some(hasScoreFields);
+  };
+  const hasRealScorePayload = (payload) => {
+    const root = payloadRoot(payload);
+    return hasNonZeroScores(canonicalPerformanceRows(root)) ||
+      hasNonZeroScores(root.leaderboard || root.rankings || root.topPerformers || root.worstPerformers) ||
+      hasNonZeroScores(root.staff_list || root.staff || root.kpi_list || root.kpis) ||
+      hasScoreValue(root.attendance_score) ||
+      hasScoreValue(root.kpi_score) ||
+      hasScoreValue(root.final_score) ||
+      hasScoreValue(root.quarter_score);
+  };
+  const hasRealScoresInDashboard = (value = {}) =>
+    hasNonZeroScores(value.performance) ||
+    hasNonZeroScores(value.top) ||
+    hasNonZeroScores(value.worst) ||
+    hasNonZeroScores(value.kpis);
+  const applyCachedScores = (target, cached) => {
+    if (!cached || !hasRealScoresInDashboard(cached)) return target;
+    target.performance = cached.performance || target.performance;
+    target.top = cached.top || target.top;
+    target.worst = cached.worst || target.worst;
+    target.kpis = cached.kpis || target.kpis;
+    target.staff = cached.staff || target.staff;
+    return target;
+  };
+  const cacheScoresFromDashboard = (value) => {
+    if (!hasRealScoresInDashboard(value)) return;
+    writeCachedScores({
+      performance: value.performance,
+      top: value.top,
+      worst: value.worst,
+      kpis: value.kpis,
+      staff: value.staff
+    });
   };
   const performanceIndex = (rows = []) => rows.reduce((map, row) => {
     const key = loginValue(row);
@@ -186,7 +228,7 @@
     return merged;
   };
 
-  dashboard = normalizeDashboard(readCachedDashboard() || {});
+  dashboard = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
 
   const renderStats = (stats) => {
     Portal.setText("totalStaff", Portal.pick(stats, ["totalStaff", "staffTotal", "total"], dashboard.staff.length || "--"));
@@ -630,22 +672,29 @@
       const incomingPerformance = canonicalPerformanceRows(root);
       const hadPerformance = dashboard.performance?.length;
       const scorePayloadValid = hasValidScorePayload(data);
+      const scorePayloadReal = hasRealScorePayload(data);
+      const cachedRealScores = hasRealScoresInDashboard(dashboard);
+      const allowScoreRefresh = !silent || !lastScoreRefreshAt || Date.now() - lastScoreRefreshAt >= 60000;
       const nextDashboard = normalizeDashboard(data);
-      if (!scorePayloadValid && dashboard.performance?.length) {
-        nextDashboard.performance = dashboard.performance;
-        nextDashboard.top = dashboard.top?.length ? dashboard.top : dashboard.performance;
-        nextDashboard.worst = dashboard.worst?.length ? dashboard.worst : dashboard.performance.slice().reverse();
-        nextDashboard.kpis = dashboard.kpis?.length ? dashboard.kpis : dashboard.performance;
-        nextDashboard.staff = enrichStaffWithPerformance(nextDashboard.staff?.length ? nextDashboard.staff : dashboard.staff, dashboard.performance);
+      if ((!allowScoreRefresh || !scorePayloadValid || (cachedRealScores && !scorePayloadReal)) && cachedRealScores) {
+        applyCachedScores(nextDashboard, dashboard);
+        applyCachedScores(nextDashboard, readCachedScores());
+        if (nextDashboard.performance?.length) {
+          nextDashboard.staff = enrichStaffWithPerformance(nextDashboard.staff?.length ? nextDashboard.staff : dashboard.staff, nextDashboard.performance);
+        }
       }
       dashboard = mergeStableDashboard(dashboard, nextDashboard, data);
-      if (scorePayloadValid || !hadPerformance) writeCachedDashboard(data);
+      if (allowScoreRefresh && scorePayloadValid && (!cachedRealScores || scorePayloadReal)) {
+        lastScoreRefreshAt = Date.now();
+        cacheScoresFromDashboard(dashboard);
+      }
+      if ((scorePayloadValid && (!cachedRealScores || scorePayloadReal)) || !hadPerformance) writeCachedDashboard(data);
       renderAll();
     } catch (error) {
       Portal.setStatus(false, "API issue");
       if (!Portal.isAbortLike(error) && !/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load admin dashboard", "error");
       if (!Object.keys(dashboard || {}).length) {
-        dashboard = normalizeDashboard(readCachedDashboard() || {});
+        dashboard = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
         renderAll();
       }
     } finally {

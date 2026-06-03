@@ -50,21 +50,24 @@
     const hour12 = hour % 12 || 12;
     return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
   };
-  const loginValue = (row) => String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase();
+  const loginValue = (row) => String(Portal.pick(row || {}, ["login_id", "email"], "")).toLowerCase();
   const hasScoreValue = (value) => {
     const number = Number(value);
     return Number.isFinite(number) && number > 0;
   };
-  const hasNonZeroScores = (rows = []) => Portal.normalizeArray(rows).some((row) => [
-    "attendance_score",
-    "monthly_attendance_score",
-    "kpi_score",
-    "kpi_score_out_of_5",
-    "final_score",
-    "monthly_final_score",
-    "quarter_score",
-    "ranking_score"
-  ].some((key) => hasScoreValue(row[key])));
+  const hasNonZeroScores = (rows = []) => Portal.normalizeArray(rows).some((row) => {
+    row = row || {};
+    return [
+      "attendance_score",
+      "monthly_attendance_score",
+      "kpi_score",
+      "kpi_score_out_of_5",
+      "final_score",
+      "monthly_final_score",
+      "quarter_score",
+      "ranking_score"
+    ].some((key) => hasScoreValue(row[key]));
+  });
   const canonicalPerformanceRows = (root) => Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance);
   const scoreFieldKeys = [
     "attendance_score",
@@ -108,6 +111,12 @@
     hasNonZeroScores(value.top) ||
     hasNonZeroScores(value.worst) ||
     hasNonZeroScores(value.kpis);
+  const hasUsableCachedDashboard = () =>
+    hasRealScoresInDashboard(dashboard) ||
+    hasRealScoresInDashboard(readCachedScores()) ||
+    hasValidScorePayload(readCachedDashboard());
+  const isSoftRefreshError = (error) =>
+    Portal.isAbortLike(error) || /timeout|timed out|signal is aborted|aborted/i.test(String(error?.message || error || ""));
   const applyCachedScores = (target, cached) => {
     if (!cached || !hasRealScoresInDashboard(cached)) return target;
     target.performance = cached.performance || target.performance;
@@ -141,7 +150,7 @@
   };
 
   const normalizeDashboard = (data) => {
-    const root = data.data || data.dashboard || data;
+    const root = data?.data || data?.dashboard || data || {};
     const summary = root.summary || root.today_summary || {};
     const staffList = Portal.normalizeArray(root.staff_list || root.staff || root.staffList || root.users || root.staff_rows);
     const scheduleList = Portal.normalizeArray(root.schedule_list || root.schedules || root.schedule || root.schedule_rows);
@@ -154,9 +163,9 @@
       loggedPerformanceDetails = true;
     }
     const nonWorkingCodes = new Set(["OFF", "AL", "UL", "SL", "NP", "LEAVE", "HOLIDAY", ""]);
-    const nextShiftStaff = Portal.normalizeArray(root.next_shift_staff || root.nextShiftStaff || root.next_shifts).filter((row) => {
-      const status = String(Portal.pick(row, ["status"], "")).toUpperCase();
-      const shift = String(Portal.pick(row, ["shift", "shift_code"], "")).toUpperCase();
+    const nextShiftStaff = Portal.normalizeArray(root.next_shift_staff_all || root.nextShiftStaffAll || root.next_shift_staff || root.nextShiftStaff || root.next_shifts).filter((row) => {
+      const status = String(Portal.pick(row || {}, ["status"], "")).toUpperCase();
+      const shift = String(Portal.pick(row || {}, ["shift", "shift_code"], "")).toUpperCase();
       return status === "WORKING" && !nonWorkingCodes.has(shift);
     });
     const dailyScores = Portal.normalizeArray(root.daily_scores || root.dailyScores);
@@ -430,7 +439,7 @@
       { label: "Status", render: (row) => badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], ""))) }
     ];
     ensureViewButton("nextShiftStaff", "next shift staff", () => openTableModal("Next Shift Staff", rows, columns));
-    host.innerHTML = rows.slice(0, 10).map((row) => `
+    host.innerHTML = rows.slice(0, 5).map((row) => `
       <tr>
         <td>${Portal.pick(row, ["staff", "full_name", "name", "staffName"], "Staff")}</td>
         <td>${Portal.pick(row, ["team", "department"], "--")}</td>
@@ -690,13 +699,19 @@
       }
       if ((scorePayloadValid && (!cachedRealScores || scorePayloadReal)) || !hadPerformance) writeCachedDashboard(data);
       renderAll();
+      Portal.setStatus(true, "Live");
     } catch (error) {
-      Portal.setStatus(false, "API issue");
-      if (!Portal.isAbortLike(error) && !/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load admin dashboard", "error");
+      const hasCache = hasUsableCachedDashboard();
       if (!Object.keys(dashboard || {}).length) {
         dashboard = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
         renderAll();
       }
+      if (isSoftRefreshError(error) || hasCache) {
+        Portal.setStatus(true, "Live");
+        return;
+      }
+      Portal.setStatus(false, "API issue");
+      if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load admin dashboard", "error");
     } finally {
       refreshInFlight = false;
     }

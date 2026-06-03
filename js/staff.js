@@ -82,26 +82,29 @@
     const status = String(Portal.pick(schedule, ["status"], "")).toUpperCase();
     return ["OFF", "AL", "UL", "SL", "HOLIDAY"].includes(shift) ? shift : status || "OFF";
   };
-  const loginValue = (row) => String(Portal.pick(row, ["login_id", "email"], "")).toLowerCase();
+  const loginValue = (row) => String(Portal.pick(row || {}, ["login_id", "email"], "")).toLowerCase();
   const hasScoreValue = (value) => {
     const number = Number(value);
     return Number.isFinite(number) && number > 0;
   };
-  const hasNonZeroScore = (row = {}) => [
-    "attendance_score",
-    "monthly_attendance_score",
-    "monthlyAttendanceScore",
-    "kpi_score",
-    "kpi_score_out_of_5",
-    "kpiScore",
-    "kpiDisplay",
-    "final_score",
-    "finalScore",
-    "monthly_final_score",
-    "quarter_score",
-    "quarterScore",
-    "ranking_score"
-  ].some((key) => hasScoreValue(row[key]));
+  const hasNonZeroScore = (row = {}) => {
+    row = row || {};
+    return [
+      "attendance_score",
+      "monthly_attendance_score",
+      "monthlyAttendanceScore",
+      "kpi_score",
+      "kpi_score_out_of_5",
+      "kpiScore",
+      "kpiDisplay",
+      "final_score",
+      "finalScore",
+      "monthly_final_score",
+      "quarter_score",
+      "quarterScore",
+      "ranking_score"
+    ].some((key) => hasScoreValue(row[key]));
+  };
   const hasNonZeroScoreRows = (rows = []) => Portal.normalizeArray(rows).some(hasNonZeroScore);
   const hasCanonicalScoreRows = (root) => Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance).length > 0;
   const scoreFieldKeys = [
@@ -148,6 +151,12 @@
     hasNonZeroScore(dashboardState.performance) ||
     hasNonZeroScoreRows(dashboardState.performanceDetails) ||
     hasNonZeroScoreRows(dashboardState.leaderboard);
+  const hasUsableCachedState = () =>
+    hasRealScoresInState(state) ||
+    hasRealScoresInState(readCachedScores()) ||
+    hasValidScorePayload(readCachedDashboard());
+  const isSoftRefreshError = (error) =>
+    Portal.isAbortLike(error) || /timeout|timed out|signal is aborted|aborted/i.test(String(error?.message || error || ""));
   const applyCachedScores = (target, cached) => {
     if (!cached || !hasRealScoresInState(cached)) return target;
     target.performance = cached.performance || target.performance;
@@ -165,7 +174,7 @@
   };
 
   const normalizeDashboard = (data) => {
-    const root = data.data || data.dashboard || data;
+    const root = data?.data || data?.dashboard || data || {};
     const staff = root.staff || root.profile || root.user || session.raw || {};
     const schedule = root.today_schedule || root.schedule || root.shift || {};
     const attendance = root.attendance_state || root.today || root.attendance || root.current || {};
@@ -709,13 +718,19 @@
       }
       if ((scorePayloadValid && (!cachedRealScores || scorePayloadReal)) || !state.performanceDetails?.length) writeCachedDashboard(data);
       renderProfile(state);
+      Portal.setStatus(true, "Live");
     } catch (error) {
-      Portal.setStatus(false, "API issue");
-      if (!Portal.isAbortLike(error) && !/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load staff dashboard", "error");
+      const hasCache = hasUsableCachedState();
       if (!Object.keys(state || {}).length) {
         state = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
         renderProfile(state);
       }
+      if (isSoftRefreshError(error) || hasCache) {
+        Portal.setStatus(true, "Live");
+        return;
+      }
+      Portal.setStatus(false, "API issue");
+      if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load staff dashboard", "error");
     } finally {
       refreshInFlight = false;
     }

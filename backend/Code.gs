@@ -999,7 +999,7 @@ function getNextSchedule(loginId, fromDate, days) {
 function getNextShiftStaffRows(access, staffIndex) {
   const today = todayDate();
   const nowMinutes = parseTimeToMinutesSafe(nowTime());
-  const nonWorkingCodes = ["OFF", "AL", "UL", "SL", "NP", "LEAVE", "HOLIDAY"];
+  const nonWorkingCodes = ["", "OFF", "AL", "UL", "SL", "NP", "LEAVE", "HOLIDAY"];
   const rows = filterRowsForAdmin(listScheduleRows("", ""), access, staffIndex).filter(function (row) {
     const status = safeUpper(row.status);
     const shift = safeUpper(row.shift_code);
@@ -1136,17 +1136,20 @@ function getQuarterScoreForStaff(staff, month, fallbackScore) {
   return clean(score) !== "" ? round2(score) : round2(fallbackScore);
 }
 
-function buildScoreDebug(month, dailyRows, kpiRows, performanceRows) {
+function buildScoreDebug(month, dailyRows, kpiRows, performanceRows, extra) {
+  extra = extra || {};
   return {
     month: normalizeMonth(month),
     resolved_month: normalizeMonth(month),
     selected_month: normalizeMonth(month),
     selected_quarter: getQuarterLabelForMonth(month),
     staff_count: (performanceRows || []).length,
+    matched_staff_count: extra.matched_staff_count || 0,
     daily_rows_found: (dailyRows || []).length,
     kpi_rows_found: (kpiRows || []).length,
     canonical_rows_built: (performanceRows || []).length,
     performance_rows_built: (performanceRows || []).length,
+    first_10_unmatched_daily_rows: extra.first_10_unmatched_daily_rows || [],
     first_5_scores: (performanceRows || []).slice(0, 5).map(function (row) {
       return {
         login_id: row.login_id,
@@ -1180,17 +1183,29 @@ function buildPerformanceDetails(month, teamFilter) {
   return buildCanonicalPerformanceDetails(resolveScoreMonth(month), teamFilter);
 }
 
+function normalizeScoreName(value) {
+  return clean(value).toLowerCase().replace(/\s+/g, " ");
+}
+
 function identityKeys(row) {
   const keys = [];
   const login = clean(row && row.login_id).toLowerCase();
+  const staffId = clean(row && row.staff_id).toLowerCase();
+  const fullName = normalizeScoreName(row && row.full_name);
   if (login) keys.push("login:" + login);
+  if (staffId) keys.push("staff:" + staffId);
+  if (fullName) keys.push("name:" + fullName);
   return keys;
 }
 
 function lookupKeysForStaff(staff) {
   const login = clean(staff && staff.login_id).toLowerCase();
+  const staffId = clean(staff && staff.staff_id).toLowerCase();
+  const fullName = normalizeScoreName(staff && staff.full_name);
   const keys = [];
   if (login) keys.push("login:" + login);
+  if (staffId) keys.push("staff:" + staffId);
+  if (fullName) keys.push("name:" + fullName);
   return keys;
 }
 
@@ -1239,6 +1254,17 @@ function rowMatchesStaffIdentity(row, staff) {
   })(), staff).length > 0;
 }
 
+function scoreDebugRowKey(row) {
+  return [
+    clean(row && row.daily_score_id),
+    clean(row && row.score_date),
+    clean(row && row.staff_id),
+    clean(row && row.login_id),
+    normalizeScoreName(row && row.full_name),
+    clean(row && row.final_attendance_score)
+  ].join("|");
+}
+
 function getPerformanceDetails(month, teamFilter) {
   return getCanonicalScores(month, teamFilter).rows;
 }
@@ -1263,8 +1289,12 @@ function getCanonicalScores(month, teamFilter) {
     setLatestScoreRow(kpiMap, row);
   });
 
+  const matchedDailyKeys = {};
   const rows = activeStaff.map(function (staff) {
     const staffDaily = getScoreRowsForStaff(dailyMap, staff);
+    staffDaily.forEach(function (row) {
+      matchedDailyKeys[scoreDebugRowKey(row)] = true;
+    });
     const kpi = getLatestScoreRowForStaff(kpiMap, staff);
     const attendanceScore = averageScoreRows(staffDaily, "final_attendance_score");
     const kpiScore = kpi ? safeNumber(kpi.kpi_score_out_of_5, 0) : 0;
@@ -1322,13 +1352,30 @@ function getCanonicalScores(month, teamFilter) {
     row.rank = index + 1;
     row.current_rank = row.rank;
   });
+  const unmatchedDailyRows = dailyRows.filter(function (row) {
+    return !matchedDailyKeys[scoreDebugRowKey(row)];
+  }).slice(0, 10).map(function (row) {
+    return {
+      score_date: row.score_date,
+      staff_id: row.staff_id,
+      login_id: row.login_id,
+      full_name: row.full_name,
+      final_attendance_score: row.final_attendance_score
+    };
+  });
+  const matchedStaffCount = rows.filter(function (row) {
+    return safeNumber(row.daily_score_count, 0) > 0 || row.has_kpi || row.has_quarter_score;
+  }).length;
   return {
     month: month,
     rows: rows,
     dailyRows: dailyRows,
     kpiRows: kpiRows,
     quarterRows: listQuarterScoreRows(0),
-    debug: buildScoreDebug(month, dailyRows, kpiRows, rows)
+    debug: buildScoreDebug(month, dailyRows, kpiRows, rows, {
+      matched_staff_count: matchedStaffCount,
+      first_10_unmatched_daily_rows: unmatchedDailyRows
+    })
   };
 }
 
@@ -1488,7 +1535,9 @@ function getAdminDashboardFull(data) {
     staff_count: summary.total_staff,
     staff_list: scoredStaffList,
     schedule_list: scheduleList,
-    next_shift_staff: nextShiftStaff,
+    next_shift_staff: nextShiftStaff.slice(0, 5),
+    next_shift_staff_all: nextShiftStaff,
+    nextShiftStaffAll: nextShiftStaff,
     attendance_events: attendanceEvents,
     breakBoard: breakBoard,
     breaks: breakBoard,
@@ -1876,9 +1925,10 @@ function listStaffRows() {
 function listScheduleRows(month, dateStr) {
   const targetMonth = normalizeMonthKey(month);
   const values = getValues(SHEETS.SCHEDULE);
+  const headerMap = buildHeaderMap(values[0] || []);
   const rows = [];
   for (let i = 1; i < values.length; i++) {
-    const row = mapScheduleRow(values[i]);
+    const row = mapScheduleRow(values[i], headerMap);
     if (targetMonth && normalizeMonthKey(row.schedule_month) !== targetMonth) continue;
     if (dateStr && normalizeDateKey(row.schedule_date) !== normalizeDateKey(dateStr)) continue;
     rows.push(row);
@@ -1886,23 +1936,27 @@ function listScheduleRows(month, dateStr) {
   return rows;
 }
 
-function mapScheduleRow(row) {
+function mapScheduleRow(row, headerMap) {
+  const read = function (keys, index, fallback) {
+    if (headerMap) return valueByHeader(row, headerMap, keys, fallback);
+    return row[index] !== undefined && row[index] !== null ? row[index] : fallback;
+  };
   return {
     ok: true,
-    schedule_id: row[0],
-    schedule_month: row[1],
-    schedule_date: normalizeDateKey(row[2]),
-    staff_id: row[3],
-    login_id: row[4],
-    full_name: row[5],
-    team: row[6],
-    shift_code: row[7],
-    start_time: normalizeSheetTime(row[8]),
-    end_time: normalizeSheetTime(row[9]),
-    status: row[10],
-    uploaded_by: row[11] || "",
-    uploaded_at: row[12] || "",
-    notes: row[13] || ""
+    schedule_id: read(["schedule_id"], 0, ""),
+    schedule_month: read(["schedule_month"], 1, ""),
+    schedule_date: normalizeDateKey(read(["schedule_date", "date"], 2, "")),
+    staff_id: read(["staff_id"], 3, ""),
+    login_id: read(["login_id"], 4, ""),
+    full_name: read(["full_name", "staff_name", "name"], 5, ""),
+    team: read(["team", "department"], 6, ""),
+    shift_code: read(["shift_code", "shift"], 7, ""),
+    start_time: normalizeSheetTime(read(["start_time", "scheduled_start"], 8, "")),
+    end_time: normalizeSheetTime(read(["end_time", "scheduled_end"], 9, "")),
+    status: read(["status"], 10, ""),
+    uploaded_by: read(["uploaded_by"], 11, "") || "",
+    uploaded_at: read(["uploaded_at"], 12, "") || "",
+    notes: read(["notes"], 13, "") || ""
   };
 }
 

@@ -201,6 +201,7 @@
       nextShiftStaff,
       kpis: canonicalKpis,
       performance: performanceDetails,
+      summaryDetails: root.summary_details || summary.summary_details || root.summaryDetails || {},
       top: rankingRows,
       worst: sortedWorst,
       dailyLogs: Portal.normalizeArray(root.dailyLogs || root.logs).length ? Portal.normalizeArray(root.dailyLogs || root.logs) : attendanceEvents.concat(dailyScores),
@@ -241,6 +242,30 @@
 
   dashboard = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
 
+  const summaryColumns = [
+    { label: "Staff", keys: ["full_name", "name", "staff", "staffName"] },
+    { label: "Team", keys: ["team", "department"] },
+    { label: "Date", keys: ["date", "schedule_date", "event_date"] },
+    { label: "Shift", keys: ["shift_code", "shift"] },
+    { label: "Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["start_time", "start"], "")) },
+    { label: "End", render: (row) => formatShiftTime12h(Portal.pick(row, ["end_time", "end"], "")) },
+    { label: "Status", render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
+  ];
+  const bindSummaryCard = (id, title, rows) => {
+    const card = document.getElementById(id)?.closest(".metric-card");
+    if (!card) return;
+    card.onclick = () => openTableModal(title, Portal.normalizeArray(rows), summaryColumns);
+    card.onkeydown = (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        card.click();
+      }
+    };
+    card.tabIndex = 0;
+    card.setAttribute("role", "button");
+    card.setAttribute("aria-label", `View ${title}`);
+  };
+
   const renderStats = (stats) => {
     Portal.setText("totalStaff", Portal.pick(stats, ["totalStaff", "staffTotal", "total"], dashboard.staff.length || "--"));
     Portal.setText("onlineStaff", Portal.pick(stats, ["onlineStaff", "online_staff", "currently_working", "online"], "--"));
@@ -249,6 +274,14 @@
     Portal.setText("lateStaff", Portal.pick(stats, ["lateStaff", "late_staff", "late"], "--"));
     Portal.setText("missingCheckout", Portal.pick(stats, ["missingCheckout", "missing_checkout", "missingCheckOut"], "--"));
     Portal.setText("notWorkingToday", Portal.pick(stats, ["notWorkingToday", "not_working_today", "offToday"], "--"));
+    const details = dashboard.summaryDetails || {};
+    bindSummaryCard("totalStaff", "Total Staff", details.total_staff || dashboard.staff);
+    bindSummaryCard("onlineStaff", "Online Staff", details.online_staff);
+    bindSummaryCard("checkedInToday", "Checked In Today", details.checked_in);
+    bindSummaryCard("onBreak", "On Break", details.on_break);
+    bindSummaryCard("lateStaff", "Late Staff", details.late_staff);
+    bindSummaryCard("missingCheckout", "Missing Checkout", details.missing_checkout);
+    bindSummaryCard("notWorkingToday", "Not Working Today", details.not_working_today);
   };
 
   const ensureViewButton = (hostId, label, onClick) => {

@@ -1849,6 +1849,32 @@ function getTodaySummary(dateStr, teamFilter) {
   });
   const nowMinutes = parseTimeToMinutesSafe(nowTime());
   const nonWorkingCodes = ["OFF", "AL", "SL", "UL", "NP"];
+  const staffByIdentity = {};
+  const putStaffKey = function (value, staff) {
+    const key = clean(value).toLowerCase();
+    if (key) staffByIdentity[key] = staff;
+  };
+  staffRows.forEach(function (staff) {
+    putStaffKey(staff.login_id, staff);
+    putStaffKey(staff.staff_id, staff);
+    putStaffKey(normalizeScoreName(staff.full_name), staff);
+  });
+  const detailFor = function (row, extra) {
+    const identity = scheduleIdentityKey(row);
+    const staff = staffByIdentity[identity] || {};
+    return Object.assign({
+      staff_id: row.staff_id || staff.staff_id || "",
+      login_id: row.login_id || staff.login_id || "",
+      full_name: row.full_name || staff.full_name || "",
+      team: row.team || staff.team || "",
+      role: staff.role || "",
+      date: targetDate,
+      shift_code: row.shift_code || "",
+      start_time: row.start_time || "",
+      end_time: row.end_time || "",
+      status: row.status || ""
+    }, extra || {});
+  };
 
   let working = 0;
   let notWorkingToday = 0;
@@ -1857,12 +1883,28 @@ function getTodaySummary(dateStr, teamFilter) {
   let checkedOut = {};
   let activeBreak = {};
   let firstIn = {};
+  const details = {
+    total_staff: [],
+    online_staff: [],
+    checked_in: [],
+    on_break: [],
+    late_staff: [],
+    missing_checkout: [],
+    not_working_today: []
+  };
+
+  details.total_staff = staffRows.filter(function (row) {
+    return safeUpper(row.status) === "ACTIVE";
+  }).map(function (row) {
+    return detailFor(row, { status: row.status });
+  });
 
   scheduleRows.forEach(function (row) {
     const status = safeUpper(row.status);
     const shift = safeUpper(row.shift_code);
     if (nonWorkingCodes.indexOf(status) > -1 || nonWorkingCodes.indexOf(shift) > -1) {
       notWorkingToday++;
+      details.not_working_today.push(detailFor(row, { status: status || shift }));
       return;
     }
     if (status !== "WORKING" || isNonWorkingDay(row.shift_code, row.status)) return;
@@ -1880,10 +1922,20 @@ function getTodaySummary(dateStr, teamFilter) {
     if (eventType === "CHECK_IN") {
       checkedIn[identity] = true;
       if (!firstIn[identity]) firstIn[identity] = normalizeSheetTime(row.event_time);
+      if (!details.checked_in.some(function (item) { return scheduleIdentityKey(item) === identity; })) {
+        details.checked_in.push(detailFor(row, { check_in: row.event_time, status: "CHECKED_IN" }));
+      }
     }
     if (eventType === "CHECK_OUT") checkedOut[identity] = true;
-    if (eventType === "BREAK_START") activeBreak[identity] = breakType;
-    if (eventType === "BREAK_END") delete activeBreak[identity];
+    if (eventType === "BREAK_START") {
+      activeBreak[identity] = breakType;
+      details.on_break = details.on_break.filter(function (item) { return scheduleIdentityKey(item) !== identity; });
+      details.on_break.push(detailFor(row, { break_type: breakType, break_start: row.event_time, status: "ON_BREAK" }));
+    }
+    if (eventType === "BREAK_END") {
+      delete activeBreak[identity];
+      details.on_break = details.on_break.filter(function (item) { return scheduleIdentityKey(item) !== identity; });
+    }
   });
 
   let currentlyWorking = 0;
@@ -1893,15 +1945,25 @@ function getTodaySummary(dateStr, teamFilter) {
     const schedule = workingScheduleByIdentity[identity];
     if (!schedule || checkedOut[identity]) return;
     const window = getScheduleWindowMinutes(schedule);
-    if (nowMinutes >= window.start_minutes && nowMinutes <= window.end_minutes) currentlyWorking++;
-    if (nowMinutes > window.end_minutes) missingCheckout++;
+    const alignedNow = window.overnight && nowMinutes < window.start_minutes ? nowMinutes + 1440 : nowMinutes;
+    if (alignedNow >= window.start_minutes && alignedNow <= window.end_minutes) {
+      currentlyWorking++;
+      details.online_staff.push(detailFor(schedule, { check_in: firstIn[identity], status: "ONLINE" }));
+    }
+    if (alignedNow > window.end_minutes) {
+      missingCheckout++;
+      details.missing_checkout.push(detailFor(schedule, { check_in: firstIn[identity], status: "MISSING_CHECKOUT" }));
+    }
   });
 
   Object.keys(firstIn).forEach(function (identity) {
     const schedule = workingScheduleByIdentity[identity];
     if (!schedule) return;
     const window = getScheduleWindowMinutes(schedule);
-    if (alignEventMinutesToSchedule(firstIn[identity], window) > window.start_minutes) lateStaff++;
+    if (alignEventMinutesToSchedule(firstIn[identity], window) > window.start_minutes) {
+      lateStaff++;
+      details.late_staff.push(detailFor(schedule, { check_in: firstIn[identity], status: "LATE" }));
+    }
   });
 
   return {
@@ -1915,7 +1977,8 @@ function getTodaySummary(dateStr, teamFilter) {
     late_staff: lateStaff,
     missing_checkout: missingCheckout,
     not_checked_in: Math.max(working - Object.keys(checkedIn).length, 0),
-    not_working_today: notWorkingToday
+    not_working_today: notWorkingToday,
+    summary_details: details
   };
 }
 
@@ -1943,21 +2006,23 @@ function scheduleIdentityKey(row) {
 
 function listStaffRows() {
   const values = getValues(SHEETS.STAFF);
+  const headerMap = buildHeaderMap(values[0] || []);
   const rows = [];
   for (let i = 1; i < values.length; i++) {
+    const row = values[i];
     rows.push({
-      staff_id: values[i][0],
-      full_name: values[i][1],
-      login_id: values[i][2],
-      email: values[i][3],
-      team: values[i][4],
-      role: values[i][5],
-      status: values[i][6],
-      joining_date: normalizeDateKey(values[i][7]),
-      manager: values[i][8],
-      phone: values[i][9],
-      telegram_user_id: values[i][10],
-      notes: values[i][11]
+      staff_id: valueByHeader(row, headerMap, ["staff_id"], null),
+      full_name: valueByHeader(row, headerMap, ["full_name", "staff_name", "name"], null),
+      login_id: valueByHeader(row, headerMap, ["login_id"], null),
+      email: valueByHeader(row, headerMap, ["email"], null),
+      team: valueByHeader(row, headerMap, ["team", "department"], null),
+      role: valueByHeader(row, headerMap, ["role", "position"], null),
+      status: valueByHeader(row, headerMap, ["status"], null),
+      joining_date: normalizeDateKey(valueByHeader(row, headerMap, ["joining_date", "join_date"], null)),
+      manager: valueByHeader(row, headerMap, ["manager", "reporting_manager"], null),
+      phone: valueByHeader(row, headerMap, ["phone", "mobile"], null),
+      telegram_user_id: valueByHeader(row, headerMap, ["telegram_user_id", "telegram_id"], null),
+      notes: valueByHeader(row, headerMap, ["notes"], null)
     });
   }
   return rows;
@@ -1978,52 +2043,54 @@ function listScheduleRows(month, dateStr) {
 }
 
 function mapScheduleRow(row, headerMap) {
-  const read = function (keys, index, fallback) {
-    if (headerMap) return valueByHeader(row, headerMap, keys, fallback);
-    return row[index] !== undefined && row[index] !== null ? row[index] : fallback;
+  const read = function (keys) {
+    return valueByHeader(row, headerMap || {}, keys, null);
   };
   return {
     ok: true,
-    schedule_id: read(["schedule_id"], 0, ""),
-    schedule_month: read(["schedule_month"], 1, ""),
-    schedule_date: normalizeDateKey(read(["schedule_date", "date"], 2, "")),
-    staff_id: read(["staff_id"], 3, ""),
-    login_id: read(["login_id"], 4, ""),
-    full_name: read(["full_name", "staff_name", "name"], 5, ""),
-    team: read(["team", "department"], 6, ""),
-    shift_code: read(["shift_code", "shift"], 7, ""),
-    start_time: normalizeSheetTime(read(["start_time", "scheduled_start"], 8, "")),
-    end_time: normalizeSheetTime(read(["end_time", "scheduled_end"], 9, "")),
-    status: read(["status"], 10, ""),
-    uploaded_by: read(["uploaded_by"], 11, "") || "",
-    uploaded_at: read(["uploaded_at"], 12, "") || "",
-    notes: read(["notes"], 13, "") || ""
+    schedule_id: read(["schedule_id"]),
+    schedule_month: read(["schedule_month"]),
+    schedule_date: normalizeDateKey(read(["schedule_date", "date"])),
+    staff_id: read(["staff_id"]),
+    login_id: read(["login_id"]),
+    full_name: read(["full_name", "staff_name", "name"]),
+    team: read(["team", "department"]),
+    shift_code: read(["shift_code", "shift"]),
+    start_time: normalizeSheetTime(read(["start_time", "scheduled_start"])),
+    end_time: normalizeSheetTime(read(["end_time", "scheduled_end"])),
+    status: read(["status"]),
+    uploaded_by: read(["uploaded_by"]) || "",
+    uploaded_at: read(["uploaded_at"]) || "",
+    notes: read(["notes"]) || ""
   };
 }
 
 function listAttendanceRows(dateStr, limit) {
   const values = getValues(SHEETS.EVENTS);
+  const headerMap = buildHeaderMap(values[0] || []);
   const rows = [];
   const targetDate = normalizeDateKey(dateStr);
   for (let i = values.length - 1; i >= 1; i--) {
-    if (targetDate && normalizeDateKey(values[i][1]) !== targetDate) continue;
+    const row = values[i];
+    const eventDate = valueByHeader(row, headerMap, ["event_date", "date"], null);
+    if (targetDate && normalizeDateKey(eventDate) !== targetDate) continue;
     rows.push({
-      event_id: values[i][0],
-      event_date: normalizeDateKey(values[i][1]),
-      event_time: normalizeSheetTime(values[i][2]),
-      created_at: normalizeDateKey(values[i][1]) + " " + normalizeSheetTime(values[i][2]),
-      staff_id: values[i][3],
-      login_id: values[i][4],
-      full_name: values[i][5],
-      event_type: values[i][6],
-      break_type: values[i][7],
-      shift_code: values[i][8],
-      ip: values[i][9],
-      user_agent: values[i][10],
-      source: values[i][11],
-      server_time: values[i][12],
-      notes: values[i][13],
-      status: values[i][6]
+      event_id: valueByHeader(row, headerMap, ["event_id"], null),
+      event_date: normalizeDateKey(eventDate),
+      event_time: normalizeSheetTime(valueByHeader(row, headerMap, ["event_time", "time"], null)),
+      created_at: normalizeDateKey(eventDate) + " " + normalizeSheetTime(valueByHeader(row, headerMap, ["event_time", "time"], null)),
+      staff_id: valueByHeader(row, headerMap, ["staff_id"], null),
+      login_id: valueByHeader(row, headerMap, ["login_id"], null),
+      full_name: valueByHeader(row, headerMap, ["full_name", "staff_name", "name"], null),
+      event_type: valueByHeader(row, headerMap, ["event_type", "action"], null),
+      break_type: valueByHeader(row, headerMap, ["break_type"], null),
+      shift_code: valueByHeader(row, headerMap, ["shift_code", "shift"], null),
+      ip: valueByHeader(row, headerMap, ["ip", "ip_address"], null),
+      user_agent: valueByHeader(row, headerMap, ["user_agent"], null),
+      source: valueByHeader(row, headerMap, ["source"], null),
+      server_time: valueByHeader(row, headerMap, ["server_time"], null),
+      notes: valueByHeader(row, headerMap, ["notes"], null),
+      status: valueByHeader(row, headerMap, ["event_type", "action"], null)
     });
     if (limit && rows.length >= limit) break;
   }

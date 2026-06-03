@@ -1188,8 +1188,11 @@ function addScoreRowToMap(map, row) {
 function getScoreRowsForStaff(map, staff) {
   const seen = {};
   const rows = [];
-  lookupKeysForStaff(staff).forEach(function (key) {
-    (map[key] || []).forEach(function (row) {
+  const keys = lookupKeysForStaff(staff);
+  for (let i = 0; i < keys.length; i++) {
+    const bucket = map[keys[i]] || [];
+    if (!bucket.length) continue;
+    bucket.forEach(function (row) {
       const rowKey = clean(row.daily_score_id || row.kpi_id || row.quarter_id) ||
         [clean(row.score_date), clean(row.kpi_month || row.score_month), identityKeys(row).join("|")].join("|") ||
         JSON.stringify(row);
@@ -1197,7 +1200,8 @@ function getScoreRowsForStaff(map, staff) {
       seen[rowKey] = true;
       rows.push(row);
     });
-  });
+    if (rows.length) return rows;
+  }
   return rows;
 }
 

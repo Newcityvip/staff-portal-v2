@@ -143,11 +143,14 @@
     const dailyScores = Portal.normalizeArray(root.daily_scores || root.history || root.attendanceHistory || root.records);
     const quarterScores = Portal.normalizeArray(root.quarter_scores || root.quarterScores);
     const quarterScore = root.quarter_score || quarterScores[0] || {};
-    const nextSchedule = Portal.normalizeArray(root.next_7_schedule || root.upcoming_schedule || root.nextSchedule);
+    const fullUpcomingSchedule = Portal.normalizeArray(root.upcoming_schedule || root.upcomingSchedule || root.nextSchedule);
+    const nextSchedule = Portal.normalizeArray(root.next_7_schedule || root.next7Schedule);
     const monthlySchedule = Portal.normalizeArray(root.monthly_schedule);
     const selectedMonth = document.getElementById("scheduleMonth")?.value || root.selected_month || root.score_debug?.selected_month || new Date().toISOString().slice(0, 7);
     const currentMonth = new Date().toISOString().slice(0, 7);
-    const scheduleList = selectedMonth === currentMonth && nextSchedule.length ? nextSchedule : monthlySchedule;
+    const scheduleList = fullUpcomingSchedule.length
+      ? fullUpcomingSchedule
+      : selectedMonth === currentMonth && nextSchedule.length ? nextSchedule : monthlySchedule;
     const loginKey = String(Portal.pick(staff, ["login_id"], session.loginId || session.staffId || "")).toLowerCase();
     const ownPerformance = performanceDetails.find((row) => loginValue(row) === loginKey) || {};
     const ownLeader = leaderboard.find((row) => loginValue(row) === loginKey);
@@ -561,8 +564,6 @@
     if (!host) return;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const nextWeek = new Date(today);
-    nextWeek.setDate(today.getDate() + 7);
     let list = rows.filter((row) => {
       const date = new Date(`${Portal.pick(row, ["date", "schedule_date"], "")}T00:00:00`);
       return !Number.isNaN(date.getTime()) && date >= today;
@@ -577,11 +578,15 @@
       });
     }
     list.sort((a, b) => String(Portal.pick(a, ["date", "schedule_date"], "")).localeCompare(String(Portal.pick(b, ["date", "schedule_date"], ""))));
-    const nextSeven = list.filter((row) => {
-      const date = new Date(`${Portal.pick(row, ["date", "schedule_date"], "")}T00:00:00`);
-      return date <= nextWeek;
-    });
-    const output = (nextSeven.length ? nextSeven : list).slice(0, 7);
+    const columns = [
+      { label: "Date", render: (row) => Portal.formatDate(Portal.pick(row, ["date", "schedule_date"], "")) },
+      { label: "Shift", keys: ["shift_code", "shift"] },
+      { label: "Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["start_time", "start"], "")) },
+      { label: "End", render: (row) => formatShiftTime12h(Portal.pick(row, ["end_time", "end"], "")) },
+      { label: "Status", render: (row) => badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], ""))) }
+    ];
+    ensureStaffViewButton("upcomingSchedule", "View All", !list.length, () => openStaffTableModal("Upcoming Schedule", list, columns));
+    const output = list.slice(0, 7);
     if (!output.length) {
       host.innerHTML = empty("No upcoming schedule found for selected month.");
       return;

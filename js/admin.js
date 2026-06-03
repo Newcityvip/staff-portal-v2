@@ -111,7 +111,12 @@
       console.table(performanceDetails.slice(0, 10));
       loggedPerformanceDetails = true;
     }
-    const nextShiftStaff = Portal.normalizeArray(root.next_shift_staff || root.nextShiftStaff || root.next_shifts);
+    const nonWorkingCodes = new Set(["OFF", "AL", "UL", "SL", "NP", "LEAVE", "HOLIDAY", ""]);
+    const nextShiftStaff = Portal.normalizeArray(root.next_shift_staff || root.nextShiftStaff || root.next_shifts).filter((row) => {
+      const status = String(Portal.pick(row, ["status"], "")).toUpperCase();
+      const shift = String(Portal.pick(row, ["shift", "shift_code"], "")).toUpperCase();
+      return status === "WORKING" && !nonWorkingCodes.has(shift);
+    });
     const dailyScores = Portal.normalizeArray(root.daily_scores || root.dailyScores);
     const auditLogs = Portal.normalizeArray(root.audit_logs || root.auditLogs || root.audit);
     const telegramLogs = Portal.normalizeArray(root.telegram_logs || root.telegramLogs);
@@ -383,7 +388,7 @@
       { label: "Status", render: (row) => badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], ""))) }
     ];
     ensureViewButton("nextShiftStaff", "next shift staff", () => openTableModal("Next Shift Staff", rows, columns));
-    host.innerHTML = rows.slice(0, previewLimit).map((row) => `
+    host.innerHTML = rows.slice(0, 10).map((row) => `
       <tr>
         <td>${Portal.pick(row, ["staff", "full_name", "name", "staffName"], "Staff")}</td>
         <td>${Portal.pick(row, ["team", "department"], "--")}</td>

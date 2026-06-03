@@ -145,12 +145,12 @@ function monthNow() {
 }
 
 function resolveScoreMonth(month) {
-  const requestedMonth = normalizeMonthKey(month);
-  if (requestedMonth) return requestedMonth;
-
   const settings = getSettings();
   const defaultMonth = normalizeMonthKey(settings.DEFAULT_MONTH);
-  return defaultMonth || monthNow();
+  if (defaultMonth) return defaultMonth;
+
+  const requestedMonth = normalizeMonthKey(month);
+  return requestedMonth || monthNow();
 }
 
 function normalizeMonthKey(v) {
@@ -955,6 +955,7 @@ function getStaffDashboard(data) {
     attendance_state: getAttendanceState(staff.login_id, today),
     monthly_schedule: getMonthlySchedule(staff.login_id, month),
     next_7_schedule: getNextSchedule(staff.login_id, today, 7),
+    upcoming_schedule: getNextSchedule(staff.login_id, today, 0),
     attendance_events: attendanceEvents,
     daily_scores: dailyScores,
     quarter_scores: quarterScores,
@@ -967,8 +968,13 @@ function getStaffDashboard(data) {
     kpi_score: kpiScore,
     kpi_status: ownPerformance.kpi_status || (ownKpi ? "Scored" : "Not scored yet"),
     final_score: finalScore,
+    staff_score: ownPerformance,
+    score: ownPerformance,
+    performance_summary: ownPerformance,
     performance_details: performanceDetails,
     leaderboard: leaderboard,
+    topPerformers: leaderboard.slice(0, 10),
+    worstPerformers: leaderboard.slice().reverse().slice(0, 10),
     own_kpi: ownKpi,
     score_debug: scoreDebug
   };
@@ -981,9 +987,12 @@ function getNextSchedule(loginId, fromDate, days) {
     return clean(row.login_id).toLowerCase() === target && normalizeDateKey(row.schedule_date) >= from;
   });
   rows.sort(function (a, b) {
-    return normalizeDateKey(a.schedule_date).localeCompare(normalizeDateKey(b.schedule_date));
+    const dateCompare = normalizeDateKey(a.schedule_date).localeCompare(normalizeDateKey(b.schedule_date));
+    if (dateCompare) return dateCompare;
+    return parseTimeToMinutesSafe(a.start_time) - parseTimeToMinutesSafe(b.start_time);
   });
-  return rows.slice(0, safeNumber(days, 7));
+  const limit = safeNumber(days, 7);
+  return limit > 0 ? rows.slice(0, limit) : rows;
 }
 
 function getNextShiftStaffRows(access, staffIndex) {
@@ -1128,10 +1137,12 @@ function getQuarterScoreForStaff(staff, month, fallbackScore) {
 
 function buildScoreDebug(month, dailyRows, kpiRows, performanceRows) {
   return {
+    resolved_month: normalizeMonth(month),
     selected_month: normalizeMonth(month),
     selected_quarter: getQuarterLabelForMonth(month),
     daily_rows_found: (dailyRows || []).length,
     kpi_rows_found: (kpiRows || []).length,
+    performance_rows_built: (performanceRows || []).length,
     quarter_rows_found: listQuarterScoreRows(0).length,
     sample_daily_headers: getSheetHeaders(SHEETS.DAILY).slice(0, 30),
     sample_kpi_headers: getSheetHeaders(SHEETS.KPI).slice(0, 30),
@@ -1184,7 +1195,9 @@ function getScoreRowsForStaff(map, staff) {
   const rows = [];
   lookupKeysForStaff(staff).forEach(function (key) {
     (map[key] || []).forEach(function (row) {
-      const rowKey = identityKeys(row).join("|") || JSON.stringify(row);
+      const rowKey = clean(row.daily_score_id || row.kpi_id || row.quarter_id) ||
+        [clean(row.score_date), clean(row.kpi_month || row.score_month), identityKeys(row).join("|")].join("|") ||
+        JSON.stringify(row);
       if (seen[rowKey]) return;
       seen[rowKey] = true;
       rows.push(row);
@@ -1242,8 +1255,7 @@ function buildCanonicalPerformanceDetails(month, teamFilter) {
   const rows = activeStaff.map(function (staff) {
     const staffDaily = getScoreRowsForStaff(dailyMap, staff);
     const kpi = getLatestScoreRowForStaff(kpiMap, staff);
-    const workingDailyRows = staffDaily.filter(isWorkingDailyScoreRow);
-    const attendanceScore = averageScoreRows(workingDailyRows, "final_attendance_score");
+    const attendanceScore = averageScoreRows(staffDaily, "final_attendance_score");
     const kpiScore = kpi ? safeNumber(kpi.kpi_score_out_of_5, 0) : 0;
     const monthlyFinalScore = calculateFinalScore(attendanceScore, kpiScore);
     const quarterRows = getQuarterRowsForStaff(staff, month);
@@ -1254,7 +1266,6 @@ function buildCanonicalPerformanceDetails(month, teamFilter) {
       login_id: staff.login_id,
       staff_id: staff.staff_id,
       matched_daily_rows: staffDaily.length,
-      matched_working_daily_rows: workingDailyRows.length,
       matched_kpi_rows: kpi ? 1 : 0,
       matched_quarter_rows: quarterRows.length,
       attendance_score: attendanceScore,
@@ -1283,7 +1294,7 @@ function buildCanonicalPerformanceDetails(month, teamFilter) {
       monthly_final_score: monthlyFinalScore,
       ranking_score: quarterScore,
       grade: getGrade(monthlyFinalScore),
-      daily_score_count: workingDailyRows.length,
+      daily_score_count: staffDaily.length,
       has_kpi: Boolean(kpi),
       has_quarter_score: quarterRows.length > 0
     };
@@ -1301,6 +1312,26 @@ function buildCanonicalPerformanceDetails(month, teamFilter) {
     row.current_rank = row.rank;
   });
   return rows;
+}
+
+function mergePerformanceIntoStaffRows(staffRows, performanceRows) {
+  return (staffRows || []).map(function (staff) {
+    const score = (performanceRows || []).filter(function (row) {
+      return rowMatchesStaffIdentity(row, staff);
+    })[0];
+    return score ? Object.assign({}, staff, {
+      attendance_score: score.attendance_score,
+      monthly_attendance_score: score.monthly_attendance_score,
+      kpi_score: score.kpi_score,
+      kpi_score_out_of_5: score.kpi_score_out_of_5,
+      final_score: score.final_score,
+      monthly_final_score: score.monthly_final_score,
+      quarter_score: score.quarter_score,
+      rank: score.rank,
+      current_rank: score.current_rank || score.rank,
+      kpi_status: score.kpi_status
+    }) : staff;
+  });
 }
 
 function isAdminStaff(staff) {
@@ -1390,7 +1421,8 @@ function getAdminDashboardFull(data) {
   scheduleList = filterRowsForAdmin(scheduleList, access, staffIndex);
   const attendanceEvents = filterRowsForAdmin(listAttendanceRows(clean(data.date) || today, safeNumber(data.limit, 250)), access, staffIndex);
   const breakBoard = getActiveBreakRows(clean(data.date) || today, access, staffIndex);
-  const dailyScores = filterRowsForAdmin(listDailyScoreRows(month, safeNumber(data.limit, 250)), access, staffIndex);
+  const allDailyScoresForMonth = filterRowsForAdmin(listDailyScoreRows(month, 0), access, staffIndex);
+  const dailyScores = allDailyScoresForMonth.slice(0, safeNumber(data.limit, 250));
   const kpiList = filterRowsForAdmin(listKpiRows(month), access, staffIndex);
   const quarterScores = filterRowsForAdmin(listQuarterScoreRows(safeNumber(data.limit, 250)), access, staffIndex);
   const auditLogs = filterRowsForAdmin(listAuditRows(safeNumber(data.limit, 100)), access, staffIndex);
@@ -1398,8 +1430,9 @@ function getAdminDashboardFull(data) {
   const ipAllowlist = listIpRows();
   const summary = getTodaySummary(today, access.allowed_team);
   const performanceDetails = buildPerformanceDetails(month, access.allowed_team);
+  const scoredStaffList = mergePerformanceIntoStaffRows(staffList, performanceDetails);
   const nextShiftStaff = getNextShiftStaffRows(access, staffIndex);
-  const scoreDebug = buildScoreDebug(month, dailyScores, kpiList, performanceDetails);
+  const scoreDebug = buildScoreDebug(month, allDailyScoresForMonth, kpiList, performanceDetails);
   const leaderboard = performanceDetails.map(function (row) {
     return {
       login_id: row.login_id,
@@ -1430,7 +1463,7 @@ function getAdminDashboardFull(data) {
     summary: summary,
     today_summary: summary,
     staff_count: summary.total_staff,
-    staff_list: staffList,
+    staff_list: scoredStaffList,
     schedule_list: scheduleList,
     next_shift_staff: nextShiftStaff,
     attendance_events: attendanceEvents,

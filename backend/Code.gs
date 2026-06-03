@@ -989,8 +989,12 @@ function getNextSchedule(loginId, fromDate, days) {
 function getNextShiftStaffRows(access, staffIndex) {
   const today = todayDate();
   const nowMinutes = parseTimeToMinutesSafe(nowTime());
+  const nonWorkingCodes = ["OFF", "AL", "UL", "SL", "NP", "LEAVE", "HOLIDAY"];
   const rows = filterRowsForAdmin(listScheduleRows("", ""), access, staffIndex).filter(function (row) {
-    if (safeUpper(row.status) !== "WORKING") return false;
+    const status = safeUpper(row.status);
+    const shift = safeUpper(row.shift_code);
+    if (status !== "WORKING") return false;
+    if (nonWorkingCodes.indexOf(status) > -1 || nonWorkingCodes.indexOf(shift) > -1) return false;
     if (isNonWorkingDay(row.shift_code, row.status)) return false;
     const dateKey = normalizeDateKey(row.schedule_date);
     if (!dateKey || dateKey < today) return false;

@@ -58,6 +58,33 @@
     "ranking_score"
   ].some((key) => hasScoreValue(row[key])));
   const canonicalPerformanceRows = (root) => Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance);
+  const scoreFieldKeys = [
+    "attendance_score",
+    "monthly_attendance_score",
+    "kpi_score",
+    "kpi_score_out_of_5",
+    "final_score",
+    "monthly_final_score",
+    "quarter_score",
+    "current_rank",
+    "rank"
+  ];
+  const payloadRoot = (payload) => payload?.data || payload?.dashboard || payload || {};
+  const hasScoreFields = (source = {}) => source && !Array.isArray(source) && typeof source === "object"
+    && scoreFieldKeys.some((key) => Object.prototype.hasOwnProperty.call(source, key));
+  const hasValidScorePayload = (payload) => {
+    const root = payloadRoot(payload);
+    if (canonicalPerformanceRows(root).length) return true;
+    if (Portal.normalizeArray(root.leaderboard || root.rankings).length) return true;
+    if (hasScoreFields(root)) return true;
+    return [
+      root.staff_score,
+      root.score,
+      root.performance_summary,
+      root.own_kpi,
+      root.kpi
+    ].some(hasScoreFields);
+  };
   const performanceIndex = (rows = []) => rows.reduce((map, row) => {
     const key = loginValue(row);
     if (key) map[key] = row;
@@ -125,8 +152,10 @@
     };
   };
 
-  const mergeStableDashboard = (previous, next) => {
+  const mergeStableDashboard = (previous, next, rawData) => {
     if (!previous || !Object.keys(previous).length) return next;
+    const root = payloadRoot(rawData);
+    const breaksSupplied = Object.prototype.hasOwnProperty.call(root, "breakBoard") || Object.prototype.hasOwnProperty.call(root, "breaks");
     const keepArray = (key) => (!next[key] || !next[key].length) && previous[key]?.length ? previous[key] : next[key];
     const merged = { ...next };
     ["kpis", "performance", "top", "worst", "nextShiftStaff", "dailyLogs", "telegramLogs", "auditLogs"].forEach((key) => {
@@ -148,7 +177,7 @@
     if ((!merged.staff || !merged.staff.length) && previous.staff?.length) merged.staff = previous.staff;
     if ((!merged.schedules || !merged.schedules.length) && previous.schedules?.length) merged.schedules = previous.schedules;
     if ((!merged.attendance || !merged.attendance.length) && previous.attendance?.length) merged.attendance = previous.attendance;
-    if ((!merged.breaks || !merged.breaks.length) && previous.breaks?.length) merged.breaks = previous.breaks;
+    if ((!merged.breaks || !merged.breaks.length) && previous.breaks?.length && !breaksSupplied) merged.breaks = previous.breaks;
     return merged;
   };
 
@@ -595,8 +624,17 @@
       const root = data?.data || data?.dashboard || data || {};
       const incomingPerformance = canonicalPerformanceRows(root);
       const hadPerformance = dashboard.performance?.length;
-      dashboard = mergeStableDashboard(dashboard, normalizeDashboard(data));
-      if (incomingPerformance.length || !hadPerformance) writeCachedDashboard(data);
+      const scorePayloadValid = hasValidScorePayload(data);
+      const nextDashboard = normalizeDashboard(data);
+      if (!scorePayloadValid && dashboard.performance?.length) {
+        nextDashboard.performance = dashboard.performance;
+        nextDashboard.top = dashboard.top?.length ? dashboard.top : dashboard.performance;
+        nextDashboard.worst = dashboard.worst?.length ? dashboard.worst : dashboard.performance.slice().reverse();
+        nextDashboard.kpis = dashboard.kpis?.length ? dashboard.kpis : dashboard.performance;
+        nextDashboard.staff = enrichStaffWithPerformance(nextDashboard.staff?.length ? nextDashboard.staff : dashboard.staff, dashboard.performance);
+      }
+      dashboard = mergeStableDashboard(dashboard, nextDashboard, data);
+      if (scorePayloadValid || !hadPerformance) writeCachedDashboard(data);
       renderAll();
     } catch (error) {
       Portal.setStatus(false, "API issue");

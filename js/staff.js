@@ -95,6 +95,36 @@
     "ranking_score"
   ].some((key) => hasScoreValue(row[key]));
   const hasCanonicalScoreRows = (root) => Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance).length > 0;
+  const scoreFieldKeys = [
+    "attendance_score",
+    "monthly_attendance_score",
+    "monthlyAttendanceScore",
+    "kpi_score",
+    "kpi_score_out_of_5",
+    "kpiScore",
+    "final_score",
+    "finalScore",
+    "quarter_score",
+    "quarterScore",
+    "current_rank",
+    "rank"
+  ];
+  const payloadRoot = (payload) => payload?.data || payload?.dashboard || payload || {};
+  const hasScoreFields = (source = {}) => source && !Array.isArray(source) && typeof source === "object"
+    && scoreFieldKeys.some((key) => Object.prototype.hasOwnProperty.call(source, key));
+  const hasValidScorePayload = (payload) => {
+    const root = payloadRoot(payload);
+    if (hasCanonicalScoreRows(root)) return true;
+    if (Portal.normalizeArray(root.leaderboard || root.rankings).length) return true;
+    if (hasScoreFields(root)) return true;
+    return [
+      root.staff_score,
+      root.score,
+      root.performance_summary,
+      root.own_kpi,
+      root.kpi
+    ].some(hasScoreFields);
+  };
 
   const normalizeDashboard = (data) => {
     const root = data.data || data.dashboard || data;
@@ -620,8 +650,15 @@
       const root = data?.data || data?.dashboard || data || {};
       const selectedMonth = root.selected_month || root.score_debug?.selected_month || "";
       if (monthInput && !scheduleMonthTouched && selectedMonth) monthInput.value = selectedMonth;
-      state = mergeStableDashboard(state, normalizeDashboard(data), data);
-      if (hasCanonicalScoreRows(root) || !state.performanceDetails?.length) writeCachedDashboard(data);
+      const scorePayloadValid = hasValidScorePayload(data);
+      const nextState = normalizeDashboard(data);
+      if (!scorePayloadValid && Object.keys(state || {}).length) {
+        nextState.performance = state.performance;
+        nextState.performanceDetails = state.performanceDetails;
+        nextState.leaderboard = state.leaderboard;
+      }
+      state = mergeStableDashboard(state, nextState, data);
+      if (scorePayloadValid || !state.performanceDetails?.length) writeCachedDashboard(data);
       renderProfile(state);
     } catch (error) {
       Portal.setStatus(false, "API issue");

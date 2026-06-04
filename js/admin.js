@@ -1113,6 +1113,39 @@
       state.textContent = error.message || "Unable to upload schedule.";
     }
   });
+  document.getElementById("singleScheduleForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const state = document.getElementById("singleScheduleState");
+    const loginId = document.getElementById("singleScheduleLoginId")?.value.trim();
+    const scheduleDate = document.getElementById("singleScheduleDate")?.value;
+    const shiftCode = document.getElementById("singleScheduleShift")?.value.trim().toUpperCase();
+    if (!loginId || !scheduleDate || !shiftCode) {
+      state.hidden = false;
+      state.textContent = "Enter staff login ID, date, and shift.";
+      return;
+    }
+    try {
+      state.hidden = false;
+      state.textContent = "Updating schedule...";
+      form.querySelector("button[type='submit']").disabled = true;
+      const ip = await Portal.api.detectIp();
+      const result = await callFirstValid(["update_single_staff_schedule"], {
+        admin_login_id: session.loginId || session.staffId,
+        login_id: loginId,
+        schedule_date: scheduleDate,
+        shift_code: shiftCode,
+        ip
+      });
+      state.textContent = `Schedule updated for ${result.login_id || loginId} on ${result.schedule_date || scheduleDate}: ${result.shift_code || shiftCode}.`;
+      Portal.toast("Schedule updated");
+      await load(true);
+    } catch (error) {
+      state.textContent = error.message || "Unable to update schedule.";
+    } finally {
+      form.querySelector("button[type='submit']").disabled = false;
+    }
+  });
   document.getElementById("kpiInputForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const state = document.getElementById("kpiInputState");

@@ -88,18 +88,49 @@
       </section>
 
       <section class="content-grid">
-        <article class="glass-panel">
-          <div class="panel-title"><h2>Upload Schedule</h2><span>CSV import</span></div>
-          <form id="scheduleUploadForm" class="control-grid">
-            <label class="field full-span">
-              <span>Schedule CSV</span>
-              <input id="scheduleFile" class="file-input" type="file" accept=".csv,text/csv">
-            </label>
-            <button class="primary-btn" type="submit">Upload Schedule</button>
-            <button class="mini-btn" id="clearScheduleUpload" type="button">Clear</button>
-            <div id="scheduleUploadState" class="inline-alert subtle full-span" hidden></div>
-          </form>
-        </article>
+        <div class="management-card-stack">
+          <article class="glass-panel">
+            <div class="panel-title"><h2>Upload Schedule</h2><span>CSV import</span></div>
+            <form id="scheduleUploadForm" class="control-grid">
+              <label class="field full-span">
+                <span>Schedule CSV</span>
+                <input id="scheduleFile" class="file-input" type="file" accept=".csv,text/csv">
+              </label>
+              <button class="primary-btn" type="submit">Upload Schedule</button>
+              <button class="mini-btn" id="clearScheduleUpload" type="button">Clear</button>
+              <div id="scheduleUploadState" class="inline-alert subtle full-span" hidden></div>
+            </form>
+          </article>
+
+          <article class="glass-panel">
+            <div class="panel-title"><h2>Update Single Schedule</h2><span>One date</span></div>
+            <form id="singleScheduleForm" class="control-grid">
+              <label class="field">
+                <span>Staff Login ID</span>
+                <input id="singleScheduleLoginId" required placeholder="AKM001">
+              </label>
+              <label class="field">
+                <span>Date</span>
+                <input id="singleScheduleDate" type="date" required>
+              </label>
+              <label class="field">
+                <span>Shift</span>
+                <select id="singleScheduleShift" required>
+                  <option value="AM">AM</option>
+                  <option value="AM1">AM1</option>
+                  <option value="PM">PM</option>
+                  <option value="PM1">PM1</option>
+                  <option value="OFF">OFF</option>
+                  <option value="AL">AL</option>
+                  <option value="SL">SL</option>
+                  <option value="UL">UL</option>
+                </select>
+              </label>
+              <button class="primary-btn" type="submit">Update Schedule</button>
+              <div id="singleScheduleState" class="inline-alert subtle full-span" hidden></div>
+            </form>
+          </article>
+        </div>
 
         <article class="glass-panel">
           <div class="panel-title"><h2>Monthly KPI Input</h2><span>Score update</span></div>

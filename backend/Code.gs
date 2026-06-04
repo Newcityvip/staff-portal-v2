@@ -64,6 +64,9 @@ function doPost(e) {
       case "upload_schedule_csv":
         result = uploadScheduleCsv(body);
         break;
+      case "update_single_staff_schedule":
+        result = updateSingleStaffSchedule(body);
+        break;
       case "get_attendance_logs":
         result = getAttendanceLogs(body);
         break;
@@ -1827,6 +1830,83 @@ function uploadScheduleCsv(data) {
     backend_first_10_received_rows: backendReceivedDebugRows,
     backend_first_10_written_rows: backendWrittenDebugRows,
     written_debug_rows: backendWrittenDebugRows
+  };
+}
+
+function updateSingleStaffSchedule(data) {
+  const ip = clean(data.ip);
+  const ipError = requireAllowedIp(ip);
+  if (ipError) return ipError;
+
+  const loginId = clean(data.login_id);
+  const scheduleDate = normalizeDateKey(data.schedule_date);
+  const shiftCode = safeUpper(data.shift_code);
+  if (!loginId) return { ok: false, message: "login_id is required" };
+  if (!scheduleDate) return { ok: false, message: "schedule_date is required" };
+  if (!shiftCode) return { ok: false, message: "shift_code is required" };
+
+  const nonWorkingCodes = ["OFF", "AL", "SL", "UL"];
+  const isNonWorking = nonWorkingCodes.indexOf(shiftCode) !== -1;
+  const shiftRule = isNonWorking ? { ok: false } : getShiftRule(shiftCode);
+  if (!isNonWorking && !shiftRule.ok) return { ok: false, message: "Invalid shift_code: " + shiftCode };
+
+  const sheet = sh(SHEETS.SCHEDULE);
+  const values = sheet.getDataRange().getValues();
+  const headers = values[0] || [];
+  const headerMap = buildHeaderMap(headers);
+  const requiredHeaders = ["login_id", "schedule_date", "shift_code", "start_time", "end_time", "status", "uploaded_by", "uploaded_at", "notes"];
+  for (let i = 0; i < requiredHeaders.length; i++) {
+    if (headerMap[requiredHeaders[i]] == null) return { ok: false, message: "Missing schedule header: " + requiredHeaders[i] };
+  }
+
+  let targetRow = -1;
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    const rowLoginId = clean(valueByHeader(row, headerMap, ["login_id"], null)).toLowerCase();
+    const rowDate = normalizeDateKey(valueByHeader(row, headerMap, ["schedule_date"], null));
+    if (rowLoginId === loginId.toLowerCase() && rowDate === scheduleDate) {
+      targetRow = i + 1;
+      break;
+    }
+  }
+  if (targetRow === -1) return { ok: false, message: "Matching schedule row not found" };
+
+  const startTime = isNonWorking ? "" : normalizeScheduleTimeForSheet(shiftRule.start_time);
+  const endTime = isNonWorking ? "" : normalizeScheduleTimeForSheet(shiftRule.end_time);
+  const status = isNonWorking ? shiftCode : "WORKING";
+  const updates = {
+    shift_code: shiftCode,
+    start_time: startTime,
+    end_time: endTime,
+    status: status,
+    uploaded_by: "Admin",
+    uploaded_at: nowDateTime(),
+    notes: "Schedule updated from admin panel"
+  };
+
+  Object.keys(updates).forEach(function (key) {
+    const column = headerMap[key] + 1;
+    if (key === "start_time" || key === "end_time") sheet.getRange(targetRow, column).setNumberFormat("@");
+    sheet.getRange(targetRow, column).setValue(updates[key]);
+  });
+
+  clearSheetCache(SHEETS.SCHEDULE);
+  appendAudit("ADMIN", "Admin", "Admin", "UPDATE_SINGLE_SCHEDULE", "SCHEDULE", loginId, "", JSON.stringify({
+    login_id: loginId,
+    schedule_date: scheduleDate,
+    shift_code: shiftCode,
+    status: status
+  }), ip, "Schedule updated from admin panel");
+
+  return {
+    ok: true,
+    updated: true,
+    login_id: loginId,
+    schedule_date: scheduleDate,
+    shift_code: shiftCode,
+    start_time: startTime,
+    end_time: endTime,
+    status: status
   };
 }
 

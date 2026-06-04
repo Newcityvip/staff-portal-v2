@@ -1079,6 +1079,22 @@ function averageScoreRows(rows, key) {
   return count ? round2(total / count) : 0;
 }
 
+function scoreRowMonth(row) {
+  return normalizeMonth(row && row.score_date) ||
+    normalizeMonth(row && row.score_month) ||
+    normalizeMonth(row && row.kpi_month);
+}
+
+function latestScoreRowsForStaff(rows) {
+  rows = rows || [];
+  if (!rows.length) return [];
+  const latestMonth = scoreRowMonth(rows[0]);
+  if (!latestMonth) return rows;
+  return rows.filter(function (row) {
+    return scoreRowMonth(row) === latestMonth;
+  });
+}
+
 function getQuarterScoreForMonth(loginId, month, fallbackScore) {
   const staff = getStaffByIdentifier(loginId);
   const identity = staff.ok ? staff : { login_id: loginId };
@@ -1294,12 +1310,18 @@ function getCanonicalScores(month, teamFilter) {
     return !teamKey || clean(staff.team).toLowerCase() === teamKey;
   });
   const dailyRows = listDailyScoreRows(month, 0);
+  const allDailyRows = listDailyScoreRows("", 0);
   const kpiRows = listKpiRows(month);
   const dailyMap = {};
+  const allDailyMap = {};
   const kpiMap = {};
 
   dailyRows.forEach(function (row) {
     addScoreRowToMap(dailyMap, row);
+  });
+
+  allDailyRows.forEach(function (row) {
+    addScoreRowToMap(allDailyMap, row);
   });
 
   kpiRows.forEach(function (row) {
@@ -1309,7 +1331,15 @@ function getCanonicalScores(month, teamFilter) {
   const matchedDailyKeys = {};
   const scoreDebugMissing = [];
   const rows = activeStaff.map(function (staff) {
-    const staffDaily = getScoreRowsForStaff(dailyMap, staff);
+    let staffDaily = getScoreRowsForStaff(dailyMap, staff);
+    let scoreMonthUsed = month;
+    if (!staffDaily.length) {
+      const fallbackDaily = latestScoreRowsForStaff(getScoreRowsForStaff(allDailyMap, staff));
+      if (fallbackDaily.length) {
+        staffDaily = fallbackDaily;
+        scoreMonthUsed = scoreRowMonth(fallbackDaily[0]) || month;
+      }
+    }
     staffDaily.forEach(function (row) {
       matchedDailyKeys[scoreDebugRowKey(row)] = true;
     });
@@ -1321,6 +1351,7 @@ function getCanonicalScores(month, teamFilter) {
     const quarterScore = getQuarterScoreForStaff(staff, month, monthlyFinalScore);
     Logger.log("Score pipeline: " + JSON.stringify({
       selected_month: month,
+      score_month_used: scoreMonthUsed,
       selected_quarter: getQuarterLabelForMonth(month),
       login_id: staff.login_id,
       staff_id: staff.staff_id,
@@ -1348,6 +1379,7 @@ function getCanonicalScores(month, teamFilter) {
       role: staff.role,
       status: staff.status,
       month: month,
+      score_month_used: scoreMonthUsed,
       kpi_month: month,
       attendance_score: attendanceScore,
       monthly_attendance_score: attendanceScore,

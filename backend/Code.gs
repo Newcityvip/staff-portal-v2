@@ -146,11 +146,11 @@ function monthNow() {
 
 function resolveScoreMonth(month) {
   const settings = getSettings();
-  const defaultMonth = normalizeMonthKey(settings.DEFAULT_MONTH);
-  if (defaultMonth) return defaultMonth;
-
   const requestedMonth = normalizeMonthKey(month);
-  return requestedMonth || monthNow();
+  if (requestedMonth) return requestedMonth;
+
+  const defaultMonth = normalizeMonthKey(settings.DEFAULT_MONTH);
+  return defaultMonth || monthNow();
 }
 
 function normalizeMonthKey(v) {

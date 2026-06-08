@@ -2504,6 +2504,45 @@ function clampScore(value) {
   return Math.max(0, Math.min(5, round2(value)));
 }
 
+function buildDailyScoreRow(existingRow, headerMap, record) {
+  const row = existingRow.slice();
+  const set = function (keys, value) {
+    for (let i = 0; i < keys.length; i++) {
+      const key = normalizeHeaderKey(keys[i]);
+      if (headerMap[key] != null) {
+        row[headerMap[key]] = value;
+        return;
+      }
+    }
+  };
+
+  set(["daily_score_id", "score_id"], record.daily_score_id);
+  set(["score_date", "date"], record.score_date);
+  set(["score_month", "schedule_month", "month"], record.score_month);
+  set(["staff_id"], record.staff_id);
+  set(["login_id"], record.login_id);
+  set(["full_name", "name"], record.full_name);
+  set(["shift_code"], record.shift_code);
+  set(["scheduled_start", "start_time"], record.scheduled_start);
+  set(["scheduled_end", "end_time"], record.scheduled_end);
+  set(["first_check_in", "check_in"], record.first_check_in);
+  set(["last_check_out", "check_out"], record.last_check_out);
+  set(["total_break_min"], record.total_break_min);
+  set(["total_bio_break"], record.total_bio_break);
+  set(["total_prayer_break"], record.total_prayer_break);
+  set(["break_overuse", "break_overuse_minutes"], record.break_overuse);
+  set(["missing_checkin", "missing_check_in"], record.missing_checkin);
+  set(["missing_checkout", "missing_check_out"], record.missing_checkout);
+  set(["late_minutes"], record.late_minutes);
+  set(["attendance_status", "status"], record.attendance_status);
+  set(["base_score"], record.base_score);
+  set(["total_penalty", "penalty"], record.total_penalty);
+  set(["final_attendance_score", "final_attendance", "attendance_score"], record.final_attendance_score);
+  set(["calculated_at", "created_at"], record.calculated_at);
+  set(["notes"], record.notes);
+  return row;
+}
+
 function isWorkingDailyScoreRow(row) {
   if (!row) return false;
   const status = safeUpper(row.status);
@@ -2554,22 +2593,49 @@ function calculateDailyScore(data) {
     const settings = getSettings();
     const state = getAttendanceState(staff, dateStr);
     const score = calculateDailyAttendanceScore(staff, schedule, state, settings, dateStr);
-    const dailyRow = [
-      makeId("DAS"), dateStr, clean(schedule.schedule_month), staff.staff_id, staff.login_id, staff.full_name,
-      schedule.shift_code, schedule.start_time, schedule.end_time, state.firstCheckIn, state.lastCheckOut,
-      "", "", "", "", "", state.hasCheckIn ? "NO" : "YES", state.hasCheckOut ? "NO" : "YES", "",
-      score.status, score.base_score, score.penalty, score.final_attendance_score, nowDateTime(), score.notes
-    ];
     const sheet = sh(SHEETS.DAILY);
     const values = sheet.getDataRange().getValues();
+    const headerMap = buildHeaderMap(values[0] || []);
     let existingRow = 0;
     for (let i = 1; i < values.length; i++) {
-      if (normalizeDateKey(values[i][1]) === normalizeDateKey(dateStr) && clean(values[i][4]).toLowerCase() === clean(staff.login_id).toLowerCase()) {
+      const rowDate = normalizeDateKey(valueByHeader(values[i], headerMap, ["score_date"], null));
+      const rowLoginId = clean(valueByHeader(values[i], headerMap, ["login_id"], null)).toLowerCase();
+      const rowStaffId = clean(valueByHeader(values[i], headerMap, ["staff_id"], null)).toLowerCase();
+      const loginMatches = rowLoginId && rowLoginId === clean(staff.login_id).toLowerCase();
+      const staffMatches = !rowLoginId && rowStaffId && rowStaffId === clean(staff.staff_id).toLowerCase();
+      if (rowDate === normalizeDateKey(dateStr) && (loginMatches || staffMatches)) {
         existingRow = i + 1;
-        dailyRow[0] = clean(values[i][0]) || dailyRow[0];
         break;
       }
     }
+    const currentRow = existingRow ? values[existingRow - 1].slice() : new Array((values[0] || []).length).fill("");
+    const existingId = existingRow ? valueByHeader(currentRow, headerMap, ["daily_score_id", "score_id"], null) : "";
+    const dailyRow = buildDailyScoreRow(currentRow, headerMap, {
+      daily_score_id: clean(existingId) || makeId("DAS"),
+      score_date: normalizeDateKey(dateStr),
+      score_month: clean(schedule.schedule_month) || normalizeDateKey(dateStr).substring(0, 7),
+      staff_id: staff.staff_id,
+      login_id: staff.login_id,
+      full_name: staff.full_name,
+      shift_code: schedule.shift_code,
+      scheduled_start: schedule.start_time,
+      scheduled_end: schedule.end_time,
+      first_check_in: state.firstCheckIn,
+      last_check_out: state.lastCheckOut,
+      total_break_min: score.total_break_min,
+      total_bio_break: score.total_bio_break,
+      total_prayer_break: score.total_prayer_break,
+      break_overuse: score.break_overuse_minutes,
+      missing_checkin: state.hasCheckIn ? "NO" : "YES",
+      missing_checkout: state.hasCheckOut ? "NO" : "YES",
+      late_minutes: score.late_minutes,
+      attendance_status: score.status,
+      base_score: score.base_score,
+      total_penalty: score.penalty,
+      final_attendance_score: score.final_attendance_score,
+      calculated_at: nowDateTime(),
+      notes: score.notes
+    });
     if (existingRow) {
       sheet.getRange(existingRow, 1, 1, dailyRow.length).setValues([dailyRow]);
     } else {
@@ -2613,6 +2679,9 @@ function calculateDailyAttendanceScore(staff, schedule, state, settings, dateStr
       late_minutes: 0,
       early_checkout_minutes: 0,
       break_overuse_minutes: 0,
+      total_break_min: 0,
+      total_bio_break: 0,
+      total_prayer_break: 0,
       notes: "Non-working day"
     };
     Logger.log("Daily score calculation: " + JSON.stringify({
@@ -2658,7 +2727,7 @@ function calculateDailyAttendanceScore(staff, schedule, state, settings, dateStr
     }
   }
 
-  const breakUsage = calculateBreakOveruse(staff.login_id, dateStr, schedule, settings);
+  const breakUsage = calculateBreakOveruse(staff, dateStr, schedule, settings);
   breakOveruseMinutes = breakUsage.overuse_minutes;
   if (breakOveruseMinutes > 0) {
     penalty += breakUsage.penalty;
@@ -2674,10 +2743,14 @@ function calculateDailyAttendanceScore(staff, schedule, state, settings, dateStr
     late_minutes: lateMinutes,
     early_checkout_minutes: earlyCheckoutMinutes,
     break_overuse_minutes: breakOveruseMinutes,
+    total_break_min: breakUsage.total_break_min,
+    total_bio_break: breakUsage.total_bio_break,
+    total_prayer_break: breakUsage.total_prayer_break,
     notes: JSON.stringify({
       late_minutes: lateMinutes,
       early_checkout_minutes: earlyCheckoutMinutes,
-      break_overuse_minutes: breakOveruseMinutes
+      break_overuse_minutes: breakOveruseMinutes,
+      break_details: breakUsage.details
     })
   };
 
@@ -2711,8 +2784,8 @@ function alignEventMinutesToSchedule(eventTime, scheduleWindow) {
   return minutes;
 }
 
-function calculateBreakOveruse(loginId, dateStr, schedule, settings) {
-  const usage = getBreakUsage(loginId, dateStr, schedule);
+function calculateBreakOveruse(staff, dateStr, schedule, settings) {
+  const usage = getBreakUsage(staff, dateStr, schedule);
   const rule = getShiftRule(schedule.shift_code);
   const limits = {
     BREAK: rule.ok ? safeNumber(rule.break_limit_min, 60) : 60,
@@ -2726,56 +2799,108 @@ function calculateBreakOveruse(loginId, dateStr, schedule, settings) {
   };
   const step = Math.max(1, safeNumber(settings.BREAK_OVERUSE_STEP_MINUTES, safeNumber(settings.LATE_STEP_MINUTES, 5)));
   let overuseMinutes = 0;
+  const details = {};
 
   Object.keys(limits).forEach(function (type) {
-    const item = usage[type] || { minutes: 0, count: 0 };
-    overuseMinutes += Math.max(0, item.minutes - limits[type]);
-    if (item.count > countLimits[type]) overuseMinutes += (item.count - countLimits[type]) * step;
+    const item = usage[type] || { seconds: 0, count: 0, sessions: [] };
+    let typeOveruseSeconds = 0;
+    item.sessions.forEach(function (session) {
+      const excessSeconds = session.duration_seconds - (limits[type] * 60);
+      if (excessSeconds > 60) typeOveruseSeconds += excessSeconds;
+    });
+    const extraSessions = Math.max(0, item.count - countLimits[type]);
+    const typeOveruseMinutes = Math.ceil(typeOveruseSeconds / 60) + (extraSessions * step);
+    overuseMinutes += typeOveruseMinutes;
+    details[type] = {
+      count: item.count,
+      total_minutes: Math.round(item.seconds / 60),
+      overuse_minutes: typeOveruseMinutes,
+      extra_sessions: extraSessions
+    };
   });
 
   return {
     overuse_minutes: overuseMinutes,
-    penalty: overuseMinutes > 0 ? Math.ceil(overuseMinutes / step) * safeNumber(settings.BREAK_OVERUSE_PENALTY_PER_STEP, 0.25) : 0
+    penalty: overuseMinutes > 0 ? Math.ceil(overuseMinutes / step) * safeNumber(settings.BREAK_OVERUSE_PENALTY_PER_STEP, 0.25) : 0,
+    total_break_min: Math.round((usage.BREAK && usage.BREAK.seconds || 0) / 60),
+    total_bio_break: usage.BIO_BREAK ? usage.BIO_BREAK.count : 0,
+    total_prayer_break: usage.PRAYER_BREAK ? usage.PRAYER_BREAK.count : 0,
+    details: details
   };
 }
 
-function getBreakUsage(loginId, dateStr, schedule) {
+function getBreakUsage(staff, dateStr, schedule) {
   const values = getValues(SHEETS.EVENTS);
+  const headerMap = buildHeaderMap(values[0] || []);
   const targetDate = normalizeDateKey(dateStr);
-  const targetLogin = clean(loginId).toLowerCase();
-  const scheduleWindow = getScheduleWindowMinutes(schedule || {});
+  const targetLogin = clean(staff && staff.login_id).toLowerCase();
+  const targetStaffId = clean(staff && staff.staff_id).toLowerCase();
   const usage = {
-    BREAK: { minutes: 0, count: 0 },
-    PRAYER_BREAK: { minutes: 0, count: 0 },
-    BIO_BREAK: { minutes: 0, count: 0 }
+    BREAK: { seconds: 0, count: 0, sessions: [] },
+    PRAYER_BREAK: { seconds: 0, count: 0, sessions: [] },
+    BIO_BREAK: { seconds: 0, count: 0, sessions: [] }
   };
-  const activeStarts = {};
+  const activeStarts = { BREAK: [], PRAYER_BREAK: [], BIO_BREAK: [] };
+  const events = [];
 
   for (let i = 1; i < values.length; i++) {
     const row = values[i];
-    if (normalizeDateKey(row[1]) !== targetDate) continue;
-    if (clean(row[4]).toLowerCase() !== targetLogin) continue;
+    const eventDate = valueByHeader(row, headerMap, ["event_date", "date"], null);
+    if (normalizeDateKey(eventDate) !== targetDate) continue;
 
-    const eventType = safeUpper(row[6]);
-    const breakType = safeUpper(row[7]);
+    const rowLoginId = clean(valueByHeader(row, headerMap, ["login_id"], null)).toLowerCase();
+    const rowStaffId = clean(valueByHeader(row, headerMap, ["staff_id"], null)).toLowerCase();
+    const loginMatches = targetLogin && rowLoginId && rowLoginId === targetLogin;
+    const staffMatches = targetStaffId && !rowLoginId && rowStaffId && rowStaffId === targetStaffId;
+    if (!loginMatches && !staffMatches) continue;
+
+    const eventType = safeUpper(valueByHeader(row, headerMap, ["event_type", "action"], null));
+    const breakType = safeUpper(valueByHeader(row, headerMap, ["break_type"], null));
     if (!usage[breakType]) continue;
 
-    const eventMinutes = alignEventMinutesToSchedule(row[2], scheduleWindow);
-    if (eventType === "BREAK_START") {
-      usage[breakType].count++;
-      activeStarts[breakType] = eventMinutes;
-    }
-    if (eventType === "BREAK_END" && activeStarts[breakType] != null) {
-      usage[breakType].minutes += Math.max(0, eventMinutes - activeStarts[breakType]);
-      delete activeStarts[breakType];
-    }
+    events.push({
+      event_type: eventType,
+      break_type: breakType,
+      timestamp_seconds: eventTimestampSeconds(eventDate, valueByHeader(row, headerMap, ["event_time", "time"], null), schedule)
+    });
   }
 
-  Object.keys(activeStarts).forEach(function (breakType) {
-    usage[breakType].minutes += Math.max(0, alignEventMinutesToSchedule(nowTimeForTimezone(getTeamTimezone(schedule && schedule.team)), scheduleWindow) - activeStarts[breakType]);
+  events.sort(function (a, b) {
+    return a.timestamp_seconds - b.timestamp_seconds;
+  });
+
+  events.forEach(function (event) {
+    const type = event.break_type;
+    if (event.event_type === "BREAK_START") {
+      activeStarts[type].push(event);
+      return;
+    }
+    if (event.event_type !== "BREAK_END" || !activeStarts[type].length) return;
+
+    const start = activeStarts[type].shift();
+    let durationSeconds = event.timestamp_seconds - start.timestamp_seconds;
+    if (durationSeconds < 0) durationSeconds += 86400;
+    usage[type].seconds += Math.max(0, durationSeconds);
+    usage[type].count++;
+    usage[type].sessions.push({
+      start_seconds: start.timestamp_seconds,
+      end_seconds: event.timestamp_seconds,
+      duration_seconds: Math.max(0, durationSeconds)
+    });
   });
 
   return usage;
+}
+
+function eventTimestampSeconds(eventDate, eventTime, schedule) {
+  const dateKey = normalizeDateKey(eventDate);
+  const timeKey = normalizeSheetTime(eventTime);
+  const dateParts = dateKey.split("-").map(function (part) { return safeNumber(part, 0); });
+  const timeParts = timeKey.split(":").map(function (part) { return safeNumber(part, 0); });
+  let seconds = Date.UTC(dateParts[0], dateParts[1] - 1, dateParts[2], timeParts[0], timeParts[1], timeParts[2] || 0) / 1000;
+  const scheduleWindow = getScheduleWindowMinutes(schedule || {});
+  if (scheduleWindow.overnight && parseTimeToMinutesSafe(timeKey) < scheduleWindow.start_minutes) seconds += 86400;
+  return seconds;
 }
 
 function diffMinutes(startTime, endTime) {

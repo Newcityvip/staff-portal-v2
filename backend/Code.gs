@@ -1602,6 +1602,8 @@ function getAdminDashboardFull(data) {
     attendance_events: attendanceEvents,
     breakBoard: breakBoard,
     breaks: breakBoard,
+    absent_today: summary.summary_details.absent_today || [],
+    absent_today_count: summary.absent_today_count || 0,
     daily_scores: dailyScores,
     kpi_list: leaderboard,
     quarter_scores: quarterScores,
@@ -1991,6 +1993,12 @@ function getTodaySummary(dateStr, teamFilter) {
     const key = normalizeIdentityValue(value);
     if (key) staffByIdentity[key] = staff;
   };
+  const absentIdentityKey = function (row) {
+    const login = normalizeIdentityValue(row && row.login_id);
+    if (login) return "login:" + login;
+    const staffId = normalizeIdentityValue(row && row.staff_id);
+    return staffId ? "staff:" + staffId : "";
+  };
   staffRows.forEach(function (staff) {
     putStaffKey(staff.login_id, staff);
     putStaffKey(staff.staff_id, staff);
@@ -2020,7 +2028,9 @@ function getTodaySummary(dateStr, teamFilter) {
 
   let working = 0;
   const workingScheduleByIdentity = {};
+  const absentScheduleByIdentity = {};
   let checkedIn = {};
+  const absentCheckedIn = {};
   let checkedOut = {};
   let checkOutTime = {};
   let activeBreak = {};
@@ -2033,6 +2043,7 @@ function getTodaySummary(dateStr, teamFilter) {
     on_break: [],
     late_staff: [],
     missing_checkout: [],
+    absent_today: [],
     not_working_today: []
   };
 
@@ -2054,6 +2065,8 @@ function getTodaySummary(dateStr, teamFilter) {
     if (!identity) return;
     working++;
     if (!workingScheduleByIdentity[identity]) workingScheduleByIdentity[identity] = row;
+    const absentKey = absentIdentityKey(row);
+    if (absentKey && !absentScheduleByIdentity[absentKey]) absentScheduleByIdentity[absentKey] = row;
   });
 
   eventRows.forEach(function (row) {
@@ -2063,6 +2076,8 @@ function getTodaySummary(dateStr, teamFilter) {
     const breakType = safeUpper(row.break_type);
     if (eventType === "CHECK_IN") {
       checkedIn[identity] = true;
+      const absentKey = absentIdentityKey(row);
+      if (absentKey) absentCheckedIn[absentKey] = true;
       if (!firstIn[identity]) firstIn[identity] = normalizeSheetTime(row.event_time);
       if (!details.checked_in_today.some(function (item) { return scheduleIdentityKey(item) === identity; })) {
         details.checked_in_today.push(detailFor(row, { check_in_time: row.event_time, check_in: row.event_time, status: "CHECKED_IN" }));
@@ -2107,6 +2122,17 @@ function getTodaySummary(dateStr, teamFilter) {
     }
   });
 
+  Object.keys(absentScheduleByIdentity).forEach(function (identity) {
+    if (absentCheckedIn[identity]) return;
+    const schedule = absentScheduleByIdentity[identity];
+    const window = getScheduleWindowMinutes(schedule);
+    const alignedNow = window.overnight && nowMinutes < window.start_minutes ? nowMinutes + 1440 : nowMinutes;
+    if (alignedNow < window.start_minutes + 20) return;
+    const absentRow = detailFor(schedule, { status: "ABSENT" });
+    details.absent_today.push(absentRow);
+    sendTelegramAbsenceAlert(absentRow);
+  });
+
   details.checked_in = details.checked_in_today;
 
   return {
@@ -2119,6 +2145,7 @@ function getTodaySummary(dateStr, teamFilter) {
     on_break: details.on_break.length,
     late_staff: details.late_staff.length,
     missing_checkout: details.missing_checkout.length,
+    absent_today_count: details.absent_today.length,
     not_checked_in: Math.max(working - Object.keys(checkedIn).length, 0),
     not_working_today: details.not_working_today.length,
     summary_details: details
@@ -3112,6 +3139,62 @@ function processTelegramQueue() {
       logInternalError("processTelegramQueue.releaseLock", err);
     }
   }
+}
+
+function sendTelegramAbsenceAlert(row) {
+  const settings = getSettings();
+  if (safeUpper(settings.TG_NOTIFY_ENABLED) !== "YES") return;
+
+  const loginId = clean(row && row.login_id);
+  const staffId = clean(row && row.staff_id);
+  const scheduleDate = normalizeDateKey(row && row.schedule_date);
+  const shiftCode = safeUpper(row && row.shift_code);
+  if (!scheduleDate || (!loginId && !staffId) || !shiftCode) return;
+
+  const marker = ["ABSENT_ALERT", scheduleDate, loginId || staffId, shiftCode].join("|");
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(3000);
+    if (hasTelegramAbsenceAlert(marker)) return;
+
+    const token = clean(settings.TG_BOT_TOKEN);
+    const chatId = getTelegramChatIdForStaff(settings, row);
+    if (!token || !chatId) return;
+
+    const text = "ABSENT ALERT: " + clean(row.full_name || loginId || staffId) +
+      " has not checked in today. Shift: " + shiftCode + " " +
+      formatShiftTime(row.start_time) + " - " + formatShiftTime(row.end_time) + ".";
+
+    try {
+      const url = "https://api.telegram.org/bot" + token + "/sendMessage";
+      const res = UrlFetchApp.fetch(url, { method: "post", muteHttpExceptions: true, payload: { chat_id: chatId, text: text } });
+      sh(SHEETS.TG).appendRow([makeId("TG"), nowDateTime(), "ABSENCE", staffId, loginId, clean(row.full_name), "ABSENT_ALERT", text, "SENT", res.getContentText(), marker]);
+      clearSheetCache(SHEETS.TG);
+    } catch (err) {
+      logInternalError("sendTelegramAbsenceAlert", err);
+      sh(SHEETS.TG).appendRow([makeId("TG"), nowDateTime(), "ABSENCE", staffId, loginId, clean(row.full_name), "ABSENT_ALERT", text, "FAILED", String(err), marker]);
+      clearSheetCache(SHEETS.TG);
+    }
+  } catch (err) {
+    logInternalError("sendTelegramAbsenceAlert.lock", err);
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (err) {
+      logInternalError("sendTelegramAbsenceAlert.releaseLock", err);
+    }
+  }
+}
+
+function hasTelegramAbsenceAlert(marker) {
+  const values = getValues(SHEETS.TG);
+  const headerMap = buildHeaderMap(values[0] || []);
+  for (let i = 1; i < values.length; i++) {
+    const notes = clean(valueByHeader(values[i], headerMap, ["notes"], null));
+    const eventType = safeUpper(valueByHeader(values[i], headerMap, ["event_type", "action"], null));
+    if (notes === marker && eventType === "ABSENT_ALERT") return true;
+  }
+  return false;
 }
 
 function cleanupTelegramTriggers() {

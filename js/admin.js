@@ -172,6 +172,7 @@
     const dailyScores = Portal.normalizeArray(root.daily_scores || root.dailyScores);
     const auditLogs = Portal.normalizeArray(root.audit_logs || root.auditLogs || root.audit);
     const telegramLogs = Portal.normalizeArray(root.telegram_logs || root.telegramLogs);
+    const absentToday = Portal.normalizeArray(root.absent_today || root.absentToday || summary.absent_today || summary.absentToday);
     const ipAllowlist = root.ip_allowlist || root.ipAllowlist || root.allowlist || [];
     const hasBreakBoard = Object.prototype.hasOwnProperty.call(root, "breakBoard") || Object.prototype.hasOwnProperty.call(root, "breaks");
     const breakRows = hasBreakBoard
@@ -192,6 +193,7 @@
         onBreak: summary.on_break,
         lateStaff: summary.late_staff,
         missingCheckout: summary.missing_checkout,
+        absentToday: root.absent_today_count || summary.absent_today_count || absentToday.length,
         notWorkingToday: summary.not_working_today
       },
       attendance: attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() !== "BREAK_START"),
@@ -202,6 +204,7 @@
       kpis: canonicalKpis,
       performance: performanceDetails,
       summaryDetails: root.summary_details || summary.summary_details || root.summaryDetails || {},
+      absentToday,
       top: rankingRows,
       worst: sortedWorst,
       dailyLogs: Portal.normalizeArray(root.dailyLogs || root.logs).length ? Portal.normalizeArray(root.dailyLogs || root.logs) : attendanceEvents.concat(dailyScores),
@@ -254,10 +257,19 @@
     { label: "Break Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["break_start_time", "break_start"], "")) },
     { label: "Status", render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
   ];
-  const bindSummaryCard = (id, title, rows) => {
+  const absentColumns = [
+    { label: "Staff", keys: ["full_name", "name", "staff", "staffName"] },
+    { label: "Team", keys: ["team", "department"] },
+    { label: "Date", keys: ["date", "schedule_date", "event_date"] },
+    { label: "Shift", keys: ["shift_code", "shift"] },
+    { label: "Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["start_time", "start"], "")) },
+    { label: "End", render: (row) => formatShiftTime12h(Portal.pick(row, ["end_time", "end"], "")) },
+    { label: "Status", render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
+  ];
+  const bindSummaryCard = (id, title, rows, columns = summaryColumns) => {
     const card = document.getElementById(id)?.closest(".metric-card");
     if (!card) return;
-    card.onclick = () => openTableModal(title, Portal.normalizeArray(rows), summaryColumns);
+    card.onclick = () => openTableModal(title, Portal.normalizeArray(rows), columns);
     card.onkeydown = (event) => {
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
@@ -276,6 +288,7 @@
     Portal.setText("onBreak", Portal.pick(stats, ["onBreak", "on_break", "breaks"], "--"));
     Portal.setText("lateStaff", Portal.pick(stats, ["lateStaff", "late_staff", "late"], "--"));
     Portal.setText("missingCheckout", Portal.pick(stats, ["missingCheckout", "missing_checkout", "missingCheckOut"], "--"));
+    Portal.setText("absentToday", Portal.pick(stats, ["absentToday", "absent_today_count", "absent"], "--"));
     Portal.setText("notWorkingToday", Portal.pick(stats, ["notWorkingToday", "not_working_today", "offToday"], "--"));
     const details = dashboard.summaryDetails || {};
     bindSummaryCard("totalStaff", "Total Staff", details.total_staff || dashboard.staff);
@@ -284,6 +297,7 @@
     bindSummaryCard("onBreak", "On Break", details.on_break);
     bindSummaryCard("lateStaff", "Late Staff", details.late_staff);
     bindSummaryCard("missingCheckout", "Missing Checkout", details.missing_checkout);
+    bindSummaryCard("absentToday", "Absent Today", details.absent_today || dashboard.absentToday, absentColumns);
     bindSummaryCard("notWorkingToday", "Not Working Today", details.not_working_today);
   };
 

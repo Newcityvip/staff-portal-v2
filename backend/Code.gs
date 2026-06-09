@@ -562,17 +562,23 @@ function adminLogin(data) {
 
 function getAdminByLogin(loginId) {
   const values = getValues(SHEETS.ADMIN);
+  const headerMap = buildHeaderMap(values[0] || []);
   const target = clean(loginId).toLowerCase();
   for (let i = 1; i < values.length; i++) {
     const row = values[i];
-    if (clean(row[2]).toLowerCase() === target || clean(row[6]).toLowerCase() === target || clean(row[0]).toLowerCase() === target) {
+    const adminId = valueByHeader(row, headerMap, ["admin_id"], 0);
+    const adminName = valueByHeader(row, headerMap, ["admin_name", "name", "full_name"], 1);
+    const adminLoginId = valueByHeader(row, headerMap, ["login_id", "admin_login_id"], 2);
+    const role = valueByHeader(row, headerMap, ["role", "admin_role", "account_role"], 5);
+    const email = valueByHeader(row, headerMap, ["email"], 6);
+    if (clean(adminLoginId).toLowerCase() === target || clean(email).toLowerCase() === target || clean(adminId).toLowerCase() === target) {
       return {
         ok: true,
-        admin_id: row[0],
-        admin_name: row[1],
-        login_id: row[2],
-        role: row[5],
-        email: row[6]
+        admin_id: adminId,
+        admin_name: adminName,
+        login_id: adminLoginId,
+        role: role,
+        email: email
       };
     }
   }
@@ -980,7 +986,7 @@ function getNextShiftStaffRows(access, staffIndex) {
   const nonWorkingCodes = ["", "OFF", "AL", "UL", "SL", "NP", "LEAVE", "HOLIDAY"];
   const teamKey = clean(access && access.allowed_team).toLowerCase();
   const rows = listScheduleRows("", "").filter(function (row) {
-    if (teamKey && clean(row.team).toLowerCase() !== teamKey) return false;
+    if (teamKey && !rowMatchesAllowedTeam(row, teamKey, staffIndex)) return false;
     const status = safeUpper(row.status);
     const shift = safeUpper(row.shift_code);
     if (status !== "WORKING") return false;
@@ -1308,13 +1314,16 @@ function getPerformanceDetails(month, teamFilter) {
 function getCanonicalScores(month, teamFilter) {
   month = resolveScoreMonth(month);
   const teamKey = clean(teamFilter).toLowerCase();
-  const activeStaff = listStaffRows().filter(function (staff) {
+  const staffRows = listStaffRows();
+  const staffIndex = buildStaffAccessIndex(staffRows);
+  const activeStaff = staffRows.filter(function (staff) {
     if (safeUpper(staff.status) !== "ACTIVE" || isAdminStaff(staff)) return false;
     return !teamKey || clean(staff.team).toLowerCase() === teamKey;
   });
-  const dailyRows = listDailyScoreRows(month, 0);
-  const allDailyRows = listDailyScoreRows("", 0);
-  const kpiRows = listKpiRows(month);
+  const access = teamKey ? { allowed_team: teamKey } : null;
+  const dailyRows = filterRowsForAdmin(listDailyScoreRows(month, 0), access, staffIndex);
+  const allDailyRows = filterRowsForAdmin(listDailyScoreRows("", 0), access, staffIndex);
+  const kpiRows = filterRowsForAdmin(listKpiRows(month), access, staffIndex);
   const dailyMap = {};
   const allDailyMap = {};
   const kpiMap = {};
@@ -1504,18 +1513,24 @@ function buildStaffAccessIndex(staffRows) {
 function rowMatchesAllowedTeam(row, allowedTeam, staffIndex) {
   const teamKey = clean(allowedTeam).toLowerCase();
   if (!teamKey) return true;
+  staffIndex = staffIndex || buildStaffAccessIndex();
   if (clean(row.team || row.department).toLowerCase() === teamKey) return true;
 
   const candidates = [
     staffIndex.byLogin[normalizeIdentityValue(row.login_id)],
+    staffIndex.byLogin[normalizeIdentityValue(row.staff_login_id)],
     staffIndex.byLogin[normalizeIdentityValue(row.admin_login_id)],
     staffIndex.byLogin[normalizeIdentityValue(row.updated_by)],
+    staffIndex.byLogin[normalizeIdentityValue(row.submitted_by)],
     staffIndex.byStaffId[normalizeIdentityValue(row.staff_id)],
     staffIndex.byStaffId[normalizeIdentityValue(row.actor_id)],
     staffIndex.byStaffId[normalizeIdentityValue(row.target_id)],
     staffIndex.byEmail[clean(row.email).toLowerCase()],
+    staffIndex.byEmail[clean(row.admin_email).toLowerCase()],
     staffIndex.byName[normalizeIdentityValue(row.full_name)],
-    staffIndex.byName[normalizeIdentityValue(row.actor_name)]
+    staffIndex.byName[normalizeIdentityValue(row.staff_name)],
+    staffIndex.byName[normalizeIdentityValue(row.actor_name)],
+    staffIndex.byName[normalizeIdentityValue(row.target_name)]
   ].filter(Boolean);
 
   return candidates.some(function (staff) {
@@ -2374,21 +2389,23 @@ function listQuarterScoreRows(limit) {
 
 function listAuditRows(limit) {
   const values = getValues(SHEETS.AUDIT);
+  const headerMap = buildHeaderMap(values[0] || []);
   const rows = [];
   for (let i = values.length - 1; i >= 1; i--) {
+    const row = values[i];
     rows.push({
-      audit_id: values[i][0],
-      created_at: values[i][1],
-      actor_type: values[i][2],
-      actor_id: values[i][3],
-      actor_name: values[i][4],
-      action: values[i][5],
-      module: values[i][6],
-      target_id: values[i][7],
-      old_value: values[i][8],
-      new_value: values[i][9],
-      ip: values[i][10],
-      result: values[i][11] || "OK"
+      audit_id: valueByHeader(row, headerMap, ["audit_id"], 0),
+      created_at: valueByHeader(row, headerMap, ["created_at", "timestamp"], 1),
+      actor_type: valueByHeader(row, headerMap, ["actor_type"], 2),
+      actor_id: valueByHeader(row, headerMap, ["actor_id"], 3),
+      actor_name: valueByHeader(row, headerMap, ["actor_name"], 4),
+      action: valueByHeader(row, headerMap, ["action"], 5),
+      module: valueByHeader(row, headerMap, ["module"], 6),
+      target_id: valueByHeader(row, headerMap, ["target_id"], 7),
+      old_value: valueByHeader(row, headerMap, ["old_value"], 8),
+      new_value: valueByHeader(row, headerMap, ["new_value"], 9),
+      ip: valueByHeader(row, headerMap, ["ip", "ip_address"], 10),
+      result: valueByHeader(row, headerMap, ["result", "notes"], 11) || "OK"
     });
     if (limit && rows.length >= limit) break;
   }
@@ -2397,20 +2414,22 @@ function listAuditRows(limit) {
 
 function listTelegramRows(limit) {
   const values = getValues(SHEETS.TG);
+  const headerMap = buildHeaderMap(values[0] || []);
   const rows = [];
   for (let i = values.length - 1; i >= 1; i--) {
+    const row = values[i];
     rows.push({
-      telegram_log_id: values[i][0],
-      created_at: values[i][1],
-      type: values[i][2],
-      staff_id: values[i][3],
-      login_id: values[i][4],
-      full_name: values[i][5],
-      event_type: values[i][6],
-      message: values[i][7],
-      status: values[i][8],
-      response: values[i][9],
-      notes: values[i][10]
+      telegram_log_id: valueByHeader(row, headerMap, ["telegram_log_id", "tg_id"], 0),
+      created_at: valueByHeader(row, headerMap, ["created_at", "timestamp"], 1),
+      type: valueByHeader(row, headerMap, ["type"], 2),
+      staff_id: valueByHeader(row, headerMap, ["staff_id"], 3),
+      login_id: valueByHeader(row, headerMap, ["login_id"], 4),
+      full_name: valueByHeader(row, headerMap, ["full_name", "name"], 5),
+      event_type: valueByHeader(row, headerMap, ["event_type", "action"], 6),
+      message: valueByHeader(row, headerMap, ["message"], 7),
+      status: valueByHeader(row, headerMap, ["status"], 8),
+      response: valueByHeader(row, headerMap, ["response"], 9),
+      notes: valueByHeader(row, headerMap, ["notes"], 10)
     });
     if (limit && rows.length >= limit) break;
   }

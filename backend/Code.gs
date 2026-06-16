@@ -1034,6 +1034,64 @@ function isDeductionBreakOveruseValue(value) {
   return Boolean(text && text !== "NO" && text !== "FALSE" && text !== "0");
 }
 
+function buildDailyDeductionDetail(row, type, start, end, used, allowed, reason) {
+  const usedText = clean(used);
+  const allowedText = clean(allowed);
+  return {
+    date: row.score_date,
+    score_date: row.score_date,
+    type: type || "DEDUCTION",
+    start: clean(start) || "--",
+    start_time: clean(start) || "--",
+    end: clean(end) || "--",
+    end_time: clean(end) || "--",
+    used: usedText || "--",
+    used_minutes: usedText === "--" ? "" : usedText,
+    allowed: allowedText || "--",
+    allowed_minutes: allowedText === "--" ? "" : allowedText,
+    reason: clean(reason) || "Penalty applied",
+    penalty: row.total_penalty,
+    final_attendance: row.final_attendance,
+    login_id: row.login_id,
+    staff_id: row.staff_id
+  };
+}
+
+function getBreakOveruseDeductionDetails(staff, row, schedule) {
+  const evaluation = evaluateBreakUsage(staff, row.score_date, schedule || {
+    shift_code: row.shift_code,
+    start_time: row.scheduled_start,
+    end_time: row.scheduled_end
+  }, getSettings());
+  const details = evaluation.break_overuse_details || [];
+  if (!details.length) {
+    return [buildDailyDeductionDetail(
+      row,
+      "BREAK_OVERUSE",
+      row.first_check_in || row.scheduled_start,
+      row.last_check_out || row.scheduled_end,
+      "",
+      "",
+      "Penalty found in daily score row; exact break session not found."
+    )];
+  }
+  return details.map(function (detail) {
+    const label = getTelegramBreakName(detail.break_type);
+    const reason = detail.reason === "Extra break session"
+      ? label + " extra session over allowed count"
+      : label + " over limit: used " + detail.used_minutes + " min, allowed " + detail.allowed_minutes + " min";
+    return buildDailyDeductionDetail(
+      row,
+      "BREAK_OVERUSE",
+      detail.start_time,
+      detail.end_time,
+      detail.used_minutes,
+      detail.allowed_minutes,
+      reason
+    );
+  });
+}
+
 function getStaffDeductionDetailsFromDailyScore(staff) {
   const rows = [];
   const values = getValues(SHEETS.DAILY);
@@ -1050,6 +1108,7 @@ function getStaffDeductionDetailsFromDailyScore(staff) {
       staff_id: valueByHeader(valuesRow, headerMap, ["staff_id"], null),
       login_id: valueByHeader(valuesRow, headerMap, ["login_id"], null),
       full_name: valueByHeader(valuesRow, headerMap, ["full_name", "name"], null),
+      shift_code: valueByHeader(valuesRow, headerMap, ["shift_code"], null),
       scheduled_start: valueByHeader(valuesRow, headerMap, ["scheduled_start", "start_time"], null),
       scheduled_end: valueByHeader(valuesRow, headerMap, ["scheduled_end", "end_time"], null),
       first_check_in: valueByHeader(valuesRow, headerMap, ["first_check_in", "check_in"], null),
@@ -1069,36 +1128,54 @@ function getStaffDeductionDetailsFromDailyScore(staff) {
     matchedRows++;
 
     const status = safeUpper(row.attendance_status);
-    const hasDeduction = safeNumber(row.total_penalty, 0) > 0 ||
-      Boolean(status && status !== "PRESENT") ||
-      isDeductionBreakOveruseValue(row.break_overuse);
+    const hasDeduction = safeNumber(row.total_penalty, 0) > 0 || safeNumber(row.final_attendance, 5) < 5;
     if (!hasDeduction) continue;
 
     const type = getDeductionType(row);
-    const notes = parseScoreNotesJson(row.notes);
-    const breakDetails = Array.isArray(notes.break_overuse_details) && notes.break_overuse_details.length ? notes.break_overuse_details[0] : {};
-    const start = clean(breakDetails.start_time) || clean(row.first_check_in) || clean(row.scheduled_start) || "--";
-    const end = clean(breakDetails.end_time) || clean(row.last_check_out) || clean(row.scheduled_end) || "--";
-    const used = clean(breakDetails.used_minutes) || clean(row.total_break_min) || "--";
-    const reason = clean(row.attendance_status) || clean(row.break_overuse) || clean(row.notes) || "Penalty applied";
-    rows.push({
-      date: row.score_date,
-      score_date: row.score_date,
-      type: clean(row.attendance_status) || clean(row.break_overuse) || type || "DEDUCTION",
-      start: start,
-      start_time: start,
-      end: end,
-      end_time: end,
-      used: used,
-      used_minutes: used === "--" ? "" : used,
-      allowed: clean(breakDetails.allowed_minutes) || "--",
-      allowed_minutes: clean(breakDetails.allowed_minutes),
-      reason: reason,
-      penalty: row.total_penalty,
-      final_attendance: row.final_attendance,
-      login_id: row.login_id,
-      staff_id: row.staff_id
-    });
+    const schedule = {
+      shift_code: row.shift_code,
+      start_time: row.scheduled_start,
+      end_time: row.scheduled_end
+    };
+    if (type === "BREAK_OVERUSE" || status.indexOf("BREAK_OVERUSE") > -1 || isDeductionBreakOveruseValue(row.break_overuse)) {
+      getBreakOveruseDeductionDetails(staff, row, schedule).forEach(function (detail) {
+        rows.push(detail);
+      });
+      continue;
+    }
+    if (type === "LATE") {
+      rows.push(buildDailyDeductionDetail(
+        row,
+        "LATE",
+        row.first_check_in,
+        row.scheduled_start,
+        row.late_minutes,
+        "",
+        "Late check-in: " + safeNumber(row.late_minutes, 0) + " minutes late"
+      ));
+      continue;
+    }
+    if (type === "EARLY_CHECKOUT") {
+      rows.push(buildDailyDeductionDetail(row, type, row.last_check_out, row.scheduled_end, "", "", "Early checkout penalty"));
+      continue;
+    }
+    if (type === "MISSING_CHECKIN") {
+      rows.push(buildDailyDeductionDetail(row, type, row.scheduled_start, row.scheduled_end, "", "", "Missing check-in"));
+      continue;
+    }
+    if (type === "MISSING_CHECKOUT") {
+      rows.push(buildDailyDeductionDetail(row, type, row.first_check_in, row.scheduled_end, "", "", "Missing check-out"));
+      continue;
+    }
+    rows.push(buildDailyDeductionDetail(
+      row,
+      type || clean(row.attendance_status) || "DEDUCTION",
+      row.first_check_in || row.scheduled_start,
+      row.last_check_out || row.scheduled_end,
+      "",
+      "",
+      clean(row.attendance_status) || clean(row.notes) || "Penalty applied"
+    ));
   }
 
   rows.sort(function (a, b) {
@@ -3032,7 +3109,7 @@ function evaluateBreakUsage(staff, dateStr, schedule, settings) {
     item.sessions.forEach(function (session, index) {
       const usedMinutes = Math.floor(session.duration_seconds / 60);
       const sessionOveruse = Math.max(0, usedMinutes - rules.limits[type]);
-      if (sessionOveruse >= 1) {
+      if (session.duration_seconds > (rules.limits[type] + 1) * 60) {
         const sessionPenalty = Math.ceil(sessionOveruse / rules.step) * rules.penalty_unit;
         overuseMinutes += sessionOveruse;
         details[type].overuse_minutes += sessionOveruse;
@@ -3100,7 +3177,7 @@ function getCompletedBreakUsage(staff, dateStr, schedule) {
     const rowLoginId = clean(valueByHeader(row, headerMap, ["login_id"], null)).toLowerCase();
     const rowStaffId = clean(valueByHeader(row, headerMap, ["staff_id"], null)).toLowerCase();
     const loginMatches = targetLogin && rowLoginId && rowLoginId === targetLogin;
-    const staffMatches = targetStaffId && !rowLoginId && rowStaffId && rowStaffId === targetStaffId;
+    const staffMatches = targetStaffId && rowStaffId && rowStaffId === targetStaffId;
     if (!loginMatches && !staffMatches) continue;
 
     const eventType = safeUpper(valueByHeader(row, headerMap, ["event_type", "action"], null));

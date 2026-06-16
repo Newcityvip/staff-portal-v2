@@ -2796,7 +2796,8 @@ function calculateDailyAttendanceScore(staff, schedule, state, settings, dateStr
       late_minutes: lateMinutes,
       early_checkout_minutes: earlyCheckoutMinutes,
       break_overuse_minutes: breakOveruseMinutes,
-      break_details: breakUsage.details
+      break_details: breakUsage.details,
+      break_overuse_details: breakUsage.break_overuse_details
     })
   };
 
@@ -2831,51 +2832,102 @@ function alignEventMinutesToSchedule(eventTime, scheduleWindow) {
 }
 
 function calculateBreakOveruse(staff, dateStr, schedule, settings) {
-  const usage = getBreakUsage(staff, dateStr, schedule);
-  const rule = getShiftRule(schedule.shift_code);
-  const limits = {
-    BREAK: rule.ok ? safeNumber(rule.break_limit_min, 60) : 60,
-    PRAYER_BREAK: rule.ok ? safeNumber(rule.prayer_break_limit_min, 15) : 15,
-    BIO_BREAK: 10
+  return evaluateBreakUsage(staff, dateStr, schedule, settings || getSettings());
+}
+
+function normalizeBreakType(value) {
+  const type = safeUpper(value).replace(/\s+/g, "_");
+  if (type === "BIO" || type === "BIOBREAK") return "BIO_BREAK";
+  if (type === "PRAYER" || type === "PRAYERBREAK") return "PRAYER_BREAK";
+  if (type === "JUST_BREAK" || type === "BREAK" || type === "NORMAL_BREAK" || type === "BREAK_BREAK") return "BREAK";
+  if (type === "BIO_BREAK" || type === "PRAYER_BREAK") return type;
+  return type;
+}
+
+function getBreakRulesForSchedule(schedule, settings) {
+  const rule = getShiftRule(schedule && schedule.shift_code);
+  return {
+    step: Math.max(1, safeNumber(settings && settings.BREAK_OVERUSE_STEP_MINUTES, safeNumber(settings && settings.LATE_STEP_MINUTES, 5))),
+    penalty_unit: safeNumber(settings && settings.BREAK_OVERUSE_PENALTY_PER_STEP, 0.25),
+    limits: {
+      BREAK: rule.ok ? safeNumber(rule.break_limit_min, 60) : 60,
+      BIO_BREAK: 10,
+      PRAYER_BREAK: rule.ok ? safeNumber(rule.prayer_break_limit_min, 15) : 15
+    },
+    counts: {
+      BREAK: rule.ok ? safeNumber(rule.break_count_limit, 1) : 1,
+      BIO_BREAK: rule.ok ? safeNumber(rule.bio_break_count_limit, 3) : 3,
+      PRAYER_BREAK: rule.ok ? safeNumber(rule.prayer_break_count_limit, 3) : 3
+    }
   };
-  const countLimits = {
-    BREAK: rule.ok ? safeNumber(rule.break_count_limit, 1) : 1,
-    PRAYER_BREAK: rule.ok ? safeNumber(rule.prayer_break_count_limit, 3) : 3,
-    BIO_BREAK: rule.ok ? safeNumber(rule.bio_break_count_limit, 3) : 3
-  };
-  const step = Math.max(1, safeNumber(settings.BREAK_OVERUSE_STEP_MINUTES, safeNumber(settings.LATE_STEP_MINUTES, 5)));
+}
+
+function evaluateBreakUsage(staff, dateStr, schedule, settings) {
+  const rules = getBreakRulesForSchedule(schedule, settings || getSettings());
+  const usage = getCompletedBreakUsage(staff, dateStr, schedule);
   let overuseMinutes = 0;
   const details = {};
+  const overuseDetails = [];
 
-  Object.keys(limits).forEach(function (type) {
+  Object.keys(rules.limits).forEach(function (type) {
     const item = usage[type] || { seconds: 0, count: 0, sessions: [] };
-    let typeOveruseSeconds = 0;
-    item.sessions.forEach(function (session) {
-      const excessSeconds = session.duration_seconds - (limits[type] * 60);
-      if (excessSeconds > 60) typeOveruseSeconds += excessSeconds;
-    });
-    const extraSessions = Math.max(0, item.count - countLimits[type]);
-    const typeOveruseMinutes = Math.ceil(typeOveruseSeconds / 60) + (extraSessions * step);
-    overuseMinutes += typeOveruseMinutes;
     details[type] = {
       count: item.count,
-      total_minutes: Math.round(item.seconds / 60),
-      overuse_minutes: typeOveruseMinutes,
-      extra_sessions: extraSessions
+      total_minutes: Math.floor(item.seconds / 60),
+      overuse_minutes: 0,
+      extra_sessions: Math.max(0, item.count - rules.counts[type])
     };
+
+    item.sessions.forEach(function (session, index) {
+      const usedMinutes = Math.floor(session.duration_seconds / 60);
+      const sessionOveruse = Math.max(0, usedMinutes - rules.limits[type]);
+      if (sessionOveruse >= 1) {
+        const sessionPenalty = Math.ceil(sessionOveruse / rules.step) * rules.penalty_unit;
+        overuseMinutes += sessionOveruse;
+        details[type].overuse_minutes += sessionOveruse;
+        overuseDetails.push({
+          break_type: type,
+          start_time: session.start_time,
+          end_time: session.end_time,
+          used_minutes: usedMinutes,
+          allowed_minutes: rules.limits[type],
+          overuse_minutes: sessionOveruse,
+          reason: "Duration over limit",
+          penalty: round2(sessionPenalty)
+        });
+      }
+
+      if (index >= rules.counts[type]) {
+        const extraPenalty = rules.penalty_unit;
+        overuseMinutes += rules.step;
+        details[type].overuse_minutes += rules.step;
+        overuseDetails.push({
+          break_type: type,
+          start_time: session.start_time,
+          end_time: session.end_time,
+          used_minutes: usedMinutes,
+          allowed_minutes: rules.limits[type],
+          overuse_minutes: rules.step,
+          reason: "Extra break session",
+          penalty: round2(extraPenalty)
+        });
+      }
+    });
   });
 
   return {
     overuse_minutes: overuseMinutes,
-    penalty: overuseMinutes > 0 ? Math.ceil(overuseMinutes / step) * safeNumber(settings.BREAK_OVERUSE_PENALTY_PER_STEP, 0.25) : 0,
-    total_break_min: Math.round((usage.BREAK && usage.BREAK.seconds || 0) / 60),
+    penalty: overuseMinutes > 0 ? round2(Math.ceil(overuseMinutes / rules.step) * rules.penalty_unit) : 0,
+    total_break_min: Math.floor((usage.BREAK && usage.BREAK.seconds || 0) / 60),
     total_bio_break: usage.BIO_BREAK ? usage.BIO_BREAK.count : 0,
     total_prayer_break: usage.PRAYER_BREAK ? usage.PRAYER_BREAK.count : 0,
-    details: details
+    details: details,
+    break_overuse_details: overuseDetails,
+    sessions: usage
   };
 }
 
-function getBreakUsage(staff, dateStr, schedule) {
+function getCompletedBreakUsage(staff, dateStr, schedule) {
   const values = getValues(SHEETS.EVENTS);
   const headerMap = buildHeaderMap(values[0] || []);
   const targetDate = normalizeDateKey(dateStr);
@@ -2901,12 +2953,13 @@ function getBreakUsage(staff, dateStr, schedule) {
     if (!loginMatches && !staffMatches) continue;
 
     const eventType = safeUpper(valueByHeader(row, headerMap, ["event_type", "action"], null));
-    const breakType = safeUpper(valueByHeader(row, headerMap, ["break_type"], null));
+    const breakType = normalizeBreakType(valueByHeader(row, headerMap, ["break_type"], null));
     if (!usage[breakType]) continue;
 
     events.push({
       event_type: eventType,
       break_type: breakType,
+      event_time: normalizeSheetTime(valueByHeader(row, headerMap, ["event_time", "time"], null)),
       timestamp_seconds: eventTimestampSeconds(eventDate, valueByHeader(row, headerMap, ["event_time", "time"], null), schedule)
     });
   }
@@ -2931,6 +2984,8 @@ function getBreakUsage(staff, dateStr, schedule) {
     usage[type].sessions.push({
       start_seconds: start.timestamp_seconds,
       end_seconds: event.timestamp_seconds,
+      start_time: start.event_time,
+      end_time: event.event_time,
       duration_seconds: Math.max(0, durationSeconds)
     });
   });
@@ -3251,14 +3306,15 @@ function sendTelegramAttendance(staff, schedule, eventType, breakType, ip) {
   }
 
   if (eventType === "BREAK_END") {
-    const usage = getTelegramBreakUsage(staff.login_id, normalizeDateKey(schedule.schedule_date || todayDate()), breakType, schedule.shift_code);
+    const usage = getTelegramBreakUsage(staff, normalizeDateKey(schedule.schedule_date || todayDate()), breakType, schedule);
     text =
       "Break Ended\n" +
       "Name: " + staff.full_name + "\n" +
       "Break: " + getTelegramBreakName(breakType) + "\n" +
       "Back Time: " + nowDateTime() + "\n" +
       "Used: " + usage.minutes + " min\n" +
-      "Status: " + (usage.overused ? "Overused" : "Normal");
+      "Status: " + (usage.overused ? "Overuse" : "Normal") +
+      (usage.overused ? "\nOveruse: " + usage.overuse_minutes + " min" : "");
   }
 
   if (eventType === "CHECK_OUT") {
@@ -3282,43 +3338,27 @@ function sendTelegramAttendance(staff, schedule, eventType, breakType, ip) {
 }
 
 function getTelegramBreakName(breakType) {
-  const type = safeUpper(breakType);
+  const type = normalizeBreakType(breakType);
   if (type === "PRAYER_BREAK") return "Prayer Break";
   if (type === "BIO_BREAK") return "Bio Break";
   return "Break";
 }
 
-function getTelegramBreakUsage(loginId, dateStr, breakType, shiftCode) {
-  const values = getValues(SHEETS.EVENTS);
-  const targetLogin = clean(loginId).toLowerCase();
-  const targetDate = normalizeDateKey(dateStr);
-  const targetBreak = safeUpper(breakType);
-  let startTime = "";
-  let usedMinutes = 0;
+function getTelegramBreakUsage(staff, dateStr, breakType, schedule) {
+  const evaluation = evaluateBreakUsage(staff, dateStr, schedule || {}, getSettings());
+  const type = normalizeBreakType(breakType);
+  const sessions = evaluation.sessions[type] ? evaluation.sessions[type].sessions : [];
+  const session = sessions.length ? sessions[sessions.length - 1] : null;
+  if (!session) return { minutes: 0, overused: false, overuse_minutes: 0 };
 
-  for (let i = 1; i < values.length; i++) {
-    if (normalizeDateKey(values[i][1]) !== targetDate) continue;
-    if (clean(values[i][4]).toLowerCase() !== targetLogin) continue;
-    if (safeUpper(values[i][7]) !== targetBreak) continue;
-
-    const eventType = safeUpper(values[i][6]);
-    const eventTime = normalizeSheetTime(values[i][2]);
-    if (eventType === "BREAK_START") startTime = eventTime;
-    if (eventType === "BREAK_END" && startTime) {
-      usedMinutes = diffMinutes(startTime, eventTime);
-      if (usedMinutes < 0) usedMinutes += 1440;
-      startTime = "";
-    }
-  }
-
-  const rule = getShiftRule(shiftCode);
-  const limit = targetBreak === "PRAYER_BREAK"
-    ? (rule.ok ? safeNumber(rule.prayer_break_limit_min, 15) : 15)
-    : targetBreak === "BIO_BREAK"
-      ? (rule.ok ? safeNumber(rule.bio_break_limit_min, 11) : 11)
-      : (rule.ok ? safeNumber(rule.break_limit_min, 60) : 60);
-
-  return { minutes: Math.max(0, Math.round(usedMinutes)), overused: usedMinutes > limit };
+  const detail = (evaluation.break_overuse_details || []).filter(function (item) {
+    return item.break_type === type && item.start_time === session.start_time && item.end_time === session.end_time;
+  })[0];
+  return {
+    minutes: Math.floor(session.duration_seconds / 60),
+    overused: Boolean(detail),
+    overuse_minutes: detail ? detail.overuse_minutes : 0
+  };
 }
 
 function getTelegramCheckoutStatus(loginId, dateStr) {

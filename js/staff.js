@@ -27,7 +27,7 @@
   let loggedPerformanceDetails = false;
   const BREAK_RULES = {
     BREAK: { label: "Break", limit: 1, minutes: 60 },
-    BIO_BREAK: { label: "Bio Break", limit: 3, minutes: 11 },
+    BIO_BREAK: { label: "Bio Break", limit: 3, minutes: 10 },
     PRAYER_BREAK: { label: "Prayer Break", limit: 3, minutes: 15 }
   };
 
@@ -47,6 +47,28 @@
     return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(2));
   };
   const dateKey = (value) => String(value || "").slice(0, 10);
+  const parseScoreNotes = (value) => {
+    try { return value && typeof value === "string" ? JSON.parse(value) : value || {}; } catch (error) { return {}; }
+  };
+  const deductionRowsFromScores = (rows) => {
+    const output = [];
+    Portal.normalizeArray(rows).forEach((row) => {
+      const notes = parseScoreNotes(Portal.pick(row, ["notes"], ""));
+      Portal.normalizeArray(notes.break_overuse_details).forEach((item) => {
+        output.push({
+          date: Portal.pick(row, ["score_date", "date"], ""),
+          type: Portal.pick(item, ["break_type"], ""),
+          start: Portal.pick(item, ["start_time"], ""),
+          end: Portal.pick(item, ["end_time"], ""),
+          used: Portal.pick(item, ["used_minutes"], "0"),
+          allowed: Portal.pick(item, ["allowed_minutes"], "0"),
+          reason: Portal.pick(item, ["reason"], ""),
+          penalty: Portal.pick(item, ["penalty"], "0")
+        });
+      });
+    });
+    return output;
+  };
   const noScheduleMessage = "No schedule found for this day. Please contact admin.";
   const formatShiftTime12h = (value) => {
     const raw = String(value || "").trim();
@@ -189,6 +211,7 @@
     const leaderboard = performanceDetails.length ? performanceDetails : fallbackLeaderboard;
     const attendanceEvents = Portal.normalizeArray(root.attendance_events || root.timeline || root.activity || root.logs);
     const dailyScores = Portal.normalizeArray(root.daily_scores || root.history || root.attendanceHistory || root.records);
+    const deductionDetails = Portal.normalizeArray(root.break_overuse_details || root.deduction_details || root.deductionDetails);
     const quarterScores = Portal.normalizeArray(root.quarter_scores || root.quarterScores);
     const quarterScore = root.quarter_score || quarterScores[0] || {};
     const fullUpcomingSchedule = Portal.normalizeArray(root.upcoming_schedule || root.upcomingSchedule || root.nextSchedule);
@@ -251,6 +274,7 @@
       history: attendanceEvents.length ? attendanceEvents : dailyScores,
       scheduleList,
       tomorrowSchedule: root.tomorrow_schedule || {},
+      deductionDetails: deductionDetails.length ? deductionDetails : deductionRowsFromScores(dailyScores),
       performanceDetails,
       leaderboard,
       timeline: todayEvents.length ? todayEvents : attendanceEvents,
@@ -307,6 +331,7 @@
     if ((!next.history || !next.history.length) && previous.history?.length) next.history = previous.history;
     if ((!next.timeline || !next.timeline.length) && previous.timeline?.length) next.timeline = previous.timeline;
     if ((!next.scheduleList || !next.scheduleList.length) && previous.scheduleList?.length) next.scheduleList = previous.scheduleList;
+    if ((!next.deductionDetails || !next.deductionDetails.length) && previous.deductionDetails?.length) next.deductionDetails = previous.deductionDetails;
     return { ...next, performance: mergedPerf };
   };
 
@@ -428,7 +453,7 @@
     return Portal.percent(((now - start.getTime()) / (end.getTime() - start.getTime())) * 100);
   };
 
-  const renderProfile = ({ staff, today, shift, performance, leaderboard, timeline, history, scheduleList, tomorrowSchedule, ip }) => {
+  const renderProfile = ({ staff, today, shift, performance, leaderboard, timeline, history, scheduleList, tomorrowSchedule, deductionDetails, ip }) => {
     const name = Portal.pick(staff, ["full_name", "name", "fullName", "staffName", "displayName"], session.name);
     Portal.setText("staffGreeting", `Welcome back, ${name}`);
     Portal.setText("staffInitials", initials(name));
@@ -479,6 +504,7 @@
     renderLeaderboard(leaderboard, loginKey);
     renderTimeline(timeline);
     renderHistory(history);
+    renderDeductionDetails(deductionDetails || []);
     renderUpcomingSchedule(scheduleList, tomorrowSchedule);
     updateActionStates(today);
   };
@@ -605,6 +631,38 @@
           <td>${breakText}</td>
         </tr>`;
     }).join("");
+  };
+
+  const renderDeductionDetails = (rows) => {
+    const host = document.getElementById("deductionDetails");
+    if (!host) return;
+    Portal.setText("deductionCount", `${rows.length} rows`);
+    const columns = [
+      { label: "Date", render: (row) => Portal.formatDate(Portal.pick(row, ["date"], "")) },
+      { label: "Type", render: (row) => String(Portal.pick(row, ["type"], "--")).replaceAll("_", " ") },
+      { label: "Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["start"], "")) },
+      { label: "End", render: (row) => formatShiftTime12h(Portal.pick(row, ["end"], "")) },
+      { label: "Used", render: (row) => `${Portal.pick(row, ["used"], "0")} min` },
+      { label: "Allowed", render: (row) => `${Portal.pick(row, ["allowed"], "0")} min` },
+      { label: "Reason", keys: ["reason"] },
+      { label: "Penalty", keys: ["penalty"] }
+    ];
+    ensureStaffViewButton("deductionDetails", "View All", !rows.length, () => openStaffTableModal("Deduction Details", rows, columns));
+    if (!rows.length) {
+      host.innerHTML = empty("No deductions found.");
+      return;
+    }
+    host.innerHTML = rows.slice(0, previewLimit).map((row) => `
+        <tr>
+          <td>${Portal.formatDate(Portal.pick(row, ["date"], ""))}</td>
+          <td>${String(Portal.pick(row, ["type"], "--")).replaceAll("_", " ")}</td>
+          <td>${formatShiftTime12h(Portal.pick(row, ["start"], ""))}</td>
+          <td>${formatShiftTime12h(Portal.pick(row, ["end"], ""))}</td>
+          <td>${Portal.pick(row, ["used"], "0")} min</td>
+          <td>${Portal.pick(row, ["allowed"], "0")} min</td>
+          <td>${Portal.pick(row, ["reason"], "--")}</td>
+          <td>${Portal.pick(row, ["penalty"], "0")}</td>
+        </tr>`).join("");
   };
 
   const renderUpcomingSchedule = (rows, tomorrow) => {

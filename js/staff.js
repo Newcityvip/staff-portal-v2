@@ -617,7 +617,7 @@
     Portal.setText("deductionCount", `${rows.length} rows`);
     const columns = [
       { label: "Date", render: (row) => Portal.formatDate(Portal.pick(row, ["score_date"], "")) },
-      { label: "Type", render: (row) => String(Portal.pick(row, ["break_type", "attendance_status"], "--")).replaceAll("_", " ") },
+      { label: "Type", render: (row) => String(Portal.pick(row, ["type"], "--")).replaceAll("_", " ") },
       { label: "Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["start_time"], "")) },
       { label: "End", render: (row) => formatShiftTime12h(Portal.pick(row, ["end_time"], "")) },
       { label: "Used", render: (row) => Portal.pick(row, ["used_minutes"], "") === "" ? "--" : `${Portal.pick(row, ["used_minutes"], "0")} min` },
@@ -633,7 +633,7 @@
     host.innerHTML = rows.slice(0, previewLimit).map((row) => `
         <tr>
           <td>${Portal.formatDate(Portal.pick(row, ["score_date"], ""))}</td>
-          <td>${String(Portal.pick(row, ["break_type", "attendance_status"], "--")).replaceAll("_", " ")}</td>
+          <td>${String(Portal.pick(row, ["type"], "--")).replaceAll("_", " ")}</td>
           <td>${formatShiftTime12h(Portal.pick(row, ["start_time"], ""))}</td>
           <td>${formatShiftTime12h(Portal.pick(row, ["end_time"], ""))}</td>
           <td>${Portal.pick(row, ["used_minutes"], "") === "" ? "--" : `${Portal.pick(row, ["used_minutes"], "0")} min`}</td>

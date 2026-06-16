@@ -975,68 +975,120 @@ function parseScoreNotesJson(value) {
   }
 }
 
-function dailyScoreRowMatchesStaffForDeductions(row, staff) {
-  const rowLogin = normalizeIdentityValue(row && row.login_id);
-  const staffLogin = normalizeIdentityValue(staff && staff.login_id);
+function normalizeDeductionIdentity(value) {
+  return clean(value).toUpperCase();
+}
+
+function dailyScoreDeductionRowMatchesStaff(row, staff) {
+  const rowLogin = normalizeDeductionIdentity(row.login_id);
+  const staffLogin = normalizeDeductionIdentity(staff && staff.login_id);
   if (rowLogin && staffLogin) return rowLogin === staffLogin;
 
-  const rowStaffId = normalizeIdentityValue(row && row.staff_id);
-  const staffId = normalizeIdentityValue(staff && staff.staff_id);
+  const rowStaffId = normalizeDeductionIdentity(row.staff_id);
+  const staffId = normalizeDeductionIdentity(staff && staff.staff_id);
   if (rowStaffId && staffId) return rowStaffId === staffId;
 
-  const rowName = normalizeScoreName(row && row.full_name);
-  const staffName = normalizeScoreName(staff && staff.full_name);
+  const rowName = normalizeDeductionIdentity(row.full_name);
+  const staffName = normalizeDeductionIdentity(staff && staff.full_name);
   return Boolean(rowName && staffName && rowName === staffName);
 }
 
-function isDeductionDailyScoreRow(row) {
-  const status = safeUpper(row && row.status);
-  return safeNumber(row && row.penalty, 0) > 0 ||
-    /LATE|BREAK_OVERUSE|EARLY|MISSING/.test(status);
+function flagYes(value) {
+  const flag = safeUpper(value);
+  return flag === "YES" || flag === "TRUE" || flag === "Y" || flag === "1";
+}
+
+function getDeductionType(row) {
+  const status = safeUpper(row.attendance_status);
+  if (status.indexOf("BREAK_OVERUSE") > -1 || flagYes(row.break_overuse)) return "BREAK_OVERUSE";
+  if (safeNumber(row.late_minutes, 0) > 0 || status.indexOf("LATE") > -1) return "LATE";
+  if (flagYes(row.early_checkout) || status.indexOf("EARLY") > -1) return "EARLY_CHECKOUT";
+  if (flagYes(row.missing_checkin) || status.indexOf("MISSING_CHECK_IN") > -1 || status.indexOf("MISSING_CHECKIN") > -1) return "MISSING_CHECKIN";
+  if (flagYes(row.missing_checkout) || status.indexOf("MISSING_CHECK_OUT") > -1 || status.indexOf("MISSING_CHECKOUT") > -1) return "MISSING_CHECKOUT";
+  if (status && status !== "PRESENT") return status;
+  return safeNumber(row.total_penalty, 0) > 0 ? "PENALTY" : "";
+}
+
+function isDeductionDailyScoreRawRow(row) {
+  const status = safeUpper(row.attendance_status);
+  return safeNumber(row.total_penalty, 0) > 0 ||
+    (status && status !== "PRESENT") ||
+    flagYes(row.break_overuse) ||
+    safeNumber(row.late_minutes, 0) > 0 ||
+    flagYes(row.early_checkout) ||
+    flagYes(row.missing_checkin) ||
+    flagYes(row.missing_checkout);
+}
+
+function deductionReason(row, type, notes) {
+  if (type && type !== "PENALTY") return type;
+  if (clean(row.attendance_status)) return clean(row.attendance_status);
+  if (notes && clean(notes.status)) return clean(notes.status);
+  return clean(row.notes) || "Penalty";
 }
 
 function getStaffQuarterDeductionDetails(staff, month) {
-  const months = getQuarterMonthsForMonth(month);
-  const rows = [];
-  months.forEach(function (scoreMonth) {
-    listDailyScoreRows(scoreMonth, 0).forEach(function (row) {
-      if (!dailyScoreRowMatchesStaffForDeductions(row, staff)) return;
-      if (!isDeductionDailyScoreRow(row)) return;
-      const notes = parseScoreNotesJson(row.notes);
-      const details = Array.isArray(notes.break_overuse_details) ? notes.break_overuse_details : [];
-      if (details.length) {
-        details.forEach(function (detail) {
-          rows.push({
-            score_date: row.score_date,
-            attendance_status: row.status,
-            penalty: detail.penalty || row.penalty,
-            final_attendance: row.final_attendance_score,
-            reason: detail.reason || row.status,
-            break_type: detail.break_type || "",
-            start_time: detail.start_time || "",
-            end_time: detail.end_time || "",
-            used_minutes: detail.used_minutes || "",
-            allowed_minutes: detail.allowed_minutes || "",
-            overuse_minutes: detail.overuse_minutes || ""
-          });
-        });
-        return;
-      }
-      rows.push({
-        score_date: row.score_date,
-        attendance_status: row.status,
-        penalty: row.penalty,
-        final_attendance: row.final_attendance_score,
-        reason: row.status || "Penalty",
-        break_type: "",
-        start_time: "",
-        end_time: "",
-        used_minutes: "",
-        allowed_minutes: "",
-        overuse_minutes: ""
-      });
-    });
+  const monthSet = {};
+  getQuarterMonthsForMonth(month).forEach(function (scoreMonth) {
+    monthSet[normalizeMonth(scoreMonth)] = true;
   });
+  const rows = [];
+  const values = getValues(SHEETS.DAILY);
+  const headerMap = buildHeaderMap(values[0] || []);
+
+  for (let i = 1; i < values.length; i++) {
+    const valuesRow = values[i];
+    const scoreDate = normalizeDateKey(valueByHeader(valuesRow, headerMap, ["score_date", "date"], null));
+    const scoreMonth = normalizeMonth(scoreDate) || normalizeMonth(valueByHeader(valuesRow, headerMap, ["score_month", "schedule_month", "month"], null));
+    if (!monthSet[scoreMonth]) continue;
+
+    const row = {
+      score_date: scoreDate,
+      staff_id: valueByHeader(valuesRow, headerMap, ["staff_id"], null),
+      login_id: valueByHeader(valuesRow, headerMap, ["login_id"], null),
+      full_name: valueByHeader(valuesRow, headerMap, ["full_name", "name"], null),
+      attendance_status: valueByHeader(valuesRow, headerMap, ["attendance_status", "status"], null),
+      total_penalty: valueByHeader(valuesRow, headerMap, ["total_penalty", "penalty"], null),
+      final_attendance: valueByHeader(valuesRow, headerMap, ["final_attendance_score", "final_attendance", "attendance_score"], null),
+      late_minutes: valueByHeader(valuesRow, headerMap, ["late_minutes"], null),
+      early_checkout: valueByHeader(valuesRow, headerMap, ["early_checkout", "early_checkout_flag"], null),
+      missing_checkin: valueByHeader(valuesRow, headerMap, ["missing_checkin", "missing_check_in"], null),
+      missing_checkout: valueByHeader(valuesRow, headerMap, ["missing_checkout", "missing_check_out"], null),
+      break_overuse: valueByHeader(valuesRow, headerMap, ["break_overuse", "break_overuse_flag"], null),
+      notes: valueByHeader(valuesRow, headerMap, ["notes"], null)
+    };
+    if (!dailyScoreDeductionRowMatchesStaff(row, staff)) continue;
+    if (!isDeductionDailyScoreRawRow(row)) continue;
+
+    const type = getDeductionType(row);
+    const notes = parseScoreNotesJson(row.notes);
+    const details = Array.isArray(notes.break_overuse_details) ? notes.break_overuse_details : [];
+    if (details.length) {
+      details.forEach(function (detail) {
+        rows.push({
+          score_date: row.score_date,
+          type: type || detail.break_type || "",
+          start_time: detail.start_time || "",
+          end_time: detail.end_time || "",
+          used_minutes: detail.used_minutes || "",
+          allowed_minutes: detail.allowed_minutes || "",
+          reason: detail.reason || deductionReason(row, type, notes),
+          penalty: row.total_penalty
+        });
+      });
+      continue;
+    }
+    rows.push({
+      score_date: row.score_date,
+      type: type,
+      start_time: "",
+      end_time: "",
+      used_minutes: "",
+      allowed_minutes: "",
+      reason: deductionReason(row, type, notes),
+      penalty: row.total_penalty
+    });
+  }
 
   rows.sort(function (a, b) {
     return normalizeDateKey(b.score_date).localeCompare(normalizeDateKey(a.score_date));

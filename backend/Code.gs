@@ -900,6 +900,7 @@ function getStaffDashboard(data) {
   const dailyScores = listDailyScoreRows(month, 300).filter(function (row) {
     return rowMatchesStaffIdentity(row, staff);
   });
+  const deductionDetails = getStaffQuarterDeductionDetails(staff, month);
   const quarterScores = listQuarterScoreRows(300).filter(function (row) {
     return rowMatchesStaffIdentity(row, staff);
   });
@@ -943,6 +944,7 @@ function getStaffDashboard(data) {
     upcoming_schedule: getNextSchedule(staff, today, 0),
     attendance_events: attendanceEvents,
     daily_scores: dailyScores,
+    deduction_details: deductionDetails,
     quarter_scores: quarterScores,
     quarter_score: selectedQuarterScore || fallbackQuarter,
     quarter_score_value: quarterScoreValue,
@@ -963,6 +965,83 @@ function getStaffDashboard(data) {
     own_kpi: ownKpi,
     score_debug: scoreDebug
   };
+}
+
+function parseScoreNotesJson(value) {
+  try {
+    return clean(value) ? JSON.parse(clean(value)) : {};
+  } catch (err) {
+    return {};
+  }
+}
+
+function dailyScoreRowMatchesStaffForDeductions(row, staff) {
+  const rowLogin = normalizeIdentityValue(row && row.login_id);
+  const staffLogin = normalizeIdentityValue(staff && staff.login_id);
+  if (rowLogin && staffLogin) return rowLogin === staffLogin;
+
+  const rowStaffId = normalizeIdentityValue(row && row.staff_id);
+  const staffId = normalizeIdentityValue(staff && staff.staff_id);
+  if (rowStaffId && staffId) return rowStaffId === staffId;
+
+  const rowName = normalizeScoreName(row && row.full_name);
+  const staffName = normalizeScoreName(staff && staff.full_name);
+  return Boolean(rowName && staffName && rowName === staffName);
+}
+
+function isDeductionDailyScoreRow(row) {
+  const status = safeUpper(row && row.status);
+  return safeNumber(row && row.penalty, 0) > 0 ||
+    /LATE|BREAK_OVERUSE|EARLY|MISSING/.test(status);
+}
+
+function getStaffQuarterDeductionDetails(staff, month) {
+  const months = getQuarterMonthsForMonth(month);
+  const rows = [];
+  months.forEach(function (scoreMonth) {
+    listDailyScoreRows(scoreMonth, 0).forEach(function (row) {
+      if (!dailyScoreRowMatchesStaffForDeductions(row, staff)) return;
+      if (!isDeductionDailyScoreRow(row)) return;
+      const notes = parseScoreNotesJson(row.notes);
+      const details = Array.isArray(notes.break_overuse_details) ? notes.break_overuse_details : [];
+      if (details.length) {
+        details.forEach(function (detail) {
+          rows.push({
+            score_date: row.score_date,
+            attendance_status: row.status,
+            penalty: detail.penalty || row.penalty,
+            final_attendance: row.final_attendance_score,
+            reason: detail.reason || row.status,
+            break_type: detail.break_type || "",
+            start_time: detail.start_time || "",
+            end_time: detail.end_time || "",
+            used_minutes: detail.used_minutes || "",
+            allowed_minutes: detail.allowed_minutes || "",
+            overuse_minutes: detail.overuse_minutes || ""
+          });
+        });
+        return;
+      }
+      rows.push({
+        score_date: row.score_date,
+        attendance_status: row.status,
+        penalty: row.penalty,
+        final_attendance: row.final_attendance_score,
+        reason: row.status || "Penalty",
+        break_type: "",
+        start_time: "",
+        end_time: "",
+        used_minutes: "",
+        allowed_minutes: "",
+        overuse_minutes: ""
+      });
+    });
+  });
+
+  rows.sort(function (a, b) {
+    return normalizeDateKey(b.score_date).localeCompare(normalizeDateKey(a.score_date));
+  });
+  return rows;
 }
 
 function getNextSchedule(identity, fromDate, days) {

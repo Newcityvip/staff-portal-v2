@@ -48,6 +48,10 @@
   };
   const dateKey = (value) => String(value || "").slice(0, 10);
   const noScheduleMessage = "No schedule found for this day. Please contact admin.";
+  const formatDeductionMinutes = (value) => {
+    const text = String(value ?? "").trim();
+    return !text || text === "--" ? "--" : `${text} min`;
+  };
   const formatShiftTime12h = (value) => {
     const raw = String(value || "").trim();
     if (!raw) return "--";
@@ -190,6 +194,7 @@
     const attendanceEvents = Portal.normalizeArray(root.attendance_events || root.timeline || root.activity || root.logs);
     const dailyScores = Portal.normalizeArray(root.daily_scores || root.history || root.attendanceHistory || root.records);
     const deductionDetails = Portal.normalizeArray(root.deduction_details || root.deductionDetails);
+    if (root.deduction_debug) console.log("deduction_debug", root.deduction_debug);
     const quarterScores = Portal.normalizeArray(root.quarter_scores || root.quarterScores);
     const quarterScore = root.quarter_score || quarterScores[0] || {};
     const fullUpcomingSchedule = Portal.normalizeArray(root.upcoming_schedule || root.upcomingSchedule || root.nextSchedule);
@@ -309,7 +314,9 @@
     if ((!next.history || !next.history.length) && previous.history?.length) next.history = previous.history;
     if ((!next.timeline || !next.timeline.length) && previous.timeline?.length) next.timeline = previous.timeline;
     if ((!next.scheduleList || !next.scheduleList.length) && previous.scheduleList?.length) next.scheduleList = previous.scheduleList;
-    if (!hasOwn(root, "deduction_details") && !hasOwn(root, "deductionDetails") && (!next.deductionDetails || !next.deductionDetails.length) && previous.deductionDetails?.length) next.deductionDetails = previous.deductionDetails;
+    if ((!hasOwn(root, "deduction_details") && !hasOwn(root, "deductionDetails") ||
+      !root.deduction_debug && (!next.deductionDetails || !next.deductionDetails.length)) &&
+      previous.deductionDetails?.length) next.deductionDetails = previous.deductionDetails;
     return { ...next, performance: mergedPerf };
   };
 
@@ -616,12 +623,12 @@
     if (!host) return;
     Portal.setText("deductionCount", `${rows.length} rows`);
     const columns = [
-      { label: "Date", render: (row) => Portal.formatDate(Portal.pick(row, ["score_date"], "")) },
+      { label: "Date", render: (row) => Portal.formatDate(Portal.pick(row, ["date", "score_date"], "")) },
       { label: "Type", render: (row) => String(Portal.pick(row, ["type"], "--")).replaceAll("_", " ") },
-      { label: "Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["start_time"], "")) },
-      { label: "End", render: (row) => formatShiftTime12h(Portal.pick(row, ["end_time"], "")) },
-      { label: "Used", render: (row) => Portal.pick(row, ["used_minutes"], "") === "" ? "--" : `${Portal.pick(row, ["used_minutes"], "0")} min` },
-      { label: "Allowed", render: (row) => Portal.pick(row, ["allowed_minutes"], "") === "" ? "--" : `${Portal.pick(row, ["allowed_minutes"], "0")} min` },
+      { label: "Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["start", "start_time"], "")) },
+      { label: "End", render: (row) => formatShiftTime12h(Portal.pick(row, ["end", "end_time"], "")) },
+      { label: "Used", render: (row) => formatDeductionMinutes(Portal.pick(row, ["used", "used_minutes"], "")) },
+      { label: "Allowed", render: (row) => formatDeductionMinutes(Portal.pick(row, ["allowed", "allowed_minutes"], "")) },
       { label: "Reason", keys: ["reason"] },
       { label: "Penalty", keys: ["penalty"] }
     ];
@@ -632,12 +639,12 @@
     }
     host.innerHTML = rows.slice(0, previewLimit).map((row) => `
         <tr>
-          <td>${Portal.formatDate(Portal.pick(row, ["score_date"], ""))}</td>
+          <td>${Portal.formatDate(Portal.pick(row, ["date", "score_date"], ""))}</td>
           <td>${String(Portal.pick(row, ["type"], "--")).replaceAll("_", " ")}</td>
-          <td>${formatShiftTime12h(Portal.pick(row, ["start_time"], ""))}</td>
-          <td>${formatShiftTime12h(Portal.pick(row, ["end_time"], ""))}</td>
-          <td>${Portal.pick(row, ["used_minutes"], "") === "" ? "--" : `${Portal.pick(row, ["used_minutes"], "0")} min`}</td>
-          <td>${Portal.pick(row, ["allowed_minutes"], "") === "" ? "--" : `${Portal.pick(row, ["allowed_minutes"], "0")} min`}</td>
+          <td>${formatShiftTime12h(Portal.pick(row, ["start", "start_time"], ""))}</td>
+          <td>${formatShiftTime12h(Portal.pick(row, ["end", "end_time"], ""))}</td>
+          <td>${formatDeductionMinutes(Portal.pick(row, ["used", "used_minutes"], ""))}</td>
+          <td>${formatDeductionMinutes(Portal.pick(row, ["allowed", "allowed_minutes"], ""))}</td>
           <td>${Portal.pick(row, ["reason"], "--")}</td>
           <td>${Portal.pick(row, ["penalty"], "0")}</td>
         </tr>`).join("");

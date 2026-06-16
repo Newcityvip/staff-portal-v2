@@ -900,7 +900,8 @@ function getStaffDashboard(data) {
   const dailyScores = listDailyScoreRows(month, 300).filter(function (row) {
     return rowMatchesStaffIdentity(row, staff);
   });
-  const deductionDetails = getStaffQuarterDeductionDetails(staff, month);
+  const deductionTrace = getStaffDeductionDetailsFromDailyScore(staff);
+  const deductionDetails = deductionTrace.rows;
   const quarterScores = listQuarterScoreRows(300).filter(function (row) {
     return rowMatchesStaffIdentity(row, staff);
   });
@@ -945,6 +946,7 @@ function getStaffDashboard(data) {
     attendance_events: attendanceEvents,
     daily_scores: dailyScores,
     deduction_details: deductionDetails,
+    deduction_debug: deductionTrace.debug,
     quarter_scores: quarterScores,
     quarter_score: selectedQuarterScore || fallbackQuarter,
     quarter_score_value: quarterScoreValue,
@@ -982,11 +984,11 @@ function normalizeDeductionIdentity(value) {
 function dailyScoreDeductionRowMatchesStaff(row, staff) {
   const rowLogin = normalizeDeductionIdentity(row.login_id);
   const staffLogin = normalizeDeductionIdentity(staff && staff.login_id);
-  if (rowLogin && staffLogin) return rowLogin === staffLogin;
-
   const rowStaffId = normalizeDeductionIdentity(row.staff_id);
   const staffId = normalizeDeductionIdentity(staff && staff.staff_id);
-  if (rowStaffId && staffId) return rowStaffId === staffId;
+  if (rowLogin && staffLogin && rowLogin === staffLogin) return true;
+  if (rowStaffId && staffId && rowStaffId === staffId) return true;
+  if (rowLogin || staffLogin || rowStaffId || staffId) return false;
 
   const rowName = normalizeDeductionIdentity(row.full_name);
   const staffName = normalizeDeductionIdentity(staff && staff.full_name);
@@ -1027,26 +1029,32 @@ function deductionReason(row, type, notes) {
   return clean(row.notes) || "Penalty";
 }
 
-function getStaffQuarterDeductionDetails(staff, month) {
-  const monthSet = {};
-  getQuarterMonthsForMonth(month).forEach(function (scoreMonth) {
-    monthSet[normalizeMonth(scoreMonth)] = true;
-  });
+function isDeductionBreakOveruseValue(value) {
+  const text = safeUpper(value);
+  return Boolean(text && text !== "NO" && text !== "FALSE" && text !== "0");
+}
+
+function getStaffDeductionDetailsFromDailyScore(staff) {
   const rows = [];
   const values = getValues(SHEETS.DAILY);
   const headerMap = buildHeaderMap(values[0] || []);
+  let matchedRows = 0;
+  const matchedLoginId = normalizeDeductionIdentity(staff && staff.login_id);
+  const matchedStaffId = normalizeDeductionIdentity(staff && staff.staff_id);
 
   for (let i = 1; i < values.length; i++) {
     const valuesRow = values[i];
     const scoreDate = normalizeDateKey(valueByHeader(valuesRow, headerMap, ["score_date", "date"], null));
-    const scoreMonth = normalizeMonth(scoreDate) || normalizeMonth(valueByHeader(valuesRow, headerMap, ["score_month", "schedule_month", "month"], null));
-    if (!monthSet[scoreMonth]) continue;
-
     const row = {
       score_date: scoreDate,
       staff_id: valueByHeader(valuesRow, headerMap, ["staff_id"], null),
       login_id: valueByHeader(valuesRow, headerMap, ["login_id"], null),
       full_name: valueByHeader(valuesRow, headerMap, ["full_name", "name"], null),
+      scheduled_start: valueByHeader(valuesRow, headerMap, ["scheduled_start", "start_time"], null),
+      scheduled_end: valueByHeader(valuesRow, headerMap, ["scheduled_end", "end_time"], null),
+      first_check_in: valueByHeader(valuesRow, headerMap, ["first_check_in", "check_in"], null),
+      last_check_out: valueByHeader(valuesRow, headerMap, ["last_check_out", "check_out"], null),
+      total_break_min: valueByHeader(valuesRow, headerMap, ["total_break_min"], null),
       attendance_status: valueByHeader(valuesRow, headerMap, ["attendance_status", "status"], null),
       total_penalty: valueByHeader(valuesRow, headerMap, ["total_penalty", "penalty"], null),
       final_attendance: valueByHeader(valuesRow, headerMap, ["final_attendance_score", "final_attendance", "attendance_score"], null),
@@ -1058,42 +1066,54 @@ function getStaffQuarterDeductionDetails(staff, month) {
       notes: valueByHeader(valuesRow, headerMap, ["notes"], null)
     };
     if (!dailyScoreDeductionRowMatchesStaff(row, staff)) continue;
-    if (!isDeductionDailyScoreRawRow(row)) continue;
+    matchedRows++;
+
+    const status = safeUpper(row.attendance_status);
+    const hasDeduction = safeNumber(row.total_penalty, 0) > 0 ||
+      Boolean(status && status !== "PRESENT") ||
+      isDeductionBreakOveruseValue(row.break_overuse);
+    if (!hasDeduction) continue;
 
     const type = getDeductionType(row);
     const notes = parseScoreNotesJson(row.notes);
-    const details = Array.isArray(notes.break_overuse_details) ? notes.break_overuse_details : [];
-    if (details.length) {
-      details.forEach(function (detail) {
-        rows.push({
-          score_date: row.score_date,
-          type: type || detail.break_type || "",
-          start_time: detail.start_time || "",
-          end_time: detail.end_time || "",
-          used_minutes: detail.used_minutes || "",
-          allowed_minutes: detail.allowed_minutes || "",
-          reason: detail.reason || deductionReason(row, type, notes),
-          penalty: row.total_penalty
-        });
-      });
-      continue;
-    }
+    const breakDetails = Array.isArray(notes.break_overuse_details) && notes.break_overuse_details.length ? notes.break_overuse_details[0] : {};
+    const start = clean(breakDetails.start_time) || clean(row.first_check_in) || clean(row.scheduled_start) || "--";
+    const end = clean(breakDetails.end_time) || clean(row.last_check_out) || clean(row.scheduled_end) || "--";
+    const used = clean(breakDetails.used_minutes) || clean(row.total_break_min) || "--";
+    const reason = clean(row.attendance_status) || clean(row.break_overuse) || clean(row.notes) || "Penalty applied";
     rows.push({
+      date: row.score_date,
       score_date: row.score_date,
-      type: type,
-      start_time: "",
-      end_time: "",
-      used_minutes: "",
-      allowed_minutes: "",
-      reason: deductionReason(row, type, notes),
-      penalty: row.total_penalty
+      type: clean(row.attendance_status) || clean(row.break_overuse) || type || "DEDUCTION",
+      start: start,
+      start_time: start,
+      end: end,
+      end_time: end,
+      used: used,
+      used_minutes: used === "--" ? "" : used,
+      allowed: clean(breakDetails.allowed_minutes) || "--",
+      allowed_minutes: clean(breakDetails.allowed_minutes),
+      reason: reason,
+      penalty: row.total_penalty,
+      final_attendance: row.final_attendance,
+      login_id: row.login_id,
+      staff_id: row.staff_id
     });
   }
 
   rows.sort(function (a, b) {
-    return normalizeDateKey(b.score_date).localeCompare(normalizeDateKey(a.score_date));
+    return normalizeDateKey(b.date).localeCompare(normalizeDateKey(a.date));
   });
-  return rows;
+  return {
+    rows: rows,
+    debug: {
+      matched_login_id: matchedLoginId,
+      matched_staff_id: matchedStaffId,
+      score_rows_scanned: Math.max(values.length - 1, 0),
+      matched_score_rows: matchedRows,
+      deduction_details_count: rows.length
+    }
+  };
 }
 
 function getNextSchedule(identity, fromDate, days) {

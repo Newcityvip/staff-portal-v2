@@ -686,7 +686,7 @@ function addDays(dateStr, days) {
 function attendanceAction(data) {
   const lock = LockService.getScriptLock();
   try {
-    lock.waitLock(10000);
+    lock.waitLock(5000);
   } catch (err) {
     logInternalError("attendanceAction.lock", err);
     return { ok: false, message: "Attendance system is busy. Please try again." };
@@ -707,6 +707,8 @@ function attendanceAction(data) {
 }
 
 function attendanceActionLocked(data) {
+  clearSheetCache(SHEETS.EVENTS);
+
   const loginId = clean(data.login_id);
   const eventType = safeUpper(data.event_type);
   const breakType = safeUpper(data.break_type);
@@ -780,16 +782,8 @@ function attendanceActionLocked(data) {
   ]);
 
   clearSheetCache(SHEETS.EVENTS);
-  try {
-    appendAudit("STAFF", staff.staff_id, staff.full_name, eventType, "ATTENDANCE", eventId, "", "", ip, "");
-  } catch (err) {
-    logInternalError("attendanceActionLocked.audit", err);
-  }
-  try {
-    queueTelegramAttendance(staff, schedule, eventType, breakType, ip);
-  } catch (err) {
-    logInternalError("attendanceActionLocked.telegramQueue", err);
-  }
+  appendAudit("STAFF", staff.staff_id, staff.full_name, eventType, "ATTENDANCE", eventId, "", "", ip, "");
+  queueTelegramAttendance(staff, schedule, eventType, breakType, ip);
 
   let daily_score = null;
   if (eventType === "CHECK_OUT") {
@@ -3395,13 +3389,20 @@ function queueTelegramAttendance(staff, schedule, eventType, breakType, ip) {
     const settings = getSettings();
     if (safeUpper(settings.TG_NOTIFY_ENABLED) !== "YES") return;
     const payload = { id: makeId("TGQ"), created_at: nowDateTime(), staff: staff, schedule: schedule, eventType: eventType, breakType: breakType, ip: ip };
-    const props = PropertiesService.getScriptProperties();
-    const queue = JSON.parse(props.getProperty(TG_QUEUE_PROPERTY) || "[]");
-    queue.push(payload);
-    props.setProperty(TG_QUEUE_PROPERTY, JSON.stringify(queue));
-    ensureTelegramTrigger();
+    const lock = LockService.getScriptLock();
+    lock.waitLock(3000);
+    try {
+      const props = PropertiesService.getScriptProperties();
+      const queue = JSON.parse(props.getProperty(TG_QUEUE_PROPERTY) || "[]");
+      queue.push(payload);
+      props.setProperty(TG_QUEUE_PROPERTY, JSON.stringify(queue));
+      ensureTelegramTrigger();
+    } finally {
+      lock.releaseLock();
+    }
   } catch (err) {
     logInternalError("queueTelegramAttendance", err);
+    sendTelegramAttendance(staff, schedule, eventType, breakType, ip);
   }
 }
 

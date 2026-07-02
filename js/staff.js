@@ -21,6 +21,7 @@
   let state = {};
   let refreshTimer;
   let refreshInFlight = false;
+  let attendanceActionInFlight = false;
   let lastScoreRefreshAt = 0;
   let breakStartedAt = null;
   let scheduleMonthTouched = false;
@@ -722,6 +723,11 @@
     document.querySelector('[data-action="checkOut"]').disabled = blocked || !checkedIn || checkedOut;
     document.querySelector('[data-action="breakStart"]').disabled = blocked || !checkedIn || onBreak || checkedOut || selectedLimitReached;
     document.querySelector('[data-action="breakEnd"]').disabled = blocked || !onBreak;
+    if (attendanceActionInFlight) {
+      document.querySelectorAll("[data-action]").forEach((button) => {
+        button.disabled = true;
+      });
+    }
   };
 
   const tickBreak = () => {
@@ -783,6 +789,7 @@
   const bindActions = () => {
     document.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", async () => {
+        if (attendanceActionInFlight) return;
         const action = button.dataset.action;
         if (state.today?.actionBlocked) {
           Portal.toast(state.today.actionBlockMessage || noScheduleMessage, "error");
@@ -794,7 +801,15 @@
           breakStart: { event_type: "BREAK_START", break_type: document.getElementById("breakTypeSelect")?.value || "BREAK" },
           breakEnd: { event_type: "BREAK_END", break_type: state.today?.activeBreak || "BREAK" }
         };
+        attendanceActionInFlight = true;
+        const stateLabel = button.querySelector("span");
+        const previousStateLabel = stateLabel ? stateLabel.textContent : "";
+        if (stateLabel) stateLabel.textContent = "Saving...";
+        document.querySelectorAll("[data-action]").forEach((actionButton) => {
+          actionButton.disabled = true;
+        });
         button.disabled = true;
+        let succeeded = false;
         try {
           const ip = await Portal.api.detectIp();
           const result = await Portal.api.action("attendance_action", {
@@ -805,11 +820,15 @@
           });
           if (result?.ok === false) throw new Error(result.message || "Action failed");
           Portal.toast(`${button.firstChild.textContent.trim()} recorded`);
+          if (result?.state) state.today = { ...(state.today || {}), ...result.state };
+          succeeded = true;
           await load(true);
         } catch (error) {
           if (!Portal.isAbortLike(error)) Portal.toast(error.message || "Action failed", "error");
         } finally {
-          button.disabled = false;
+          attendanceActionInFlight = false;
+          if (!succeeded && stateLabel) stateLabel.textContent = previousStateLabel;
+          updateActionStates(state.today || {});
         }
       });
     });

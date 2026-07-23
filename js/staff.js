@@ -22,6 +22,8 @@
   let refreshTimer;
   let refreshInFlight = false;
   let attendanceActionInFlight = false;
+  let bootstrapPromise = null;
+  let pollingStarted = false;
   let lastScoreRefreshAt = 0;
   let breakStartedAt = null;
   let scheduleMonthTouched = false;
@@ -744,7 +746,7 @@
   const load = async (silent = false) => {
     if (refreshInFlight) return;
     refreshInFlight = true;
-    if (!silent) Portal.setStatus(false, "Loading");
+    if (!silent) Portal.setStatus(null, "Loading");
     try {
       const monthInput = document.getElementById("scheduleMonth");
       const month = scheduleMonthTouched ? monthInput?.value || "" : "";
@@ -779,7 +781,7 @@
         Portal.setStatus(true, "Live");
         return;
       }
-      Portal.setStatus(false, "API issue");
+      Portal.api.health().catch(() => {});
       if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load staff dashboard", "error");
     } finally {
       refreshInFlight = false;
@@ -839,6 +841,21 @@
     if (bioBreakOption) bioBreakOption.textContent = "Bio Break - 10 min, 3 times";
   };
 
+  const startPolling = () => {
+    if (pollingStarted) return;
+    pollingStarted = true;
+    refreshTimer = setInterval(() => load(true), 15000);
+  };
+
+  const bootstrap = () => {
+    if (bootstrapPromise) return bootstrapPromise;
+    bootstrapPromise = Promise.allSettled([
+      Portal.api.health().catch(() => {}),
+      load()
+    ]).finally(startPolling);
+    return bootstrapPromise;
+  };
+
   applyDisplayOnlyLabels();
   bindActions();
   const scheduleMonth = document.getElementById("scheduleMonth");
@@ -849,8 +866,7 @@
     });
   }
   document.getElementById("breakTypeSelect")?.addEventListener("change", () => updateActionStates(state.today || {}));
-  load();
+  bootstrap();
   setInterval(tickBreak, 1000);
-  refreshTimer = setInterval(() => load(true), 15000);
   window.addEventListener("beforeunload", () => clearInterval(refreshTimer));
 })();

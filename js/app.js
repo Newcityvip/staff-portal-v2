@@ -17,6 +17,8 @@
     return { controller, timer };
   };
 
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
   const normalizeArray = (value) => {
     if (Array.isArray(value)) return value;
     if (!value || typeof value !== "object") return [];
@@ -70,6 +72,10 @@
     const el = document.getElementById("connectionStatus");
     if (!el) return;
     el.textContent = text || (online ? "Live" : "Offline");
+    if (online === null) {
+      el.classList.remove("online", "offline");
+      return;
+    }
     el.classList.toggle("online", Boolean(online));
     el.classList.toggle("offline", !online);
   };
@@ -93,8 +99,56 @@
     return headers;
   };
 
+  const isRetryableReadError = (error) => {
+    const status = Number(error?.status || 0);
+    return isAbortLike(error) || status === 429 || status >= 500 || /network|failed to fetch|load failed/i.test(String(error?.message || error || ""));
+  };
+
+  let healthPromise = null;
+  let ipPromise = null;
+
   const api = {
     base: API_BASE,
+    async health(force = false) {
+      if (healthPromise && !force) return healthPromise;
+      healthPromise = (async () => {
+        const delays = [0, 500, 1200];
+        let lastError;
+        setStatus(null, "Connecting");
+        for (let attempt = 0; attempt < delays.length; attempt++) {
+          if (delays[attempt]) await sleep(delays[attempt]);
+          const timeout = withTimeout(attempt === 0 ? 12000 : 15000);
+          try {
+            const response = await fetch(API_BASE, {
+              method: "GET",
+              cache: "no-store",
+              credentials: "omit",
+              signal: timeout.controller.signal
+            });
+            clearTimeout(timeout.timer);
+            const data = await safeJson(response);
+            if (response.ok && data?.ok === true) {
+              setStatus(true, "Live");
+              return data;
+            }
+            lastError = new Error(data.message || data.error || `API ${response.status}`);
+            lastError.status = response.status;
+            if (!isRetryableReadError(lastError)) break;
+          } catch (error) {
+            clearTimeout(timeout.timer);
+            lastError = error;
+            if (!isRetryableReadError(error)) break;
+          }
+        }
+        setStatus(false, "API offline");
+        throw lastError || new Error("API health check failed");
+      })();
+      try {
+        return await healthPromise;
+      } finally {
+        healthPromise = null;
+      }
+    },
     async call(action, payload = {}, options = {}) {
       const session = Portal.getSession(false);
       const body = { action, ...payload };
@@ -104,72 +158,88 @@
         `${API_BASE}?action=${encodeURIComponent(action)}`,
         API_BASE
       ];
+      const retryDelays = options.retryRead ? [0, 500, 1200] : [0];
       let lastError;
-      for (const url of endpoints) {
-        const timeout = withTimeout(options.timeoutMs || 15000);
-        try {
-          const response = await fetch(url, {
-            method: options.method || "POST",
-            headers: buildHeaders(session),
-            body: (options.method || "POST") === "GET" ? undefined : JSON.stringify(body),
-            cache: "no-store",
-            credentials: "omit",
-            signal: timeout.controller.signal
-          });
-          clearTimeout(timeout.timer);
-          const data = await safeJson(response);
-          if (response.status === 401 || response.status === 403) {
-            Portal.clearSession();
-            throw new Error(data.message || "Session expired");
+      for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+        if (retryDelays[attempt]) await sleep(retryDelays[attempt]);
+        for (const url of endpoints) {
+          const timeout = withTimeout(options.timeoutMs || 15000);
+          try {
+            const response = await fetch(url, {
+              method: options.method || "POST",
+              headers: buildHeaders(session),
+              body: (options.method || "POST") === "GET" ? undefined : JSON.stringify(body),
+              cache: "no-store",
+              credentials: "omit",
+              signal: timeout.controller.signal
+            });
+            clearTimeout(timeout.timer);
+            const data = await safeJson(response);
+            if (response.status === 401 || response.status === 403) {
+              Portal.clearSession();
+              throw new Error(data.message || "Session expired");
+            }
+            if (response.ok) {
+              if (options.updateStatus !== false) setStatus(true, "Live");
+              return data;
+            }
+            lastError = new Error(data.message || data.error || `API ${response.status}`);
+            lastError.status = response.status;
+            if (!isRetryableReadError(lastError)) throw lastError;
+          } catch (error) {
+            clearTimeout(timeout.timer);
+            lastError = error;
+            if (/invalid action/i.test(String(error.message))) break;
+            if (!options.retryRead || !isRetryableReadError(error)) throw error;
           }
-          if (response.ok) {
-            setStatus(true, "Live");
-            return data;
-          }
-          lastError = new Error(data.message || data.error || `API ${response.status}`);
-        } catch (error) {
-          clearTimeout(timeout.timer);
-          lastError = error;
         }
+        if (!options.retryRead || !isRetryableReadError(lastError)) break;
       }
-      setStatus(false, "API offline");
+      if (options.statusOnFailure) setStatus(false, "API offline");
       throw lastError || new Error("API request failed");
     },
     async detectIp(forceRefresh = false) {
       const cached = localStorage.getItem(CLIENT_IP_KEY);
       if (!forceRefresh && cached) return cached;
-      const actions = ["clientIp", "getClientIp", "ipStatus", "checkIp", "getIp"];
-      for (const action of actions) {
-        try {
-          const data = await this.call(action, {}, { endpoints: [API_BASE], timeoutMs: 3500 });
-          const ip = pick(data?.data || data, ["ip", "clientIp", "client_ip", "requestIp", "request_ip", "address", "ipAddress"], "");
-          if (ip && !/invalid action/i.test(String(data?.message || data?.error || ""))) {
-            localStorage.setItem(CLIENT_IP_KEY, ip);
-            return ip;
+      if (!forceRefresh && ipPromise) return ipPromise;
+      ipPromise = (async () => {
+        const actions = ["clientIp", "getClientIp", "ipStatus", "checkIp", "getIp"];
+        for (const action of actions) {
+          try {
+            const data = await this.call(action, {}, { endpoints: [API_BASE], timeoutMs: 5000, updateStatus: false });
+            const ip = pick(data?.data || data, ["ip", "clientIp", "client_ip", "requestIp", "request_ip", "address", "ipAddress"], "");
+            if (ip && !/invalid action/i.test(String(data?.message || data?.error || ""))) {
+              localStorage.setItem(CLIENT_IP_KEY, ip);
+              return ip;
+            }
+          } catch (error) {
+            if (/abort/i.test(String(error.message))) break;
+            if (!/invalid action/i.test(String(error.message))) break;
           }
-        } catch (error) {
-          if (/abort/i.test(String(error.message))) break;
-          if (!/invalid action/i.test(String(error.message))) break;
         }
-      }
+        try {
+          const timeout = withTimeout(5000);
+          const response = await fetch("https://www.cloudflare.com/cdn-cgi/trace", {
+            cache: "no-store",
+            credentials: "omit",
+            signal: timeout.controller.signal
+          });
+          clearTimeout(timeout.timer);
+          if (!response.ok) return "";
+          const trace = await response.text();
+          const line = trace.split("\n").find((item) => item.startsWith("ip="));
+          const ip = line ? line.slice(3).trim() : "";
+          if (ip) localStorage.setItem(CLIENT_IP_KEY, ip);
+          return ip;
+        } catch (error) {
+          return "";
+        }
+      })();
       try {
-        const timeout = withTimeout(3500);
-        const response = await fetch("https://www.cloudflare.com/cdn-cgi/trace", {
-          cache: "no-store",
-          credentials: "omit",
-          signal: timeout.controller.signal
-        });
-        clearTimeout(timeout.timer);
-        if (!response.ok) return "";
-        const trace = await response.text();
-        const line = trace.split("\n").find((item) => item.startsWith("ip="));
-        const ip = line ? line.slice(3).trim() : "";
-        if (ip) localStorage.setItem(CLIENT_IP_KEY, ip);
-        return ip;
-      } catch (error) {
-        return "";
+        return await ipPromise;
+      } finally {
+        ipPromise = null;
       }
-      return "";
     },
     async login(role, identity, password, attemptedIp = "") {
       const staffPayload = {
@@ -202,7 +272,7 @@
       let lastError;
       for (const action of actions) {
         try {
-          const data = await this.call(action, role === "admin" ? adminPayload : staffPayload, { endpoints: [API_BASE], timeoutMs: 6000 });
+          const data = await this.call(action, role === "admin" ? adminPayload : staffPayload, { endpoints: [API_BASE], timeoutMs: 12000, retryRead: false });
           if (data?.error && /invalid action/i.test(String(data.error))) {
             lastError = new Error(data.error);
             continue;
@@ -227,10 +297,10 @@
         ? ["get_admin_dashboard_full", "get_admin_dashboard"]
         : ["get_staff_dashboard"];
       const session = Portal.getSession(false);
-      const ip = await this.detectIp();
+      const ipPromise = this.detectIp();
       const payload = {
         role,
-        ip,
+        ip: await ipPromise,
         login_id: session?.loginId || session?.staffId || "",
         admin_login_id: session?.loginId || session?.staffId || "",
         month: new Date().toISOString().slice(0, 7),
@@ -239,7 +309,7 @@
       let lastError;
       for (const action of actions) {
         try {
-          const data = await this.call(action, payload, { endpoints: [API_BASE], timeoutMs: 10000 });
+          const data = await this.call(action, payload, { endpoints: [API_BASE], timeoutMs: 15000, retryRead: true });
           if (data?.error && /invalid action/i.test(String(data.error))) {
             lastError = new Error(data.error);
             continue;
@@ -260,7 +330,7 @@
       }
       throw lastError || new Error("Dashboard action is not available");
     },
-    async action(action, payload = {}) { return this.call(action, payload); }
+    async action(action, payload = {}) { return this.call(action, payload, { endpoints: [API_BASE], timeoutMs: 20000, retryRead: false }); }
   };
 
   const getSession = (redirect = true) => {
@@ -327,15 +397,22 @@
     const form = document.getElementById("loginForm");
     if (!form) return;
     const existing = getSession(false);
-      if (existing?.role === "admin") location.href = "admin.html";
-      if (existing?.role === "staff") location.href = "staff.html";
+    if (existing?.role === "admin") {
+      location.href = "admin.html";
+      return;
+    }
+    if (existing?.role === "staff") {
+      location.href = "staff.html";
+      return;
+    }
     let role = "staff";
     const title = document.getElementById("loginTitle");
     const alert = document.getElementById("loginAlert");
     const btn = document.getElementById("loginBtn");
     const remember = document.getElementById("remember");
     remember.checked = localStorage.getItem(REMEMBER_KEY) !== "0";
-    api.detectIp();
+    api.health().catch(() => {});
+    api.detectIp().catch(() => {});
 
     document.querySelectorAll(".tab-btn").forEach((tab) => {
       tab.addEventListener("click", () => {

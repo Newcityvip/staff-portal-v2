@@ -112,7 +112,7 @@
     async health(force = false) {
       if (healthPromise && !force) return healthPromise;
       healthPromise = (async () => {
-        const delays = [0, 500, 1200];
+        const delays = [0, 700];
         let lastError;
         setStatus(null, "Connecting");
         for (let attempt = 0; attempt < delays.length; attempt++) {
@@ -152,13 +152,8 @@
     async call(action, payload = {}, options = {}) {
       const session = Portal.getSession(false);
       const body = { action, ...payload };
-      const endpoints = options.endpoints || [
-        `${API_BASE}/api/${encodeURIComponent(action)}`,
-        `${API_BASE}/${encodeURIComponent(action)}`,
-        `${API_BASE}?action=${encodeURIComponent(action)}`,
-        API_BASE
-      ];
-      const retryDelays = options.retryRead ? [0, 500, 1200] : [0];
+      const endpoints = options.endpoints || [API_BASE];
+      const retryDelays = options.retryRead ? [0, 700] : [0];
       let lastError;
       for (let attempt = 0; attempt < retryDelays.length; attempt++) {
         if (retryDelays[attempt]) await sleep(retryDelays[attempt]);

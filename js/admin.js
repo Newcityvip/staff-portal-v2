@@ -21,6 +21,9 @@
   let dashboard = {};
   let refreshTimer;
   let refreshInFlight = false;
+  let refreshPromise = null;
+  let bootstrapPromise = null;
+  let pollingStarted = false;
   let lastScoreRefreshAt = 0;
   let loggedPerformanceDetails = false;
 
@@ -725,49 +728,53 @@
   };
 
   const load = async (silent = false) => {
-    if (refreshInFlight) return;
+    if (refreshInFlight) return refreshPromise;
     refreshInFlight = true;
-    if (!silent) Portal.setStatus(false, "Loading");
-    try {
-      const data = await Portal.api.dashboard("admin", { month: "" });
-      const root = data?.data || data?.dashboard || data || {};
-      const incomingPerformance = canonicalPerformanceRows(root);
-      const hadPerformance = dashboard.performance?.length;
-      const scorePayloadValid = hasValidScorePayload(data);
-      const scorePayloadReal = hasRealScorePayload(data);
-      const cachedRealScores = hasRealScoresInDashboard(dashboard);
-      const allowScoreRefresh = !silent || !lastScoreRefreshAt || Date.now() - lastScoreRefreshAt >= 60000;
-      const nextDashboard = normalizeDashboard(data);
-      if ((!allowScoreRefresh || !scorePayloadValid || (cachedRealScores && !scorePayloadReal)) && cachedRealScores) {
-        applyCachedScores(nextDashboard, dashboard);
-        applyCachedScores(nextDashboard, readCachedScores());
-        if (nextDashboard.performance?.length) {
-          nextDashboard.staff = enrichStaffWithPerformance(nextDashboard.staff?.length ? nextDashboard.staff : dashboard.staff, nextDashboard.performance);
+    refreshPromise = (async () => {
+      if (!silent) Portal.setStatus(null, "Loading");
+      try {
+        const data = await Portal.api.dashboard("admin", { month: "" });
+        const root = data?.data || data?.dashboard || data || {};
+        const incomingPerformance = canonicalPerformanceRows(root);
+        const hadPerformance = dashboard.performance?.length;
+        const scorePayloadValid = hasValidScorePayload(data);
+        const scorePayloadReal = hasRealScorePayload(data);
+        const cachedRealScores = hasRealScoresInDashboard(dashboard);
+        const allowScoreRefresh = !silent || !lastScoreRefreshAt || Date.now() - lastScoreRefreshAt >= 60000;
+        const nextDashboard = normalizeDashboard(data);
+        if ((!allowScoreRefresh || !scorePayloadValid || (cachedRealScores && !scorePayloadReal)) && cachedRealScores) {
+          applyCachedScores(nextDashboard, dashboard);
+          applyCachedScores(nextDashboard, readCachedScores());
+          if (nextDashboard.performance?.length) {
+            nextDashboard.staff = enrichStaffWithPerformance(nextDashboard.staff?.length ? nextDashboard.staff : dashboard.staff, nextDashboard.performance);
+          }
         }
-      }
-      dashboard = mergeStableDashboard(dashboard, nextDashboard, data);
-      if (allowScoreRefresh && scorePayloadValid && (!cachedRealScores || scorePayloadReal)) {
-        lastScoreRefreshAt = Date.now();
-        cacheScoresFromDashboard(dashboard);
-      }
-      if ((scorePayloadValid && (!cachedRealScores || scorePayloadReal)) || !hadPerformance) writeCachedDashboard(data);
-      renderAll();
-      Portal.setStatus(true, "Live");
-    } catch (error) {
-      const hasCache = hasUsableCachedDashboard();
-      if (!Object.keys(dashboard || {}).length) {
-        dashboard = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
+        dashboard = mergeStableDashboard(dashboard, nextDashboard, data);
+        if (allowScoreRefresh && scorePayloadValid && (!cachedRealScores || scorePayloadReal)) {
+          lastScoreRefreshAt = Date.now();
+          cacheScoresFromDashboard(dashboard);
+        }
+        if ((scorePayloadValid && (!cachedRealScores || scorePayloadReal)) || !hadPerformance) writeCachedDashboard(data);
         renderAll();
-      }
-      if (isSoftRefreshError(error) || hasCache) {
         Portal.setStatus(true, "Live");
-        return;
+      } catch (error) {
+        const hasCache = hasUsableCachedDashboard();
+        if (!Object.keys(dashboard || {}).length) {
+          dashboard = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
+          renderAll();
+        }
+        if (isSoftRefreshError(error) || hasCache) {
+          Portal.setStatus(true, "Live");
+          return;
+        }
+        Portal.api.health().catch(() => {});
+        if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load admin dashboard", "error");
+      } finally {
+        refreshInFlight = false;
+        refreshPromise = null;
       }
-      Portal.setStatus(false, "API issue");
-      if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load admin dashboard", "error");
-    } finally {
-      refreshInFlight = false;
-    }
+    })();
+    return refreshPromise;
   };
 
   const callFirstValid = async (actions, payload) => {
@@ -1232,8 +1239,22 @@
     }
   });
 
-  load();
-  refreshTimer = setInterval(() => load(true), 15000);
+  const startPolling = () => {
+    if (pollingStarted) return;
+    pollingStarted = true;
+    refreshTimer = setInterval(() => load(true), 15000);
+  };
+
+  const bootstrap = () => {
+    if (bootstrapPromise) return bootstrapPromise;
+    bootstrapPromise = Promise.allSettled([
+      Portal.api.health().catch(() => {}),
+      load()
+    ]).finally(startPolling);
+    return bootstrapPromise;
+  };
+
+  bootstrap();
   window.addEventListener("resize", renderCharts);
   window.addEventListener("beforeunload", () => clearInterval(refreshTimer));
 })();

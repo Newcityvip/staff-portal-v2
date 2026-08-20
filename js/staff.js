@@ -21,6 +21,7 @@
   let state = {};
   let refreshTimer;
   let refreshInFlight = false;
+  let refreshPromise = null;
   let attendanceActionInFlight = false;
   let bootstrapPromise = null;
   let pollingStarted = false;
@@ -744,48 +745,52 @@
   };
 
   const load = async (silent = false) => {
-    if (refreshInFlight) return;
+    if (refreshInFlight) return refreshPromise;
     refreshInFlight = true;
-    if (!silent) Portal.setStatus(null, "Loading");
-    try {
-      const monthInput = document.getElementById("scheduleMonth");
-      const month = scheduleMonthTouched ? monthInput?.value || "" : "";
-      const data = await Portal.api.dashboard("staff", { month });
-      const root = data?.data || data?.dashboard || data || {};
-      const selectedMonth = root.selected_month || root.score_debug?.selected_month || "";
-      if (monthInput && !scheduleMonthTouched && selectedMonth) monthInput.value = selectedMonth;
-      const scorePayloadValid = hasValidScorePayload(data);
-      const scorePayloadReal = hasRealScorePayload(data);
-      const cachedRealScores = hasRealScoresInState(state);
-      const allowScoreRefresh = !silent || !lastScoreRefreshAt || Date.now() - lastScoreRefreshAt >= 60000;
-      const nextState = normalizeDashboard(data);
-      if (Object.keys(state || {}).length && (!allowScoreRefresh || !scorePayloadValid || (cachedRealScores && !scorePayloadReal))) {
-        applyCachedScores(nextState, state);
-        applyCachedScores(nextState, readCachedScores());
-      }
-      state = mergeStableDashboard(state, nextState, data);
-      if (allowScoreRefresh && scorePayloadValid && (!cachedRealScores || scorePayloadReal)) {
-        lastScoreRefreshAt = Date.now();
-        cacheScoresFromState(state);
-      }
-      if ((scorePayloadValid && (!cachedRealScores || scorePayloadReal)) || !state.performanceDetails?.length) writeCachedDashboard(data);
-      renderProfile(state);
-      Portal.setStatus(true, "Live");
-    } catch (error) {
-      const hasCache = hasUsableCachedState();
-      if (!Object.keys(state || {}).length) {
-        state = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
+    refreshPromise = (async () => {
+      if (!silent) Portal.setStatus(null, "Loading");
+      try {
+        const monthInput = document.getElementById("scheduleMonth");
+        const month = scheduleMonthTouched ? monthInput?.value || "" : "";
+        const data = await Portal.api.dashboard("staff", { month });
+        const root = data?.data || data?.dashboard || data || {};
+        const selectedMonth = root.selected_month || root.score_debug?.selected_month || "";
+        if (monthInput && !scheduleMonthTouched && selectedMonth) monthInput.value = selectedMonth;
+        const scorePayloadValid = hasValidScorePayload(data);
+        const scorePayloadReal = hasRealScorePayload(data);
+        const cachedRealScores = hasRealScoresInState(state);
+        const allowScoreRefresh = !silent || !lastScoreRefreshAt || Date.now() - lastScoreRefreshAt >= 60000;
+        const nextState = normalizeDashboard(data);
+        if (Object.keys(state || {}).length && (!allowScoreRefresh || !scorePayloadValid || (cachedRealScores && !scorePayloadReal))) {
+          applyCachedScores(nextState, state);
+          applyCachedScores(nextState, readCachedScores());
+        }
+        state = mergeStableDashboard(state, nextState, data);
+        if (allowScoreRefresh && scorePayloadValid && (!cachedRealScores || scorePayloadReal)) {
+          lastScoreRefreshAt = Date.now();
+          cacheScoresFromState(state);
+        }
+        if ((scorePayloadValid && (!cachedRealScores || scorePayloadReal)) || !state.performanceDetails?.length) writeCachedDashboard(data);
         renderProfile(state);
-      }
-      if (isSoftRefreshError(error) || hasCache) {
         Portal.setStatus(true, "Live");
-        return;
+      } catch (error) {
+        const hasCache = hasUsableCachedState();
+        if (!Object.keys(state || {}).length) {
+          state = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
+          renderProfile(state);
+        }
+        if (isSoftRefreshError(error) || hasCache) {
+          Portal.setStatus(true, "Live");
+          return;
+        }
+        Portal.api.health().catch(() => {});
+        if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load staff dashboard", "error");
+      } finally {
+        refreshInFlight = false;
+        refreshPromise = null;
       }
-      Portal.api.health().catch(() => {});
-      if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load staff dashboard", "error");
-    } finally {
-      refreshInFlight = false;
-    }
+    })();
+    return refreshPromise;
   };
 
   const bindActions = () => {
@@ -824,7 +829,12 @@
           Portal.toast(`${button.firstChild.textContent.trim()} recorded`);
           if (result?.state) state.today = { ...(state.today || {}), ...result.state };
           succeeded = true;
-          await load(true);
+          if (result?.state) {
+            renderProfile(state);
+            load(true).catch(() => {});
+          } else {
+            await load(true);
+          }
         } catch (error) {
           if (!Portal.isAbortLike(error)) Portal.toast(error.message || "Action failed", "error");
         } finally {

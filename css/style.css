@@ -301,6 +301,7 @@ h1, h2, p { margin-top: 0; }
   gap: 20px;
 }
 .content-grid.wide { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+#schedule .panel-title { flex-wrap: wrap; }
 .management-card-stack {
   display: grid;
   gap: 18px;

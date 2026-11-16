@@ -3,29 +3,19 @@
   if (!session) return;
   if (session.role !== "admin") location.href = "staff.html";
 
-  const CACHE_KEY = "spv2_admin_dashboard_last_good";
-  const SCORE_CACHE_KEY = "spv2_admin_scores_last_good";
+  const CACHE_KEY = "spv2_admin_operations_last_good_" + (session.loginId || session.staffId || "admin");
   const readCachedDashboard = () => {
     try { return JSON.parse(localStorage.getItem(CACHE_KEY) || "null"); } catch (error) { return null; }
   };
   const writeCachedDashboard = (data) => {
     try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch (error) {}
   };
-  const readCachedScores = () => {
-    try { return JSON.parse(localStorage.getItem(SCORE_CACHE_KEY) || "null"); } catch (error) { return null; }
-  };
-  const writeCachedScores = (data) => {
-    try { localStorage.setItem(SCORE_CACHE_KEY, JSON.stringify(data)); } catch (error) {}
-  };
-
   let dashboard = {};
   let refreshTimer;
   let refreshInFlight = false;
   let refreshPromise = null;
   let bootstrapPromise = null;
   let pollingStarted = false;
-  let lastScoreRefreshAt = 0;
-  let loggedPerformanceDetails = false;
 
   const empty = (message, span = 8) => `<tr><td colspan="${span}" class="empty-state">${message}</td></tr>`;
   const badge = (text, tone = "") => `<span class="badge ${tone}">${text || "--"}</span>`;
@@ -53,126 +43,18 @@
     const hour12 = hour % 12 || 12;
     return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
   };
-  const loginValue = (row) => String(Portal.pick(row || {}, ["login_id", "email"], "")).toLowerCase();
-  const hasScoreValue = (value) => {
-    const number = Number(value);
-    return Number.isFinite(number) && number > 0;
-  };
-  const hasNonZeroScores = (rows = []) => Portal.normalizeArray(rows).some((row) => {
-    row = row || {};
-    return [
-      "attendance_score",
-      "monthly_attendance_score",
-      "kpi_score",
-      "kpi_score_out_of_5",
-      "final_score",
-      "monthly_final_score",
-      "quarter_score",
-      "ranking_score"
-    ].some((key) => hasScoreValue(row[key]));
-  });
-  const canonicalPerformanceRows = (root) => Portal.normalizeArray(root.performance_details || root.performanceDetails || root.performance);
-  const scoreFieldKeys = [
-    "attendance_score",
-    "monthly_attendance_score",
-    "kpi_score",
-    "kpi_score_out_of_5",
-    "final_score",
-    "monthly_final_score",
-    "quarter_score",
-    "current_rank",
-    "rank"
-  ];
-  const payloadRoot = (payload) => payload?.data || payload?.dashboard || payload || {};
-  const hasScoreFields = (source = {}) => source && !Array.isArray(source) && typeof source === "object"
-    && scoreFieldKeys.some((key) => Object.prototype.hasOwnProperty.call(source, key));
-  const hasValidScorePayload = (payload) => {
-    const root = payloadRoot(payload);
-    if (canonicalPerformanceRows(root).length) return true;
-    if (Portal.normalizeArray(root.leaderboard || root.rankings).length) return true;
-    if (hasScoreFields(root)) return true;
-    return [
-      root.staff_score,
-      root.score,
-      root.performance_summary,
-      root.own_kpi,
-      root.kpi
-    ].some(hasScoreFields);
-  };
-  const hasRealScorePayload = (payload) => {
-    const root = payloadRoot(payload);
-    return hasNonZeroScores(canonicalPerformanceRows(root)) ||
-      hasNonZeroScores(root.leaderboard || root.rankings || root.topPerformers || root.worstPerformers) ||
-      hasNonZeroScores(root.staff_list || root.staff || root.kpi_list || root.kpis) ||
-      hasScoreValue(root.attendance_score) ||
-      hasScoreValue(root.kpi_score) ||
-      hasScoreValue(root.final_score) ||
-      hasScoreValue(root.quarter_score);
-  };
-  const hasRealScoresInDashboard = (value = {}) =>
-    hasNonZeroScores(value.performance) ||
-    hasNonZeroScores(value.top) ||
-    hasNonZeroScores(value.worst) ||
-    hasNonZeroScores(value.kpis);
-  const hasUsableCachedDashboard = () =>
-    hasRealScoresInDashboard(dashboard) ||
-    hasRealScoresInDashboard(readCachedScores()) ||
-    hasValidScorePayload(readCachedDashboard());
-  const isSoftRefreshError = (error) =>
-    Portal.isAbortLike(error) ||
-    /timeout|timed out|signal is aborted|aborted|cannot read properties of null/i.test(String(error?.message || error || ""));
-  const applyCachedScores = (target, cached) => {
-    if (!cached || !hasRealScoresInDashboard(cached)) return target;
-    target.performance = cached.performance || target.performance;
-    target.top = cached.top || target.top;
-    target.worst = cached.worst || target.worst;
-    target.kpis = cached.kpis || target.kpis;
-    target.staff = cached.staff || target.staff;
-    return target;
-  };
-  const cacheScoresFromDashboard = (value) => {
-    if (!hasRealScoresInDashboard(value)) return;
-    writeCachedScores({
-      performance: value.performance,
-      top: value.top,
-      worst: value.worst,
-      kpis: value.kpis,
-      staff: value.staff
-    });
-  };
-  const performanceIndex = (rows = []) => rows.reduce((map, row) => {
-    const key = loginValue(row);
-    if (key) map[key] = row;
-    return map;
-  }, {});
-  const enrichStaffWithPerformance = (staffRows = [], performanceRows = []) => {
-    const byLogin = performanceIndex(performanceRows);
-    return staffRows.map((row) => {
-      const perf = byLogin[loginValue(row)] || {};
-      return { ...row, ...perf, status: Portal.pick(row, ["status", "state"], Portal.pick(perf, ["status"], "")) };
-    });
-  };
-
   const normalizeDashboard = (data) => {
     const root = data?.data || data?.dashboard || data || {};
     const summary = root.summary || root.today_summary || {};
     const staffList = Portal.normalizeArray(root.staff_list || root.staff || root.staffList || root.users || root.staff_rows);
     const scheduleList = Portal.normalizeArray(root.schedule_list || root.schedules || root.schedule || root.schedule_rows);
     const attendanceEvents = Portal.normalizeArray(root.attendance_events || root.attendanceBoard || root.attendance || root.onlineStaff);
-    const kpiList = Portal.normalizeArray(root.kpi_list || root.kpis || root.kpi || root.monthlyKpi || root.kpi_rows);
-    const quarterScores = Portal.normalizeArray(root.quarter_scores || root.quarterScores || root.quarter);
-    const performanceDetails = canonicalPerformanceRows(root);
-    if (performanceDetails.length && !loggedPerformanceDetails) {
-      console.table(performanceDetails.slice(0, 10));
-      loggedPerformanceDetails = true;
-    }
     const nonWorkingCodes = new Set(["OFF", "AL", "UL", "SL", "NP", "LEAVE", "HOLIDAY", ""]);
     const nextShiftStaff = Portal.normalizeArray(root.next_shift_staff_all || root.nextShiftStaffAll || root.next_shift_staff || root.nextShiftStaff || root.next_shifts).filter((row) => {
       const status = String(Portal.pick(row || {}, ["status"], "")).toUpperCase();
       const shift = String(Portal.pick(row || {}, ["shift", "shift_code"], "")).toUpperCase();
       return status === "WORKING" && !nonWorkingCodes.has(shift);
     });
-    const dailyScores = Portal.normalizeArray(root.daily_scores || root.dailyScores);
     const auditLogs = Portal.normalizeArray(root.audit_logs || root.auditLogs || root.audit);
     const telegramLogs = Portal.normalizeArray(root.telegram_logs || root.telegramLogs);
     const absentToday = Portal.normalizeArray(root.absent_today || root.absentToday || summary.absent_today || summary.absentToday);
@@ -181,13 +63,6 @@
     const breakRows = hasBreakBoard
       ? Portal.normalizeArray(root.breakBoard || root.breaks)
       : attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() === "BREAK_START");
-    const rankingRows = performanceDetails.length ? performanceDetails : Portal.normalizeArray(root.topPerformers || root.leaderboard || root.rankings || quarterScores || kpiList);
-    const worstRows = performanceDetails.length ? performanceDetails.slice().reverse() : Portal.normalizeArray(root.worstPerformers || root.lowPerformers || root.needsCoaching);
-    const sortedWorst = worstRows.length
-      ? worstRows
-      : rankingRows.slice().sort((a, b) => Number(Portal.pick(a, ["final_score", "kpi_score", "kpi_score_out_of_5", "score", "kpi"], 0)) - Number(Portal.pick(b, ["final_score", "kpi_score", "kpi_score_out_of_5", "score", "kpi"], 0)));
-    const enrichedStaff = enrichStaffWithPerformance(staffList, performanceDetails);
-    const canonicalKpis = performanceDetails.length ? performanceDetails : kpiList;
     return {
       stats: root.stats || root.counters || {
         totalStaff: root.staff_count || summary.total_staff || staffList.length,
@@ -201,52 +76,20 @@
       },
       attendance: attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() !== "BREAK_START"),
       breaks: breakRows,
-      staff: enrichedStaff,
+      staff: staffList,
       schedules: scheduleList,
       nextShiftStaff,
-      kpis: canonicalKpis,
-      performance: performanceDetails,
       summaryDetails: root.summary_details || summary.summary_details || root.summaryDetails || {},
       absentToday,
-      top: rankingRows,
-      worst: sortedWorst,
-      dailyLogs: Portal.normalizeArray(root.dailyLogs || root.logs).length ? Portal.normalizeArray(root.dailyLogs || root.logs) : attendanceEvents.concat(dailyScores),
+      dailyLogs: Portal.normalizeArray(root.dailyLogs || root.logs).length ? Portal.normalizeArray(root.dailyLogs || root.logs) : attendanceEvents,
       telegramLogs,
       auditLogs,
       ipAllowlist
     };
   };
 
-  const mergeStableDashboard = (previous, next, rawData) => {
-    if (!previous || !Object.keys(previous).length) return next;
-    const root = payloadRoot(rawData);
-    const breaksSupplied = Object.prototype.hasOwnProperty.call(root, "breakBoard") || Object.prototype.hasOwnProperty.call(root, "breaks");
-    const keepArray = (key) => (!next[key] || !next[key].length) && previous[key]?.length ? previous[key] : next[key];
-    const merged = { ...next };
-    ["kpis", "performance", "top", "worst", "nextShiftStaff", "dailyLogs", "telegramLogs", "auditLogs"].forEach((key) => {
-      merged[key] = keepArray(key);
-    });
-    if ((!next.performance || !next.performance.length) && previous.performance?.length && hasNonZeroScores(previous.performance)) {
-      merged.performance = previous.performance;
-      merged.top = previous.top?.length ? previous.top : previous.performance;
-      merged.worst = previous.worst?.length ? previous.worst : previous.performance.slice().reverse();
-      merged.kpis = previous.performance;
-      if (next.staff?.length) merged.staff = enrichStaffWithPerformance(next.staff, previous.performance);
-    }
-    if (next.performance?.length && hasNonZeroScores(next.performance)) {
-      merged.staff = enrichStaffWithPerformance(next.staff || previous.staff || [], next.performance);
-      merged.kpis = next.performance;
-      merged.top = next.top?.length ? next.top : next.performance;
-      merged.worst = next.worst?.length ? next.worst : next.performance.slice().reverse();
-    }
-    if ((!merged.staff || !merged.staff.length) && previous.staff?.length) merged.staff = previous.staff;
-    if ((!merged.schedules || !merged.schedules.length) && previous.schedules?.length) merged.schedules = previous.schedules;
-    if ((!merged.attendance || !merged.attendance.length) && previous.attendance?.length) merged.attendance = previous.attendance;
-    if ((!merged.breaks || !merged.breaks.length) && previous.breaks?.length && !breaksSupplied) merged.breaks = previous.breaks;
-    return merged;
-  };
-
-  dashboard = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
+  const cachedDashboard = readCachedDashboard();
+  dashboard = Portal.validDashboard("admin", cachedDashboard) ? normalizeDashboard(cachedDashboard) : {};
 
   const summaryColumns = [
     { label: "Staff", keys: ["full_name", "name", "staff", "staffName"] },
@@ -412,15 +255,11 @@
     const query = document.getElementById("staffSearch")?.value.trim().toLowerCase() || "";
     const filtered = query ? rows.filter((row) => JSON.stringify(row).toLowerCase().includes(query)) : rows;
     if (!host) return;
-    if (!filtered.length) return host.innerHTML = empty("No staff records match the current filter.", 5);
+    if (!filtered.length) return host.innerHTML = empty("No staff records match the current filter.", 4);
     ensureViewButton("staffTable", "staff management", () => openTableModal("Staff Management", rows, [
       { label: "Name", keys: ["name", "full_name", "fullName", "staffName"] },
       { label: "Team", keys: ["department", "team"] },
       { label: "Role", keys: ["role", "position"] },
-      { label: "Attendance", keys: ["attendance_score", "monthly_attendance_score"] },
-      { label: "KPI", keys: ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore"] },
-      { label: "Final", keys: ["final_score", "score"] },
-      { label: "Rank", keys: ["rank", "position"] },
       { label: "Status", render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
     ]));
     host.innerHTML = filtered.slice(0, previewLimit).map((row) => `
@@ -428,7 +267,6 @@
         <td>${Portal.pick(row, ["name", "full_name", "fullName", "staffName"], "Staff")}</td>
         <td>${Portal.pick(row, ["role", "position"], "--")}</td>
         <td>${Portal.pick(row, ["department", "team"], "--")}</td>
-        <td>F ${Portal.pick(row, ["final_score", "score"], "0")} / A ${Portal.pick(row, ["attendance_score", "monthly_attendance_score"], "0")} / K ${Portal.pick(row, ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore"], "0")}</td>
         <td>${badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], "")))}</td>
       </tr>`).join("");
   };
@@ -507,57 +345,6 @@
       </tr>`).join("");
   };
 
-  const renderKpi = (rows) => {
-    const host = document.getElementById("kpiTable");
-    const performanceRows = dashboard.performance || [];
-    const sourceRows = performanceRows.length ? performanceRows : rows;
-    Portal.setText("kpiRows", `${sourceRows.length} rows`);
-    if (!host) return;
-    if (!sourceRows.length) return host.innerHTML = empty("No KPI rows received.", 5);
-    ensureViewButton("kpiTable", "monthly KPI management", () => openTableModal("Monthly KPI Management", sourceRows, [
-      { label: "Staff", keys: ["full_name", "name", "staffName", "staff"] },
-      { label: "Team", keys: ["team", "department"] },
-      { label: "Month", keys: ["kpi_month", "month", "period"] },
-      { label: "Attendance", keys: ["attendance_score", "monthly_attendance_score"] },
-      { label: "KPI", keys: ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore"] },
-      { label: "Final", keys: ["final_score", "score"] },
-      { label: "Quarter", keys: ["quarter_score", "quarterScore"] },
-      { label: "Rank", keys: ["rank", "position"] }
-    ]));
-    host.innerHTML = sourceRows.slice(0, previewLimit).map((row) => `
-      <tr>
-        <td>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</td>
-        <td>${Portal.pick(row, ["kpi_month", "month", "period"], new Date().toISOString().slice(0, 7))}</td>
-        <td>${Portal.pick(row, ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore"], "0")}</td>
-        <td>${Portal.pick(row, ["final_score", "score"], "0")}</td>
-        <td>${Portal.pick(row, ["rank", "position"], "--")}</td>
-      </tr>`).join("");
-  };
-
-  const renderLeaders = (id, rows) => {
-    const host = document.getElementById(id);
-    if (!host) return;
-    if (!rows.length) {
-      host.innerHTML = `<div class="empty-state">Ranking records are not available yet.</div>`;
-      return;
-    }
-    ensureViewButton(id, id === "topPerformers" ? "top performers" : "needs coaching", () => openTableModal(id === "topPerformers" ? "Top Performers" : "Needs Coaching", rows, [
-      { label: "Rank", keys: ["rank", "position"] },
-      { label: "Staff", keys: ["full_name", "name", "staffName", "staff"] },
-      { label: "Team", keys: ["department", "team"] },
-      { label: "Attendance", keys: ["attendance_score", "monthly_attendance_score"] },
-      { label: "KPI", keys: ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore"] },
-      { label: "Final", keys: ["final_score", "score"] },
-      { label: "Quarter", keys: ["quarter_score", "quarterScore"] }
-    ]));
-    host.innerHTML = rows.slice(0, previewLimit).map((row, index) => `
-      <div class="leader-row">
-        <span class="leader-rank">${Portal.pick(row, ["rank", "position"], index + 1)}</span>
-        <div><strong>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</strong><br><small>${Portal.pick(row, ["department", "team"], "")}</small></div>
-        <strong>${Portal.pick(row, ["ranking_score", "quarter_score", "final_score", "kpi_score", "kpi_score_out_of_5", "score", "kpi", "quarterScore"], "0")}</strong>
-      </div>`).join("");
-  };
-
   const renderLogs = (id, rows, columns, options = {}) => {
     const host = document.getElementById(id);
     if (!host) return;
@@ -586,7 +373,7 @@
       ["Missing", Number(Portal.pick(dashboard.stats, ["missingCheckout", "missingCheckOut"], 0))]
     ], "#28dcff");
 
-    drawKpiAnalytics("kpiChart", dashboard.performance?.length ? dashboard.performance : dashboard.kpis);
+
   };
 
   const prepareCanvas = (canvas, fallbackHeight = 240) => {
@@ -637,62 +424,6 @@
     });
   };
 
-  const drawKpiAnalytics = (id, rows) => {
-    const canvas = document.getElementById(id);
-    if (!canvas) return;
-    const { ctx, width, height } = prepareCanvas(canvas);
-    const scores = rows
-      .map((row) => Number(Portal.pick(row, ["kpi_score", "kpi_score_out_of_5", "kpi", "kpiScore", "score"], NaN)))
-      .filter((score) => Number.isFinite(score));
-
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "rgba(255,255,255,.08)";
-    ctx.fillRect(42, 74, width - 62, height - 120);
-
-    if (!scores.length) {
-      ctx.fillStyle = "#91a8bb";
-      ctx.font = "16px system-ui";
-      ctx.fillText("No KPI records received", 54, 64);
-      return;
-    }
-
-    const avg = scores.reduce((sum, score) => sum + score, 0) / scores.length;
-    const high = Math.max(...scores);
-    const low = Math.min(...scores);
-    const buckets = [0, 0, 0, 0, 0];
-    scores.forEach((score) => {
-      const index = Math.min(4, Math.max(0, Math.floor(score === 5 ? 4 : score)));
-      buckets[index] += 1;
-    });
-
-    ctx.fillStyle = "#dff7ff";
-    ctx.font = "800 15px system-ui";
-    ctx.fillText(`Avg ${avg.toFixed(2)}`, 54, 38);
-    ctx.fillText(`High ${high.toFixed(2)}`, 190, 38);
-    ctx.fillText(`Low ${low.toFixed(2)}`, 326, 38);
-
-    const labels = ["0-1", "1-2", "2-3", "3-4", "4-5"];
-    const max = Math.max(...buckets, 1);
-    const gap = 16;
-    const barWidth = Math.max(34, (width - 92 - gap * (buckets.length - 1)) / buckets.length);
-    buckets.forEach((count, index) => {
-      const x = 42 + index * (barWidth + gap);
-      const h = Math.max(4, (count / max) * (height - 146));
-      const y = height - 46 - h;
-      const gradient = ctx.createLinearGradient(0, y, 0, height - 46);
-      gradient.addColorStop(0, "#54f5a8");
-      gradient.addColorStop(1, "rgba(84,245,168,.16)");
-      ctx.fillStyle = gradient;
-      ctx.fillRect(x, y, barWidth, h);
-      ctx.fillStyle = "#dff7ff";
-      ctx.font = "700 13px system-ui";
-      ctx.fillText(String(count), x, y - 7);
-      ctx.fillStyle = "#91a8bb";
-      ctx.font = "12px system-ui";
-      ctx.fillText(labels[index], x, height - 24);
-    });
-  };
-
   const renderAll = () => {
     renderStats(dashboard.stats);
     renderAttendance(dashboard.attendance);
@@ -700,9 +431,6 @@
     renderStaff(dashboard.staff);
     renderSchedules(dashboard.schedules);
     renderNextShiftStaff(dashboard.nextShiftStaff || []);
-    renderKpi(dashboard.kpis);
-    renderLeaders("topPerformers", dashboard.top);
-    renderLeaders("worstPerformers", dashboard.worst);
     renderLogs("dailyLogs", dashboard.dailyLogs, [
       { render: (row) => Portal.formatTime(Portal.pick(row, ["created_at", "time", "timestamp", "createdAt"], "")) },
       { keys: ["full_name", "name", "staffName", "staff"] },
@@ -733,42 +461,14 @@
     refreshPromise = (async () => {
       if (!silent) Portal.setStatus(null, "Loading");
       try {
-        const data = await Portal.api.dashboard("admin", { month: "" });
-        const root = data?.data || data?.dashboard || data || {};
-        const incomingPerformance = canonicalPerformanceRows(root);
-        const hadPerformance = dashboard.performance?.length;
-        const scorePayloadValid = hasValidScorePayload(data);
-        const scorePayloadReal = hasRealScorePayload(data);
-        const cachedRealScores = hasRealScoresInDashboard(dashboard);
-        const allowScoreRefresh = !silent || !lastScoreRefreshAt || Date.now() - lastScoreRefreshAt >= 60000;
-        const nextDashboard = normalizeDashboard(data);
-        if ((!allowScoreRefresh || !scorePayloadValid || (cachedRealScores && !scorePayloadReal)) && cachedRealScores) {
-          applyCachedScores(nextDashboard, dashboard);
-          applyCachedScores(nextDashboard, readCachedScores());
-          if (nextDashboard.performance?.length) {
-            nextDashboard.staff = enrichStaffWithPerformance(nextDashboard.staff?.length ? nextDashboard.staff : dashboard.staff, nextDashboard.performance);
-          }
-        }
-        dashboard = mergeStableDashboard(dashboard, nextDashboard, data);
-        if (allowScoreRefresh && scorePayloadValid && (!cachedRealScores || scorePayloadReal)) {
-          lastScoreRefreshAt = Date.now();
-          cacheScoresFromDashboard(dashboard);
-        }
-        if ((scorePayloadValid && (!cachedRealScores || scorePayloadReal)) || !hadPerformance) writeCachedDashboard(data);
+        const data = await Portal.api.dashboard("admin", { month: "", dashboard_mode: "operations" });
+        dashboard = normalizeDashboard(data);
+        writeCachedDashboard(data);
         renderAll();
-        Portal.setStatus(true, "Live");
+        Portal.dashboardReady();
       } catch (error) {
-        const hasCache = hasUsableCachedDashboard();
-        if (!Object.keys(dashboard || {}).length) {
-          dashboard = applyCachedScores(normalizeDashboard(readCachedDashboard() || {}), readCachedScores());
-          renderAll();
-        }
-        if (isSoftRefreshError(error) || hasCache) {
-          Portal.setStatus(true, "Live");
-          return;
-        }
-        Portal.api.health().catch(() => {});
-        if (!/invalid action/i.test(String(error.message))) Portal.toast(error.message || "Unable to load admin dashboard", "error");
+        if (dashboard.stats) renderAll();
+        Portal.dashboardFailure(Boolean(dashboard.stats), () => load(false), error);
       } finally {
         refreshInFlight = false;
         refreshPromise = null;
@@ -1248,7 +948,6 @@
   const bootstrap = () => {
     if (bootstrapPromise) return bootstrapPromise;
     bootstrapPromise = Promise.allSettled([
-      Portal.api.health().catch(() => {}),
       load()
     ]).finally(startPolling);
     return bootstrapPromise;

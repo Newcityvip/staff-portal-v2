@@ -91,6 +91,32 @@
     setTimeout(() => node.remove(), 4200);
   };
 
+  // Validate operational fields, not whether schedules or score lists are non-empty.
+  const validDashboard = (role, payload) => {
+    const root = payload?.data || payload?.dashboard || payload;
+    const record = (value) => value && typeof value === "object" && !Array.isArray(value);
+    if (!record(root) || payload?.ok === false || root.ok === false || !(payload?.ok === true || root.ok === true)) return false;
+    if (role === "staff") return record(root.staff) && record(root.attendance_state) &&
+      Object.prototype.hasOwnProperty.call(root, "today_schedule") &&
+      (root.today_schedule === null || record(root.today_schedule)) && Array.isArray(root.monthly_schedule);
+    return record(root.summary) && ["staff_list", "schedule_list", "attendance_events"].every((key) => Array.isArray(root[key]));
+  };
+
+  const dashboardFailure = (hasData, retry, error) => {
+    setStatus(false, hasData ? "Stale data - Retry" : "Dashboard unavailable - Retry");
+    const status = document.getElementById("connectionStatus");
+    if (status) status.title = error?.message || "Unable to refresh dashboard";
+    const button = document.getElementById("dashboardRetry");
+    if (button) { button.hidden = false; button.onclick = () => retry(); }
+  };
+  const dashboardReady = () => {
+    setStatus(true, "Live");
+    const button = document.getElementById("dashboardRetry");
+    if (button) button.hidden = true;
+    const status = document.getElementById("connectionStatus");
+    if (status) status.removeAttribute("title");
+  };
+
   const buildHeaders = (session) => {
     const headers = { "Content-Type": "application/json", "Accept": "application/json" };
     if (session?.token) headers.Authorization = `Bearer ${session.token}`;
@@ -304,7 +330,7 @@
       let lastError;
       for (const action of actions) {
         try {
-          const data = await this.call(action, payload, { endpoints: [API_BASE], timeoutMs: 15000, retryRead: true });
+          const data = await this.call(action, payload, { endpoints: [API_BASE], timeoutMs: 15000, retryRead: true, updateStatus: false });
           if (data?.error && /invalid action/i.test(String(data.error))) {
             lastError = new Error(data.error);
             continue;
@@ -314,6 +340,7 @@
             continue;
           }
           if (data?.ok === false) throw new Error(data.message || data.error || "Dashboard request failed");
+          if (!validDashboard(role, data)) throw new Error("Invalid dashboard response. Please retry.");
           return data;
         } catch (error) {
           if (/invalid action/i.test(String(error.message))) {
@@ -489,6 +516,9 @@
     percent,
     setText,
     setStatus,
+    validDashboard,
+    dashboardFailure,
+    dashboardReady,
     toast,
     isAbortLike,
     getSession,

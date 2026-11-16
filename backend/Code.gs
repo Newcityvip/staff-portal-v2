@@ -873,6 +873,22 @@ function getStaffDashboard(data) {
 
   const today = todayDateForTimezone(getTeamTimezone(staff.team));
   const month = resolveScoreMonth(data.month);
+  // Opt-in read mode; full reporting responses remain unchanged for other consumers.
+  if (data.dashboard_mode === "operations") {
+    return {
+      ok: true,
+      dashboard_mode: "operations",
+      selected_month: month,
+      staff: staff,
+      today: today,
+      today_schedule: getScheduleForDate(staff, today),
+      tomorrow_schedule: getScheduleForDate(staff, addDays(today, 1)),
+      attendance_state: getAttendanceState(staff, today),
+      monthly_schedule: getMonthlySchedule(staff, month),
+      next_7_schedule: getNextSchedule(staff, today, 7),
+      upcoming_schedule: getNextSchedule(staff, today, 0)
+    };
+  }
   const canonicalScores = getCanonicalScores(month, staff.team);
   const performanceDetails = canonicalScores.rows;
   const leaderboard = performanceDetails.map(function (row) {
@@ -1795,6 +1811,34 @@ function getAdminDashboardFull(data) {
   scheduleList = filterRowsForAdmin(scheduleList, access, staffIndex);
   const attendanceEvents = filterRowsForAdmin(listAttendanceRows(clean(data.date) || today, safeNumber(data.limit, 250)), access, staffIndex);
   const breakBoard = getActiveBreakRows(clean(data.date) || today, access, staffIndex);
+  if (data.dashboard_mode === "operations") {
+    const summary = getTodaySummary(today, access.allowed_team);
+    summary.total_staff = staffList.filter(function (row) { return safeUpper(row.status) === "ACTIVE"; }).length;
+    summary.online_staff = summary.currently_working;
+    const nextShiftStaff = getNextShiftStaffRows(access, staffIndex);
+    return {
+      ok: true,
+      dashboard_mode: "operations",
+      selected_month: month,
+      today: today,
+      summary: summary,
+      today_summary: summary,
+      staff_count: summary.total_staff,
+      staff_list: staffList,
+      schedule_list: scheduleList,
+      next_shift_staff: nextShiftStaff.slice(0, 5),
+      next_shift_staff_all: nextShiftStaff,
+      nextShiftStaffAll: nextShiftStaff,
+      attendance_events: attendanceEvents,
+      breakBoard: breakBoard,
+      breaks: breakBoard,
+      absent_today: summary.summary_details.absent_today || [],
+      absent_today_count: summary.absent_today_count || 0,
+      audit_logs: filterRowsForAdmin(listAuditRows(safeNumber(data.limit, 100)), access, staffIndex),
+      telegram_logs: filterRowsForAdmin(listTelegramRows(safeNumber(data.limit, 100)), access, staffIndex),
+      ip_allowlist: listIpRows()
+    };
+  }
   const canonicalScores = getCanonicalScores(month, access.allowed_team);
   const performanceDetails = canonicalScores.rows;
   const allDailyScoresForMonth = filterRowsForAdmin(canonicalScores.dailyRows, access, staffIndex);

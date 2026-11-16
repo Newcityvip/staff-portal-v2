@@ -194,8 +194,11 @@
               credentials: "omit",
               signal: timeout.controller.signal
             });
-            clearTimeout(timeout.timer);
+            // Dashboard reads must remain bounded while receiving the body too.
+            // Preserve the existing deadline handling for single-shot writes.
+            if (!options.retryRead) clearTimeout(timeout.timer);
             const data = await safeJson(response);
+            clearTimeout(timeout.timer);
             if (response.status === 401 || response.status === 403) {
               Portal.clearSession();
               throw new Error(data.message || "Session expired");

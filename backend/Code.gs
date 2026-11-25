@@ -23,12 +23,6 @@ const TG_TRIGGER_HANDLER = "processTelegramQueue";
 
 let REQUEST_CACHE = { values: {}, settings: null };
 
-function withRosterLock_(work) {
-  const lock = LockService.getScriptLock();
-  lock.waitLock(15000);
-  try { return work(); } finally { try { SpreadsheetApp.flush(); } finally { lock.releaseLock(); } }
-}
-
 function doGet(e) {
   return jsonOut({ ok: true, app: "Staff Performance Portal V2 API", time: nowDateTime() });
 }
@@ -66,9 +60,6 @@ function doPost(e) {
         break;
       case "get_schedule_list":
         result = getScheduleList(body);
-        break;
-      case "apply_verified_leave":
-        result = applyVerifiedLeave(body);
         break;
       case "upload_schedule_csv":
         result = uploadScheduleCsv(body);
@@ -1985,10 +1976,6 @@ function getDailyScores(data) {
 }
 
 function uploadScheduleCsv(data) {
-  return withRosterLock_(function () { return uploadScheduleCsvLocked_(data); });
-}
-
-function uploadScheduleCsvLocked_(data) {
   const ip = clean(data.ip);
   const ipError = requireAllowedIp(ip);
   if (ipError) return ipError;
@@ -2136,10 +2123,6 @@ function uploadScheduleCsvLocked_(data) {
 }
 
 function updateSingleStaffSchedule(data) {
-  return withRosterLock_(function () { return updateSingleStaffScheduleLocked_(data); });
-}
-
-function updateSingleStaffScheduleLocked_(data) {
   const ip = clean(data.ip);
   const ipError = requireAllowedIp(ip);
   if (ipError) return ipError;

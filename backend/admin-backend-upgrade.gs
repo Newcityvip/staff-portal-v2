@@ -48,10 +48,6 @@ function getAdminDashboard(data) {
 }
 
 function importSchedule(data) {
-  return withRosterLock_(function () { return importScheduleLocked_(data); });
-}
-
-function importScheduleLocked_(data) {
   const ip = clean(data.ip);
   if (!isAllowedIP(ip)) return { ok: false, message: "IP not allowed", ip: ip };
 

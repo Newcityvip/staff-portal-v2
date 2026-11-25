@@ -66,65 +66,75 @@ function importSchedule(data) {
     };
   }
 
-  const sheet = sh(SHEETS.SCHEDULE);
-  const existing = sheet.getDataRange().getValues();
-  const existingMap = {};
-  for (let i = 1; i < existing.length; i++) {
-    existingMap[normalizeDateKey(existing[i][2]) + "|" + clean(existing[i][4]).toUpperCase()] = i + 1;
-  }
-
-  let inserted = 0;
-  let updated = 0;
-  const skipped = [];
-
-  rows.forEach(function (input, index) {
-    const row = normalizeScheduleImportRow(input);
-    if (!row.login_id || !row.schedule_date) {
-      skipped.push({ row: index + 2, reason: "Missing login_id or schedule_date" });
-      return;
+  return withRosterWriter_(function (book,beginWrite) {
+    const sheet = sh(SHEETS.SCHEDULE);
+    const isProtected = protectedRosterDays_(book);
+    const existing = sheet.getDataRange().getValues();
+    const existingMap = {};
+    for (let i = 1; i < existing.length; i++) {
+      existingMap[normalizeDateKey(existing[i][2]) + "|" + clean(existing[i][4]).toUpperCase()] = i + 1;
     }
 
-    const staff = staffByLogin[row.login_id.toUpperCase()];
-    if (!staff) {
-      skipped.push({ row: index + 2, reason: "Staff not found: " + row.login_id });
-      return;
-    }
+    let inserted = 0;
+    let updated = 0;
+    const skipped = [];
 
-    const scheduleMonth = row.schedule_month || normalizeDateKey(row.schedule_date).substring(0, 7);
-    const record = [
-      row.schedule_id || makeId("SCH"),
-      scheduleMonth,
-      normalizeDateKey(row.schedule_date),
-      row.staff_id || staff.staff_id,
-      staff.login_id,
-      row.full_name || staff.full_name,
-      row.team || staff.team,
-      safeUpper(row.shift_code || "GENERAL"),
-      normalizeSheetTime(row.start_time || "09:00:00"),
-      normalizeSheetTime(row.end_time || "18:00:00"),
-      safeUpper(row.status || "WORKING")
-    ];
+    rows.forEach(function (input, index) {
+      const row = normalizeScheduleImportRow(input);
+      if (!row.login_id || !row.schedule_date) {
+        skipped.push({ row: index + 2, reason: "Missing login_id or schedule_date" });
+        return;
+      }
 
-    const key = record[2] + "|" + clean(record[4]).toUpperCase();
-    if (existingMap[key]) {
-      sheet.getRange(existingMap[key], 1, 1, record.length).setValues([record]);
-      updated++;
-    } else {
-      sheet.appendRow(record);
-      inserted++;
-    }
+      const staff = staffByLogin[row.login_id.toUpperCase()];
+      if (!staff) {
+        skipped.push({ row: index + 2, reason: "Staff not found: " + row.login_id });
+        return;
+      }
+
+      const scheduleMonth = row.schedule_month || normalizeDateKey(row.schedule_date).substring(0, 7);
+      const record = [
+        row.schedule_id || makeId("SCH"),
+        scheduleMonth,
+        normalizeDateKey(row.schedule_date),
+        row.staff_id || staff.staff_id,
+        staff.login_id,
+        row.full_name || staff.full_name,
+        row.team || staff.team,
+        safeUpper(row.shift_code || "GENERAL"),
+        normalizeSheetTime(row.start_time || "09:00:00"),
+        normalizeSheetTime(row.end_time || "18:00:00"),
+        safeUpper(row.status || "WORKING")
+      ];
+
+      const key = record[2] + "|" + clean(record[4]).toUpperCase();
+      const oldIndex = existingMap[key];
+      if (isProtected(staff.staff_id,staff.login_id,record[2]) || isProtected(record[3],record[4],record[2]) ||
+          (oldIndex && isProtected(existing[oldIndex-1][3],record[4],record[2]))) {
+        skipped.push({row:index+2,reason:"Approved leave protects " + record[2]});
+        return;
+      }
+      beginWrite();
+      if (existingMap[key]) {
+        sheet.getRange(existingMap[key], 1, 1, record.length).setValues([record]);
+        updated++;
+      } else {
+        sheet.appendRow(record);
+        inserted++;
+      }
+    });
+
+    clearSheetCache(SHEETS.SCHEDULE);
+    appendAudit("ADMIN", adminLoginId, adminLoginId, "IMPORT_SCHEDULE", "SCHEDULE", "", "", JSON.stringify({ inserted: inserted, updated: updated, skipped: skipped.length }), ip, clean(data.fileName));
+
+    return {
+      ok: true,
+      message: "Schedule import complete",
+      inserted: inserted,
+      updated: updated,
+      skipped: skipped
+    };
   });
-
-  clearSheetCache(SHEETS.SCHEDULE);
-  appendAudit("ADMIN", adminLoginId, adminLoginId, "IMPORT_SCHEDULE", "SCHEDULE", "", "", JSON.stringify({ inserted: inserted, updated: updated, skipped: skipped.length }), ip, clean(data.fileName));
-
-  return {
-    ok: true,
-    message: "Schedule import complete",
-    inserted: inserted,
-    updated: updated,
-    skipped: skipped
-  };
 }
 
 function normalizeScheduleImportRow(input) {

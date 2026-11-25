@@ -58,6 +58,10 @@ function doPost(e) {
       case "get_staff_list":
         result = getStaffList(body);
         break;
+      case "v2_dispatch_verified_leave":
+      case "v2_verify_leave_receipt":
+        result = verifiedRosterRequest_(body);
+        break;
       case "get_schedule_list":
         result = getScheduleList(body);
         break;
@@ -1995,131 +1999,142 @@ function uploadScheduleCsv(data) {
     staffByName[normalizePersonName(staff.full_name)] = staff;
   });
 
-  const sheet = sh(SHEETS.SCHEDULE);
-  sheet.getRange("I:J").setNumberFormat("@");
-  sheet.getRange(2, 9, sheet.getMaxRows(), 2).setNumberFormat("@");
-  const existing = sheet.getDataRange().getValues();
-  const existingMap = {};
-  for (let i = 1; i < existing.length; i++) {
-    existingMap[normalizeDateKey(existing[i][2]) + "|" + clean(existing[i][4]).toLowerCase()] = i + 1;
-  }
-
-  let inserted = 0;
-  let updated = 0;
-  let failed = 0;
-  const errors = [];
-  const insertRecords = [];
-  const updateRecords = [];
-  const frontendDebugRows = Array.isArray(data.frontend_first_10_rows) ? data.frontend_first_10_rows.slice(0, 10) : [];
-  const backendReceivedDebugRows = [];
-  const backendWrittenDebugRows = [];
-  const pendingInsertIndex = {};
-
-  rows.forEach(function (raw, index) {
-    const row = normalizeScheduleImportRow(raw);
-    if (backendReceivedDebugRows.length < 10) {
-      backendReceivedDebugRows.push({
-        shift_code: row.shift_code,
-        start_time: row.start_time,
-        end_time: row.end_time,
-        status: row.status
-      });
+  return withRosterWriter_(function (book,beginWrite) {
+    const sheet = sh(SHEETS.SCHEDULE);
+    const existing = sheet.getDataRange().getValues();
+    const isProtected = protectedRosterDays_(book);
+    const protectedDates = [];
+    const existingMap = {};
+    for (let i = 1; i < existing.length; i++) {
+      existingMap[normalizeDateKey(existing[i][2]) + "|" + clean(existing[i][4]).toLowerCase()] = i + 1;
     }
 
-    if (!row.schedule_date) {
-      failed++;
-      errors.push({ row: index + 2, message: "Missing schedule_date" });
-      return;
-    }
+    let inserted = 0;
+    let updated = 0;
+    let failed = 0;
+    const errors = [];
+    const insertRecords = [];
+    const updateRecords = [];
+    const frontendDebugRows = Array.isArray(data.frontend_first_10_rows) ? data.frontend_first_10_rows.slice(0, 10) : [];
+    const backendReceivedDebugRows = [];
+    const backendWrittenDebugRows = [];
+    const pendingInsertIndex = {};
 
-    const staff = staffByLogin[clean(row.login_id).toLowerCase()] || staffByName[normalizePersonName(row.full_name)];
-    if (!staff || !staff.login_id) {
-      failed++;
-      errors.push({ row: index + 2, message: "Staff not found: " + (row.full_name || row.login_id || "blank") });
-      return;
-    }
-    if (access.allowed_team && clean(staff.team).toLowerCase() !== clean(access.allowed_team).toLowerCase()) {
-      failed++;
-      errors.push({ row: index + 2, message: "Staff outside allowed team: " + clean(staff.full_name) });
-      return;
-    }
+    rows.forEach(function (raw, index) {
+      const row = normalizeScheduleImportRow(raw);
+      if (backendReceivedDebugRows.length < 10) {
+        backendReceivedDebugRows.push({
+          shift_code: row.shift_code,
+          start_time: row.start_time,
+          end_time: row.end_time,
+          status: row.status
+        });
+      }
 
-    const scheduleDate = normalizeDateKey(row.schedule_date);
-    if (!scheduleDate) {
-      failed++;
-      errors.push({ row: index + 2, message: "Invalid schedule_date" });
-      return;
+      if (!row.schedule_date) {
+        failed++;
+        errors.push({ row: index + 2, message: "Missing schedule_date" });
+        return;
+      }
+
+      const staff = staffByLogin[clean(row.login_id).toLowerCase()] || staffByName[normalizePersonName(row.full_name)];
+      if (!staff || !staff.login_id) {
+        failed++;
+        errors.push({ row: index + 2, message: "Staff not found: " + (row.full_name || row.login_id || "blank") });
+        return;
+      }
+      if (access.allowed_team && clean(staff.team).toLowerCase() !== clean(access.allowed_team).toLowerCase()) {
+        failed++;
+        errors.push({ row: index + 2, message: "Staff outside allowed team: " + clean(staff.full_name) });
+        return;
+      }
+
+      const scheduleDate = normalizeDateKey(row.schedule_date);
+      if (!scheduleDate) {
+        failed++;
+        errors.push({ row: index + 2, message: "Invalid schedule_date" });
+        return;
+      }
+
+      const oldIndex = existingMap[scheduleDate + "|" + clean(staff.login_id).toLowerCase()];
+      if (isProtected(staff.staff_id,staff.login_id,scheduleDate) ||
+          isProtected(row.staff_id,staff.login_id,scheduleDate) ||
+          (oldIndex && isProtected(existing[oldIndex-1][3],staff.login_id,scheduleDate))) {
+        protectedDates.push({row:index+2,date:scheduleDate,reason:"Approved leave"});
+        return;
+      }
+      const range = parseScheduleTimeRange(row.time_range || row.shift_time || row.working_hours || "");
+      const status = safeUpper(row.status || "WORKING");
+      const isWorking = status === "WORKING";
+      const scheduleMonth = clean(row.schedule_month) || scheduleDate.substring(0, 7);
+      const record = [
+        clean(row.schedule_id) || makeId("SCH"),
+        scheduleMonth,
+        scheduleDate,
+        clean(row.staff_id) || clean(staff.staff_id),
+        clean(staff.login_id),
+        clean(row.full_name) || clean(staff.full_name),
+        clean(row.team) || clean(staff.team),
+        safeUpper(row.shift_code || "GENERAL"),
+        isWorking ? normalizeScheduleTimeForSheet(row.start_time || range.start_time || "09:00:00") : "",
+        isWorking ? normalizeScheduleTimeForSheet(row.end_time || range.end_time || "18:00:00") : "",
+        status,
+        adminLoginId,
+        nowDateTime(),
+        clean(row.notes)
+      ];
+
+      record[8] = forcePlainTimeText(record[8]);
+      record[9] = forcePlainTimeText(record[9]);
+
+      if (backendWrittenDebugRows.length < 10) {
+        backendWrittenDebugRows.push({
+          shift_code: record[7],
+          start_time: record[8],
+          end_time: record[9],
+          status: record[10]
+        });
+      }
+
+      const key = record[2] + "|" + clean(record[4]).toLowerCase();
+      if (existingMap[key] && existingMap[key] > 0) {
+        updateRecords.push({ rowIndex: existingMap[key], values: record });
+        updated++;
+      } else if (pendingInsertIndex[key] != null) {
+        insertRecords[pendingInsertIndex[key]] = record;
+        updated++;
+      } else {
+        pendingInsertIndex[key] = insertRecords.length;
+        insertRecords.push(record);
+        inserted++;
+      }
+    });
+
+    beginWrite();
+    if (insertRecords.length) {
+      const startRow = sheet.getLastRow() + 1;
+      sheet.getRange(startRow, 9, insertRecords.length, 2).setNumberFormat("@");
+      sheet.getRange(startRow, 1, insertRecords.length, insertRecords[0].length).setValues(insertRecords);
     }
+    writeScheduleUpdateRecords(sheet, updateRecords);
 
-    const range = parseScheduleTimeRange(row.time_range || row.shift_time || row.working_hours || "");
-    const status = safeUpper(row.status || "WORKING");
-    const isWorking = status === "WORKING";
-    const scheduleMonth = clean(row.schedule_month) || scheduleDate.substring(0, 7);
-    const record = [
-      clean(row.schedule_id) || makeId("SCH"),
-      scheduleMonth,
-      scheduleDate,
-      clean(row.staff_id) || clean(staff.staff_id),
-      clean(staff.login_id),
-      clean(row.full_name) || clean(staff.full_name),
-      clean(row.team) || clean(staff.team),
-      safeUpper(row.shift_code || "GENERAL"),
-      isWorking ? normalizeScheduleTimeForSheet(row.start_time || range.start_time || "09:00:00") : "",
-      isWorking ? normalizeScheduleTimeForSheet(row.end_time || range.end_time || "18:00:00") : "",
-      status,
-      adminLoginId,
-      nowDateTime(),
-      clean(row.notes)
-    ];
-
-    record[8] = forcePlainTimeText(record[8]);
-    record[9] = forcePlainTimeText(record[9]);
-
-    if (backendWrittenDebugRows.length < 10) {
-      backendWrittenDebugRows.push({
-        shift_code: record[7],
-        start_time: record[8],
-        end_time: record[9],
-        status: record[10]
-      });
-    }
-
-    const key = record[2] + "|" + clean(record[4]).toLowerCase();
-    if (existingMap[key] && existingMap[key] > 0) {
-      updateRecords.push({ rowIndex: existingMap[key], values: record });
-      updated++;
-    } else if (pendingInsertIndex[key] != null) {
-      insertRecords[pendingInsertIndex[key]] = record;
-      updated++;
-    } else {
-      pendingInsertIndex[key] = insertRecords.length;
-      insertRecords.push(record);
-      inserted++;
-    }
+    clearSheetCache(SHEETS.SCHEDULE);
+    appendAudit("ADMIN", adminLoginId, adminLoginId, "UPLOAD_SCHEDULE_CSV", "SCHEDULE", "", "", JSON.stringify({ inserted, updated, failed, skipped }), ip, clean(data.fileName));
+    return {
+      ok: true,
+      message: "Schedule CSV processed",
+      inserted: inserted,
+      updated: updated,
+      failed: failed,
+      skipped: skipped + protectedDates.length,
+      protected_dates: protectedDates,
+      errors: errors,
+      frontend_first_10_rows: frontendDebugRows,
+      backend_first_10_received_rows: backendReceivedDebugRows,
+      backend_first_10_written_rows: backendWrittenDebugRows,
+      written_debug_rows: backendWrittenDebugRows
+    };
   });
-
-  if (insertRecords.length) {
-    const startRow = sheet.getLastRow() + 1;
-    sheet.getRange(startRow, 9, insertRecords.length, 2).setNumberFormat("@");
-    sheet.getRange(startRow, 1, insertRecords.length, insertRecords[0].length).setValues(insertRecords);
-  }
-  writeScheduleUpdateRecords(sheet, updateRecords);
-
-  clearSheetCache(SHEETS.SCHEDULE);
-  appendAudit("ADMIN", adminLoginId, adminLoginId, "UPLOAD_SCHEDULE_CSV", "SCHEDULE", "", "", JSON.stringify({ inserted, updated, failed, skipped }), ip, clean(data.fileName));
-  return {
-    ok: true,
-    message: "Schedule CSV processed",
-    inserted: inserted,
-    updated: updated,
-    failed: failed,
-    skipped: skipped,
-    errors: errors,
-    frontend_first_10_rows: frontendDebugRows,
-    backend_first_10_received_rows: backendReceivedDebugRows,
-    backend_first_10_written_rows: backendWrittenDebugRows,
-    written_debug_rows: backendWrittenDebugRows
-  };
 }
 
 function updateSingleStaffSchedule(data) {
@@ -2139,64 +2154,71 @@ function updateSingleStaffSchedule(data) {
   const shiftRule = isNonWorking ? { ok: false } : getShiftRule(shiftCode);
   if (!isNonWorking && !shiftRule.ok) return { ok: false, message: "Invalid shift_code: " + shiftCode };
 
-  const sheet = sh(SHEETS.SCHEDULE);
-  const values = sheet.getDataRange().getValues();
-  const headers = values[0] || [];
-  const headerMap = buildHeaderMap(headers);
-  const requiredHeaders = ["login_id", "schedule_date", "shift_code", "start_time", "end_time", "status", "uploaded_by", "uploaded_at", "notes"];
-  for (let i = 0; i < requiredHeaders.length; i++) {
-    if (headerMap[requiredHeaders[i]] == null) return { ok: false, message: "Missing schedule header: " + requiredHeaders[i] };
-  }
-
-  let targetRow = -1;
-  for (let i = 1; i < values.length; i++) {
-    const row = values[i];
-    const rowLoginId = clean(valueByHeader(row, headerMap, ["login_id"], null)).toLowerCase();
-    const rowDate = normalizeDateKey(valueByHeader(row, headerMap, ["schedule_date"], null));
-    if (rowLoginId === loginId.toLowerCase() && rowDate === scheduleDate) {
-      targetRow = i + 1;
-      break;
+  return withRosterWriter_(function (book,beginWrite) {
+    const sheet = sh(SHEETS.SCHEDULE);
+    const values = sheet.getDataRange().getValues();
+    const headers = values[0] || [];
+    const headerMap = buildHeaderMap(headers);
+    const requiredHeaders = ["login_id", "schedule_date", "shift_code", "start_time", "end_time", "status", "uploaded_by", "uploaded_at", "notes"];
+    for (let i = 0; i < requiredHeaders.length; i++) {
+      if (headerMap[requiredHeaders[i]] == null) return { ok: false, message: "Missing schedule header: " + requiredHeaders[i] };
     }
-  }
-  if (targetRow === -1) return { ok: false, message: "Matching schedule row not found" };
 
-  const startTime = isNonWorking ? "" : normalizeScheduleTimeForSheet(shiftRule.start_time);
-  const endTime = isNonWorking ? "" : normalizeScheduleTimeForSheet(shiftRule.end_time);
-  const status = isNonWorking ? shiftCode : "WORKING";
-  const updates = {
-    shift_code: shiftCode,
-    start_time: startTime,
-    end_time: endTime,
-    status: status,
-    uploaded_by: "Admin",
-    uploaded_at: nowDateTime(),
-    notes: "Schedule updated from admin panel"
-  };
+    let targetRow = -1;
+    for (let i = 1; i < values.length; i++) {
+      const row = values[i];
+      const rowLoginId = clean(valueByHeader(row, headerMap, ["login_id"], null)).toLowerCase();
+      const rowDate = normalizeDateKey(valueByHeader(row, headerMap, ["schedule_date"], null));
+      if (rowLoginId === loginId.toLowerCase() && rowDate === scheduleDate) {
+        targetRow = i + 1;
+        break;
+      }
+    }
+    if (targetRow === -1) return { ok: false, message: "Matching schedule row not found" };
 
-  Object.keys(updates).forEach(function (key) {
-    const column = headerMap[key] + 1;
-    if (key === "start_time" || key === "end_time") sheet.getRange(targetRow, column).setNumberFormat("@");
-    sheet.getRange(targetRow, column).setValue(updates[key]);
+    const staffId = valueByHeader(values[targetRow-1],headerMap,["staff_id"],null);
+    if (protectedRosterDays_(book)(staffId,loginId,scheduleDate)) {
+      return {ok:false,message:"Approved leave protects this date. Reconcile the leave decision before editing the roster."};
+    }
+    const startTime = isNonWorking ? "" : normalizeScheduleTimeForSheet(shiftRule.start_time);
+    const endTime = isNonWorking ? "" : normalizeScheduleTimeForSheet(shiftRule.end_time);
+    const status = isNonWorking ? shiftCode : "WORKING";
+    const updates = {
+      shift_code: shiftCode,
+      start_time: startTime,
+      end_time: endTime,
+      status: status,
+      uploaded_by: "Admin",
+      uploaded_at: nowDateTime(),
+      notes: "Schedule updated from admin panel"
+    };
+
+    beginWrite();
+    Object.keys(updates).forEach(function (key) {
+      const column = headerMap[key] + 1;
+      if (key === "start_time" || key === "end_time") sheet.getRange(targetRow, column).setNumberFormat("@");
+      sheet.getRange(targetRow, column).setValue(updates[key]);
+    });
+
+    clearSheetCache(SHEETS.SCHEDULE);
+    appendAudit("ADMIN", "Admin", "Admin", "UPDATE_SINGLE_SCHEDULE", "SCHEDULE", loginId, "", JSON.stringify({
+      login_id: loginId,
+      schedule_date: scheduleDate,
+      shift_code: shiftCode,
+      status: status
+    }), ip, "Schedule updated from admin panel");
+
+    return {
+      ok: true,
+      updated: true,
+      login_id: loginId,
+      schedule_date: scheduleDate,
+      shift_code: shiftCode,
+      start_time: startTime,
+      end_time: endTime,
+      status: status
+    };
   });
-
-  clearSheetCache(SHEETS.SCHEDULE);
-  appendAudit("ADMIN", "Admin", "Admin", "UPDATE_SINGLE_SCHEDULE", "SCHEDULE", loginId, "", JSON.stringify({
-    login_id: loginId,
-    schedule_date: scheduleDate,
-    shift_code: shiftCode,
-    status: status
-  }), ip, "Schedule updated from admin panel");
-
-  return {
-    ok: true,
-    updated: true,
-    login_id: loginId,
-    schedule_date: scheduleDate,
-    shift_code: shiftCode,
-    start_time: startTime,
-    end_time: endTime,
-    status: status
-  };
 }
 
 function normalizePersonName(value) {

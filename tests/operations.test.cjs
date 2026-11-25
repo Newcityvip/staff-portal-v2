@@ -49,11 +49,18 @@ for (const name of ['getStaffDashboard', 'getAdminDashboardFull']) {
     assert.equal(after.ctx[name]({ ip: 'denied', dashboard_mode: 'operations' }).ok, false);
   });
 }
-test('all backend functions except the two dashboard readers remain byte-identical', () => {
+test('legacy action routing and functions outside the dashboard and roster changes remain byte-identical', () => {
   const functions = s => new Map([...s.matchAll(/^function (\w+)\(/gm)].map((m, i, all) => [m[1], s.slice(m.index, all[i + 1]?.index ?? s.length)]));
   const old = functions(original), next = functions(source);
   assert.equal(old.size, next.size);
-  for (const [name, body] of old) if (!['getStaffDashboard', 'getAdminDashboardFull'].includes(name)) assert.equal(next.get(name), body, name);
+  const sharedActions = '      case "v2_dispatch_verified_leave":\n      case "v2_verify_leave_receipt":\n        result = verifiedRosterRequest_(body);\n        break;\n';
+  assert.ok(next.get('doPost').includes(sharedActions));
+  assert.equal(next.get('doPost').replace(sharedActions,''),old.get('doPost'));
+  for (const [name, body] of old) {
+    if (!['doPost','getStaffDashboard','getAdminDashboardFull','uploadScheduleCsv','updateSingleStaffSchedule'].includes(name)) {
+      assert.equal(next.get(name),body,name);
+    }
+  }
 });
 test('attendance write routing, session code and action handler remain unchanged', () => {
   for (const [file, from, to] of [

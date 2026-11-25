@@ -33,3 +33,9 @@ test('closed on invalid credentials, expiry, duplicate identity/date, changed re
    const g=fixture();alter(g);assert.equal(g.apply().error,'roster_conflict');assert.equal(g.commits,0)
  }
 })
+
+test('read-back accepts cleared API cells and rejects any populated leave time',()=>{
+ const f=fixture();assert.equal(f.apply().verified,true)
+ f.rows[1][8]=null;f.rows[1][9]=null;assert.equal(f.apply().verified,true)
+ f.rows[1][8]=0;assert.equal(f.apply().error,'roster_conflict');assert.equal(f.commits,1)
+})

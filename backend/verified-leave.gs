@@ -39,7 +39,7 @@ function leavePlan_(rows, change, team, login, verified) {
     const status=String(row[10]||'').trim().toUpperCase(),shift=String(row[7]||'').trim().toUpperCase();
     leaveCheck_(id && String(row[6]).trim()===team && day.shiftId==='mirror-v1-'+leaveHash_([id,change.staffId,day.date]));
     if(verified){
-      leaveCheck_(status===day.code && shift===day.code && row[8]==='' && row[9]==='');
+      leaveCheck_(status===day.code && shift===day.code && (row[8]==='' || row[8]==null) && (row[9]==='' || row[9]==null));
     }else{
       leaveCheck_(status==='WORKING');
       const start=new Date(day.startsAt),end=new Date(day.endsAt);

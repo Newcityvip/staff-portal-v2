@@ -49,11 +49,17 @@ for (const name of ['getStaffDashboard', 'getAdminDashboardFull']) {
     assert.equal(after.ctx[name]({ ip: 'denied', dashboard_mode: 'operations' }).ok, false);
   });
 }
-test('all backend functions except the two dashboard readers remain byte-identical', () => {
+test('unrelated backend contracts and the locked roster mutation bodies match the baseline', () => {
   const functions = s => new Map([...s.matchAll(/^function (\w+)\(/gm)].map((m, i, all) => [m[1], s.slice(m.index, all[i + 1]?.index ?? s.length)]));
   const old = functions(original), next = functions(source);
-  assert.equal(old.size, next.size);
-  for (const [name, body] of old) if (!['getStaffDashboard', 'getAdminDashboardFull'].includes(name)) assert.equal(next.get(name), body, name);
+  assert.equal(next.size,old.size+3);
+  for(const name of ['uploadScheduleCsv','updateSingleStaffSchedule']){
+    const inner=name+'Locked_';
+    assert.equal(next.get(inner).replace('function '+inner+'(', 'function '+name+'('),old.get(name));
+    assert.match(next.get(name),new RegExp('return withRosterLock_.*return '+inner));
+  }
+  assert.equal(next.get('doPost').replace(/      case "apply_verified_leave":[\s\S]*?        break;\n/,''),old.get('doPost'));
+  for (const [name, body] of old) if (!['getStaffDashboard','getAdminDashboardFull','doPost','uploadScheduleCsv','updateSingleStaffSchedule'].includes(name)) assert.equal(next.get(name), body, name);
 });
 test('attendance write routing, session code and action handler remain unchanged', () => {
   for (const [file, from, to] of [

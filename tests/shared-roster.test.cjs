@@ -25,7 +25,7 @@ function fixture(){
    }}}}
  function matches(m,lookup){return Object.entries(lookup).every(([k,v])=>m[k]===v)}
  for(const file of ['roster-coordination','verified-roster'])vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../backend/'+file+'.gs'),'utf8'),ctx)
- return {ctx,change,markers,apply:(over={})=>ctx.verifiedRosterRequest_({action:'v2_dispatch_verified_leave',token,expires:Date.now()+45000,change,...over}),rows,days,props,get commits(){return commits},get reads(){return reads}}
+ return {ctx,change,markers,audit,apply:(over={})=>ctx.verifiedRosterRequest_({action:'v2_dispatch_verified_leave',token,expires:Date.now()+45000,change,...over}),rows,days,props,get commits(){return commits},get reads(){return reads}}
 }
 test('atomic batch clears times, retains notes, independently reads source and only verifies a replay',()=>{
  const f=fixture();assert.equal(f.apply().verified,true);assert.equal(f.reads,3)
@@ -78,4 +78,15 @@ test('all three administrative entry points preserve approved leave and process 
  assert.equal(single.ok,false);assert.match(single.message,/Approved leave/)
  const csv=ctx.uploadScheduleCsv({rows});assert.equal(csv.inserted,1);assert.equal(csv.protected_dates.length,1)
  assert.deepEqual(f.rows[1].slice(7,11),['AL','','','AL']);assert.ok(writes.length>0)
+})
+
+test('receipt verification cannot rewrite a restored shift or infer success after audit loss',()=>{
+ const f=fixture(),original=[...f.rows[1]]
+ assert.equal(f.apply().verified,true)
+ f.rows[1]=original
+ assert.equal(f.apply({action:'v2_verify_leave_receipt'}).error,'roster_conflict')
+ assert.equal(f.apply().error,'roster_conflict')
+ f.audit.splice(1)
+ assert.equal(f.apply({action:'v2_verify_leave_receipt'}).error,'roster_conflict')
+ assert.deepEqual(f.rows[1],original);assert.equal(f.commits,1)
 })

@@ -19,7 +19,7 @@ function fixture(){
        else metadata=req.createDeveloperMetadata.developerMetadata}commits++
    }}}}
  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../backend/verified-leave.gs'),'utf8'),ctx)
- return {apply:(over={})=>ctx.applyVerifiedLeave({token,expires:Date.now()+45000,change,...over}),rows,days,props,get commits(){return commits},get reads(){return reads}}
+ return {ctx,change,pilot:(over={})=>ctx.applyVerifiedLeave({token,expires:Date.now()+45000,change,...over}),apply:(over={})=>ctx.applyVerifiedLeave_({token,expires:Date.now()+45000,change,...over}),rows,days,props,get commits(){return commits},get reads(){return reads}}
 }
 test('atomic batch clears times, retains notes, independently reads source and only verifies a replay',()=>{
  const f=fixture();assert.equal(f.apply().verified,true);assert.equal(f.reads,2)
@@ -38,4 +38,26 @@ test('read-back accepts cleared API cells and rejects any populated leave time',
  const f=fixture();assert.equal(f.apply().verified,true)
  f.rows[1][8]=null;f.rows[1][9]=null;assert.equal(f.apply().verified,true)
  f.rows[1][8]=0;assert.equal(f.apply().error,'roster_conflict');assert.equal(f.commits,1)
+})
+
+test('public writer admits only the one paid sick pilot day before any sheet access',()=>{
+ const f=fixture(),day={...f.days[0],date:'2026-11-27',code:'SL'}
+ for(const [staffId,days] of [['TEST',[day]],['M00277',[{...day,date:'2026-11-28'}]],['M00277',[{...day,code:'UL'}]],['M00277',[day,day]]]){
+   assert.equal(f.pilot({change:{staffId,days}}).error,'write_disabled')
+ }
+ assert.equal(f.reads,0);assert.equal(f.commits,0)
+})
+test('exact pilot needs a saved before-image, verifies untouched cells and safely replays',()=>{
+ const f=fixture(),d='2026-11-27',id='M00277',day={...f.days[0],date:d,code:'SL',startsAt:d+'T04:00:00.000Z',endsAt:d+'T13:00:00.000Z'}
+ day.shiftId='mirror-v1-'+hash(['shared',id,d])
+ day.revision=hash(['shift-v1','shared',id,team,zone,d,'WORKING','AM',day.startsAt,day.endsAt])
+ f.rows[1][2]=d;f.rows[1][3]=id;f.rows[2][3]=id
+ f.ctx.listStaffRows=()=>[{staff_id:id,login_id:'fixture',team,status:'ACTIVE'}]
+ f.ctx.PropertiesService.getScriptProperties=()=>({getProperty:k=>f.props[k],setProperty:(k,v)=>{f.props[k]=v}})
+ const body={change:{...f.change,staffId:id,days:[day]}}
+ assert.equal(f.pilot(body).ok,false);assert.equal(f.commits,0)
+ f.ctx.backupNovemberSickPilot();f.ctx.backupNovemberSickPilot()
+ f.rows[2][13]='drift';assert.equal(f.pilot(body).ok,false);f.rows[2][13]='retain'
+ assert.equal(f.pilot(body).verified,true);assert.equal(f.pilot(body).verified,true);assert.equal(f.commits,1)
+ assert.match(f.ctx.checkNovemberSickPilot(),/Verified/);f.rows[2][13]='changed';assert.throws(()=>f.ctx.checkNovemberSickPilot())
 })

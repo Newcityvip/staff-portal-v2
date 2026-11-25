@@ -54,6 +54,16 @@ function leavePlan_(rows, change, team, login, verified) {
 }
 
 function applyVerifiedLeave(body) {
+  const change = body && body.change;
+  if (!change || change.staffId !== 'M00277' || !Array.isArray(change.days) ||
+      change.days.length !== 1 || !change.days[0] ||
+      change.days[0].date !== '2026-11-27' || change.days[0].code !== 'SL') {
+    return {ok:false,error:'write_disabled'};
+  }
+  return applyVerifiedLeave_(body, true);
+}
+
+function applyVerifiedLeave_(body, requirePilotBackup) {
   const props=PropertiesService.getScriptProperties(),secret=props.getProperty('LEAVE_WRITE_TOKEN'),team=props.getProperty('LEAVE_WRITE_TEAM');
   if(props.getProperty('LEAVE_WRITE_ENABLED')!=='true'||!team||!secret||!/^[a-f0-9]{64}$/i.test(secret)||
       typeof body.token!=='string'||body.token.length!==64)return {ok:false,error:'write_disabled'};
@@ -80,6 +90,7 @@ function applyVerifiedLeave(body) {
       if(existing.length){
         leaveCheck_(existing.length===1 && existing[0].developerMetadata.metadataValue===receipt);
       }else{
+        if(requirePilotBackup) leaveCheck_(props.getProperty('NOV27_PILOT_BACKUP')===JSON.stringify(novemberPilotSnapshot_()));
         const indexes=leavePlan_(read(),c,team,login,false);
         const mutations=indexes.map((row,i)=>({updateCells:{
           range:{sheetId:sheet.getSheetId(),startRowIndex:row,endRowIndex:row+1,startColumnIndex:7,endColumnIndex:11},
@@ -95,4 +106,41 @@ function applyVerifiedLeave(body) {
       return {ok:true,verified:true,decisionId:c.decisionId};
     });
   }catch(error){return {ok:false,error:error.message==='roster_conflict'?'roster_conflict':'source_unavailable'};}
+}
+
+/** Run from the production bound editor before opening the pilot. Stores one protected before-image. */
+function backupNovemberSickPilot() {
+  return withRosterLock_(function () {
+    const props = PropertiesService.getScriptProperties();
+    const snapshot = novemberPilotSnapshot_();
+    const previous = props.getProperty('NOV27_PILOT_BACKUP');
+    if (previous) {
+      leaveCheck_(previous === JSON.stringify(snapshot));
+    } else {
+      leaveCheck_(snapshot.row[10] === 'WORKING' && snapshot.row[8] && snapshot.row[9]);
+      props.setProperty('NOV27_PILOT_BACKUP', JSON.stringify(snapshot));
+    }
+    return 'Pilot roster backup verified';
+  });
+}
+
+function novemberPilotSnapshot_() {
+  const book = ss().getId(), sheet = sh(SHEETS.SCHEDULE).getSheetId();
+  const rows = Sheets.Spreadsheets.Values.get(book, "'04_Schedule_Master'!A:N",
+    {valueRenderOption:'FORMULA',dateTimeRenderOption:'SERIAL_NUMBER'}).values || [];
+  const hits = rows.map((r,i)=> String(r[3]).trim()==='M00277' && leaveDate_(r[2])==='2026-11-27' ? i : -1).filter(i=>i>=1);
+  leaveCheck_(hits.length===1);
+  const index=hits[0], row=rows[index];
+  // Include headers, ordering and every other roster cell in the comparison.
+  const protectedRows=rows.map((r,i)=>i===index ? r.slice(0,7).concat(r.slice(11)) : r);
+  return {book,sheet,index,row,otherCellsHash:leaveHash_(protectedRows)};
+}
+
+function checkNovemberSickPilot() {
+  const snapshot=novemberPilotSnapshot_();
+  const prior=JSON.parse(PropertiesService.getScriptProperties().getProperty('NOV27_PILOT_BACKUP')||'null');
+  leaveCheck_(prior && prior.book===snapshot.book && prior.sheet===snapshot.sheet &&
+    prior.index===snapshot.index && prior.otherCellsHash===snapshot.otherCellsHash);
+  leaveCheck_(snapshot.row[7]==='SL' && snapshot.row[10]==='SL' && !snapshot.row[8] && !snapshot.row[9]);
+  return 'Verified pilot SL, cleared times and identical remaining roster cells';
 }

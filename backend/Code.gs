@@ -48,6 +48,9 @@ function doPost(e) {
       case "get_staff_dashboard":
         result = getStaffDashboard(body);
         break;
+      case "get_staff_attendance_history":
+        result = getStaffAttendanceHistory(body);
+        break;
       case "attendance_action":
         result = attendanceAction(body);
         break;
@@ -528,7 +531,15 @@ function staffLogin(data) {
   if (!staff.ok) return staff;
 
   appendAudit("STAFF", staff.staff_id, staff.full_name, "LOGIN", "STAFF_AUTH", staff.staff_id, "", "", ip, "");
-  return { ok: true, message: "Login success", staff: staff };
+  const result = { ok: true, message: "Login success", staff: staff };
+  if (data.dashboard_mode === "attendance_first") {
+    try {
+      result.attendance_bootstrap = buildStaffAttendanceDashboard(staff, ip);
+    } catch (err) {
+      logInternalError("staffLogin.attendance_bootstrap", err);
+    }
+  }
+  return result;
 }
 
 function adminLogin(data) {
@@ -822,7 +833,7 @@ function resolveAttendanceSchedule(staff, eventType, requestedDate) {
   return { date: dateKey, schedule: schedule };
 }
 
-function getAttendanceState(identity, dateStr) {
+function getAttendanceState(identity, dateStr, includeBreakStart) {
   const targetDate = normalizeDateKey(dateStr);
   const staffIdentity = typeof identity === "object" && identity ? identity : { login_id: identity };
 
@@ -832,6 +843,7 @@ function getAttendanceState(identity, dateStr) {
   let counts = { BREAK: 0, PRAYER_BREAK: 0, BIO_BREAK: 0 };
   let firstCheckIn = "";
   let lastCheckOut = "";
+  let breakStartedAt = "";
 
   const rows = listAttendanceRows(targetDate, 0).filter(function (row) {
     return rowMatchesStaffIdentity(row, staffIdentity);
@@ -852,15 +864,54 @@ function getAttendanceState(identity, dateStr) {
     }
     if (eventType === "BREAK_START") {
       activeBreak = breakType;
+      if (includeBreakStart) breakStartedAt = eventTime;
       if (counts[breakType] != null) counts[breakType]++;
     }
     if (eventType === "BREAK_END" && activeBreak === breakType) activeBreak = "";
   });
 
-  return { hasCheckIn, hasCheckOut, activeBreak, counts, firstCheckIn, lastCheckOut };
+  const state = { hasCheckIn, hasCheckOut, activeBreak, counts, firstCheckIn, lastCheckOut };
+  if (includeBreakStart) state.breakStartedAt = activeBreak && breakStartedAt ? targetDate + "T" + breakStartedAt : "";
+  return state;
 }
 
 /***** STAFF DASHBOARD *****/
+
+function buildStaffAttendanceDashboard(staff, ip) {
+  const timezone = getTeamTimezone(staff.team);
+  const today = todayDateForTimezone(timezone);
+  const resolved = resolveAttendanceSchedule(staff, "CHECK_OUT", today);
+  const state = getAttendanceState(staff, resolved.date, true);
+  if (state.breakStartedAt) state.breakStartedAt += Utilities.formatDate(new Date(), timezone, "Z").replace(/(\d{2})(\d{2})$/, "$1:$2");
+  return {
+    ok: true,
+    dashboard_mode: "attendance_first",
+    staff: { staff_id: staff.staff_id, login_id: staff.login_id, full_name: staff.full_name, team: staff.team, role: staff.role },
+    today: today,
+    timezone: timezone,
+    generated_at: new Date().toISOString(),
+    ip: { allowed: true, address: ip },
+    today_schedule: resolved.schedule.ok ? {
+      ok: true, schedule_date: resolved.date, shift_code: resolved.schedule.shift_code,
+      start_time: resolved.schedule.start_time, end_time: resolved.schedule.end_time, status: resolved.schedule.status
+    } : resolved.schedule,
+    attendance_state: state
+  };
+}
+
+function getStaffAttendanceHistory(data) {
+  const ipError = requireAllowedIp(clean(data.ip));
+  if (ipError) return ipError;
+  const staff = getStaffByLogin(clean(data.login_id));
+  if (!staff.ok) return staff;
+  const events = listAttendanceRows("", 0).filter(function (row) {
+    return rowMatchesStaffIdentity(row, staff);
+  }).slice(0, 100).map(function (row) {
+    return { event_date: row.event_date, event_time: row.event_time, event_type: row.event_type,
+      break_type: row.break_type, shift_code: row.shift_code };
+  });
+  return { ok: true, attendance_events: events };
+}
 
 function getStaffDashboard(data) {
   const loginId = clean(data.login_id);
@@ -870,6 +921,8 @@ function getStaffDashboard(data) {
 
   const staff = getStaffByLogin(loginId);
   if (!staff.ok) return staff;
+
+  if (data.dashboard_mode === "attendance_first") return buildStaffAttendanceDashboard(staff, ip);
 
   const today = todayDateForTimezone(getTeamTimezone(staff.team));
   const month = resolveScoreMonth(data.month);
@@ -1797,6 +1850,19 @@ function getAdminDashboardFull(data) {
   if (ipError) return ipError;
 
   const access = getAdminAccess(data);
+  if (data.dashboard_mode === "attendance_first") {
+    const today = todayDate();
+    const staffIndex = buildStaffAccessIndex();
+    const summary = getTodaySummary(today, access.allowed_team);
+    return {
+      ok: true,
+      dashboard_mode: "attendance_first",
+      generated_at: new Date().toISOString(),
+      summary: summary,
+      next_shift_staff_all: getNextShiftStaffRows(access, staffIndex),
+      breakBoard: getActiveBreakRows(today, access, staffIndex)
+    };
+  }
   const month = resolveScoreMonth(data.month);
   const today = todayDate();
   const allStaff = listStaffRows();

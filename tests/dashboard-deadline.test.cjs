@@ -55,10 +55,15 @@ test('successful dashboard consumes body and clears its deadline', async () => {
   assert.equal(h.requests(), 1);
   assert.equal(h.timers.find(t => t.ms === 15000).cleared, true);
 });
-test('mutation deadline handling and single-shot policy stay unchanged', async () => {
+test('attendance response body timeout remains single-shot, without a mutation retry', async () => {
   const h = harness(true);
-  h.api.action('attendance_action').catch(() => {});
+  const result = h.api.action('attendance_action').then(() => 'resolved', error => error.name);
   await flush();
+  assert.equal(h.requests(), 1);
+  const deadline = h.timers.find(t => t.ms === 20000);
+  assert.equal(deadline.cleared, false);
+  deadline.fn();
+  assert.equal(await result, 'AbortError');
   assert.equal(h.requests(), 1);
   assert.equal(h.timers.find(t => t.ms === 20000).cleared, true);
 });

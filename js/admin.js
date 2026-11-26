@@ -1,22 +1,10 @@
 (function () {
   const session = Portal.getSession();
   if (!session) return;
-  if (session.role !== "admin") location.href = "staff.html";
+  if (session.role !== "admin") { location.href = "staff.html"; return; }
 
-  const CACHE_KEY = "spv2_admin_operations_last_good_" + (session.loginId || session.staffId || "admin");
-  const readCachedDashboard = () => {
-    try { return JSON.parse(localStorage.getItem(CACHE_KEY) || "null"); } catch (error) { return null; }
-  };
-  const writeCachedDashboard = (data) => {
-    try { localStorage.setItem(CACHE_KEY, JSON.stringify(data)); } catch (error) {}
-  };
   let dashboard = {};
-  let refreshTimer;
-  let refreshInFlight = false;
   let refreshPromise = null;
-  let bootstrapPromise = null;
-  let pollingStarted = false;
-
   const empty = (message, span = 8) => `<tr><td colspan="${span}" class="empty-state">${message}</td></tr>`;
   const badge = (text, tone = "") => `<span class="badge ${tone}">${text || "--"}</span>`;
   const previewLimit = 5;
@@ -46,50 +34,30 @@
   const normalizeDashboard = (data) => {
     const root = data?.data || data?.dashboard || data || {};
     const summary = root.summary || root.today_summary || {};
-    const staffList = Portal.normalizeArray(root.staff_list || root.staff || root.staffList || root.users || root.staff_rows);
-    const scheduleList = Portal.normalizeArray(root.schedule_list || root.schedules || root.schedule || root.schedule_rows);
-    const attendanceEvents = Portal.normalizeArray(root.attendance_events || root.attendanceBoard || root.attendance || root.onlineStaff);
     const nonWorkingCodes = new Set(["OFF", "AL", "UL", "SL", "NP", "LEAVE", "HOLIDAY", ""]);
     const nextShiftStaff = Portal.normalizeArray(root.next_shift_staff_all || root.nextShiftStaffAll || root.next_shift_staff || root.nextShiftStaff || root.next_shifts).filter((row) => {
       const status = String(Portal.pick(row || {}, ["status"], "")).toUpperCase();
       const shift = String(Portal.pick(row || {}, ["shift", "shift_code"], "")).toUpperCase();
       return status === "WORKING" && !nonWorkingCodes.has(shift);
     });
-    const auditLogs = Portal.normalizeArray(root.audit_logs || root.auditLogs || root.audit);
-    const telegramLogs = Portal.normalizeArray(root.telegram_logs || root.telegramLogs);
-    const absentToday = Portal.normalizeArray(root.absent_today || root.absentToday || summary.absent_today || summary.absentToday);
-    const ipAllowlist = root.ip_allowlist || root.ipAllowlist || root.allowlist || [];
-    const hasBreakBoard = Object.prototype.hasOwnProperty.call(root, "breakBoard") || Object.prototype.hasOwnProperty.call(root, "breaks");
-    const breakRows = hasBreakBoard
-      ? Portal.normalizeArray(root.breakBoard || root.breaks)
-      : attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() === "BREAK_START");
+    const absentToday = Portal.normalizeArray(summary.summary_details?.absent_today);
     return {
-      stats: root.stats || root.counters || {
-        totalStaff: root.staff_count || summary.total_staff || staffList.length,
-        onlineStaff: summary.currently_working || summary.online_staff,
+      stats: {
+        totalStaff: summary.total_staff,
+        onlineStaff: summary.currently_working ?? summary.online_staff,
         checkedInToday: summary.checked_in,
         onBreak: summary.on_break,
         lateStaff: summary.late_staff,
         missingCheckout: summary.missing_checkout,
-        absentToday: root.absent_today_count || summary.absent_today_count || absentToday.length,
+        absentToday: summary.absent_today_count ?? absentToday.length,
         notWorkingToday: summary.not_working_today
       },
-      attendance: attendanceEvents.filter((row) => String(Portal.pick(row, ["event_type", "action", "event"], "")).toUpperCase() !== "BREAK_START"),
-      breaks: breakRows,
-      staff: staffList,
-      schedules: scheduleList,
+      breaks: root.breakBoard,
       nextShiftStaff,
-      summaryDetails: root.summary_details || summary.summary_details || root.summaryDetails || {},
-      absentToday,
-      dailyLogs: Portal.normalizeArray(root.dailyLogs || root.logs).length ? Portal.normalizeArray(root.dailyLogs || root.logs) : attendanceEvents,
-      telegramLogs,
-      auditLogs,
-      ipAllowlist
+      summaryDetails: summary.summary_details,
+      absentToday
     };
   };
-
-  const cachedDashboard = readCachedDashboard();
-  dashboard = Portal.validDashboard("admin", cachedDashboard) ? normalizeDashboard(cachedDashboard) : {};
 
   const summaryColumns = [
     { label: "Staff", keys: ["full_name", "name", "staff", "staffName"] },
@@ -128,7 +96,7 @@
   };
 
   const renderStats = (stats) => {
-    Portal.setText("totalStaff", Portal.pick(stats, ["totalStaff", "staffTotal", "total"], dashboard.staff.length || "--"));
+    Portal.setText("totalStaff", Portal.pick(stats, ["totalStaff", "staffTotal", "total"], "--"));
     Portal.setText("onlineStaff", Portal.pick(stats, ["onlineStaff", "online_staff", "currently_working", "online"], "--"));
     Portal.setText("checkedInToday", Portal.pick(stats, ["checkedInToday", "checked_in", "checkedIn", "present"], "--"));
     Portal.setText("onBreak", Portal.pick(stats, ["onBreak", "on_break", "breaks"], "--"));
@@ -137,7 +105,7 @@
     Portal.setText("absentToday", Portal.pick(stats, ["absentToday", "absent_today_count", "absent"], "--"));
     Portal.setText("notWorkingToday", Portal.pick(stats, ["notWorkingToday", "not_working_today", "offToday"], "--"));
     const details = dashboard.summaryDetails || {};
-    bindSummaryCard("totalStaff", "Total Staff", details.total_staff || dashboard.staff);
+    bindSummaryCard("totalStaff", "Total Staff", details.total_staff);
     bindSummaryCard("onlineStaff", "Online Staff", details.online_staff);
     bindSummaryCard("checkedInToday", "Checked In Today", details.checked_in_today || details.checked_in);
     bindSummaryCard("onBreak", "On Break", details.on_break);
@@ -210,31 +178,13 @@
     return "";
   };
 
-  const renderAttendance = (rows) => {
-    const host = document.getElementById("attendanceBoard");
-    if (!host) return;
-    if (!rows.length) return host.innerHTML = empty("No live attendance records received.", 5);
-    ensureViewButton("attendanceBoard", "live attendance", () => openTableModal("Live Attendance Board", rows, [
-      { label: "Staff", keys: ["name", "full_name", "staffName", "staff"] },
-      { label: "Team", keys: ["department", "team"] },
-      { label: "Status", render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) },
-      { label: "Time", render: (row) => Portal.formatTime(Portal.pick(row, ["checkIn", "check_in", "in", "event_time", "time"], "")) },
-      { label: "IP", keys: ["ip", "ipAddress"] }
-    ]));
-    host.innerHTML = rows.slice(0, previewLimit).map((row) => `
-      <tr>
-        <td>${Portal.pick(row, ["name", "full_name", "staffName", "staff"], "Staff")}</td>
-        <td>${Portal.pick(row, ["department", "team"], "--")}</td>
-        <td>${badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], "")))}</td>
-        <td>${Portal.formatTime(Portal.pick(row, ["checkIn", "check_in", "in", "event_time", "time"], ""))}</td>
-        <td>${Portal.pick(row, ["ip", "ipAddress"], "--")}</td>
-      </tr>`).join("");
-  };
-
   const renderBreaks = (rows) => {
     const host = document.getElementById("breakBoard");
     if (!host) return;
-    if (!rows.length) return host.innerHTML = empty("No active break records received.", 4);
+    if (!rows.length) {
+      document.querySelector('[data-view-all="breakBoard"]')?.remove();
+      return host.innerHTML = empty("No active break records received.", 4);
+    }
     ensureViewButton("breakBoard", "live break", () => openTableModal("Live Break Board", rows, [
       { label: "Staff", keys: ["name", "full_name", "staffName", "staff"] },
       { label: "Start", render: (row) => Portal.formatTime(Portal.pick(row, ["breakStart", "start", "startedAt", "event_time", "time"], "")) },
@@ -250,79 +200,13 @@
       </tr>`).join("");
   };
 
-  const renderStaff = (rows) => {
-    const host = document.getElementById("staffTable");
-    const query = document.getElementById("staffSearch")?.value.trim().toLowerCase() || "";
-    const filtered = query ? rows.filter((row) => JSON.stringify(row).toLowerCase().includes(query)) : rows;
-    if (!host) return;
-    if (!filtered.length) return host.innerHTML = empty("No staff records match the current filter.", 4);
-    ensureViewButton("staffTable", "staff management", () => openTableModal("Staff Management", rows, [
-      { label: "Name", keys: ["name", "full_name", "fullName", "staffName"] },
-      { label: "Team", keys: ["department", "team"] },
-      { label: "Role", keys: ["role", "position"] },
-      { label: "Status", render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
-    ]));
-    host.innerHTML = filtered.slice(0, previewLimit).map((row) => `
-      <tr>
-        <td>${Portal.pick(row, ["name", "full_name", "fullName", "staffName"], "Staff")}</td>
-        <td>${Portal.pick(row, ["role", "position"], "--")}</td>
-        <td>${Portal.pick(row, ["department", "team"], "--")}</td>
-        <td>${badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], "")))}</td>
-      </tr>`).join("");
-  };
-
-  const renderSchedules = (rows) => {
-    const host = document.getElementById("scheduleTable");
-    if (!host) return;
-    const sorted = rows.slice().sort((a, b) => {
-      const dateCompare = String(Portal.pick(a, ["schedule_date", "day", "date"], "")).localeCompare(String(Portal.pick(b, ["schedule_date", "day", "date"], "")));
-      if (dateCompare) return dateCompare;
-      return String(Portal.pick(a, ["full_name", "name", "staffName", "staff"], "")).localeCompare(String(Portal.pick(b, ["full_name", "name", "staffName", "staff"], "")));
-    });
-    if (!sorted.length) return host.innerHTML = empty("No schedule rows received.", 6);
-    ensureViewButton("scheduleTable", "schedule management", () => openTableModal("Schedule Management", sorted, [
-      { label: "Staff", keys: ["full_name", "name", "staffName", "staff"] },
-      { label: "Team", keys: ["team", "department"] },
-      { label: "Date", keys: ["schedule_date", "day", "date"] },
-      { label: "Shift", keys: ["shift_code", "shift", "shiftName", "name"] },
-      { label: "Start", render: (row) => formatShiftTime12h(Portal.pick(row, ["start_time", "start", "startTime"], "")) },
-      { label: "End", render: (row) => formatShiftTime12h(Portal.pick(row, ["end_time", "end", "endTime"], "")) },
-      { label: "Status", render: (row) => badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], ""))) }
-    ]));
-    host.innerHTML = sorted.slice(0, previewLimit).map((row) => `
-      <tr>
-        <td>${Portal.pick(row, ["full_name", "name", "staffName", "staff"], "Staff")}</td>
-        <td>${Portal.pick(row, ["schedule_date", "day", "date"], "--")}</td>
-        <td>${Portal.pick(row, ["shift_code", "shift", "shiftName", "name"], "--")}</td>
-        <td>${formatShiftTime12h(Portal.pick(row, ["start_time", "start", "startTime"], ""))}</td>
-        <td>${formatShiftTime12h(Portal.pick(row, ["end_time", "end", "endTime"], ""))}</td>
-        <td>${badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], "")))}</td>
-      </tr>`).join("");
-  };
-
-  const ensureNextShiftPanel = () => {
-    if (document.getElementById("nextShiftStaff")) return;
-    const staffPanel = document.getElementById("staffTable")?.closest(".glass-panel");
-    const schedulePanel = document.getElementById("scheduleTable")?.closest(".glass-panel");
-    schedulePanel?.classList.add("full-span");
-    const panel = document.createElement("article");
-    panel.className = "glass-panel table-panel";
-    panel.innerHTML = `
-      <div class="panel-title"><h2>Next Shift Staff</h2><span>Upcoming</span></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Staff</th><th>Team</th><th>Date</th><th>Shift</th><th>Start</th><th>End</th><th>Status</th></tr></thead>
-          <tbody id="nextShiftStaff"></tbody>
-        </table>
-      </div>`;
-    (staffPanel || schedulePanel)?.insertAdjacentElement("afterend", panel);
-  };
-
   const renderNextShiftStaff = (rows) => {
-    ensureNextShiftPanel();
     const host = document.getElementById("nextShiftStaff");
     if (!host) return;
-    if (!rows.length) return host.innerHTML = empty("No upcoming working shifts found.", 7);
+    if (!rows.length) {
+      document.querySelector('[data-view-all="nextShiftStaff"]')?.remove();
+      return host.innerHTML = empty("No upcoming working shifts found.", 7);
+    }
     const columns = [
       { label: "Staff", keys: ["staff", "full_name", "name", "staffName"] },
       { label: "Team", keys: ["team", "department"] },
@@ -343,25 +227,6 @@
         <td>${formatShiftTime12h(Portal.pick(row, ["end", "end_time"], ""))}</td>
         <td>${badge(Portal.pick(row, ["status"], "--"), statusTone(Portal.pick(row, ["status"], "")))}</td>
       </tr>`).join("");
-  };
-
-  const renderLogs = (id, rows, columns, options = {}) => {
-    const host = document.getElementById(id);
-    if (!host) return;
-    if (!rows.length) return host.innerHTML = empty("No log records received.", columns.length);
-    if (options.modalTitle) {
-      ensureViewButton(id, options.viewLabel || options.modalTitle.toLowerCase(), () => openTableModal(options.modalTitle, rows, columns));
-    }
-    host.innerHTML = rows.slice(0, options.limit || 80).map((row) => `
-      <tr>${columns.map((column) => `<td>${column.render ? column.render(row) : Portal.pick(row, column.keys, "--")}</td>`).join("")}</tr>`).join("");
-  };
-
-  const renderIpAllowlist = (value) => {
-    const textarea = document.getElementById("ipAllowlist");
-    if (!textarea || textarea.dataset.touched) return;
-    textarea.value = Array.isArray(value)
-      ? value.map((row) => typeof row === "string" ? row : Portal.pick(row, ["ip_address", "ip", "address", "value"], "")).filter(Boolean).join("\n")
-      : String(value || "");
   };
 
   const renderCharts = () => {
@@ -424,53 +289,33 @@
     });
   };
 
+  const filterStaff = (rows) => {
+    const query = document.getElementById("staffSearch").value.trim().toLowerCase();
+    return query ? rows.filter((row) => [row.full_name, row.login_id, row.staff_id, row.team, row.staffName].some((value) => String(value || "").toLowerCase().includes(query))) : rows;
+  };
   const renderAll = () => {
     renderStats(dashboard.stats);
-    renderAttendance(dashboard.attendance);
-    renderBreaks(dashboard.breaks);
-    renderStaff(dashboard.staff);
-    renderSchedules(dashboard.schedules);
-    renderNextShiftStaff(dashboard.nextShiftStaff || []);
-    renderLogs("dailyLogs", dashboard.dailyLogs, [
-      { render: (row) => Portal.formatTime(Portal.pick(row, ["created_at", "time", "timestamp", "createdAt"], "")) },
-      { keys: ["full_name", "name", "staffName", "staff"] },
-      { keys: ["event_type", "action", "event"] },
-      { render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
-    ], { limit: 5, modalTitle: "Daily Logs", viewLabel: "daily logs" });
-    renderLogs("telegramLogs", dashboard.telegramLogs, [
-      { render: (row) => Portal.formatTime(Portal.pick(row, ["created_at", "time", "timestamp", "createdAt"], "")) },
-      { keys: ["target", "chat", "recipient", "login_id"] },
-      { keys: ["message", "text", "event_type"] },
-      { render: (row) => badge(Portal.pick(row, ["status", "state"], "--"), statusTone(Portal.pick(row, ["status", "state"], ""))) }
-    ], { limit: 5, modalTitle: "Telegram Logs", viewLabel: "telegram logs" });
-    const auditColumns = [
-      { label: "Time", render: (row) => Portal.formatTime(Portal.pick(row, ["created_at", "time", "timestamp", "createdAt"], "")) },
-      { label: "User", keys: ["actor_name", "user", "name", "email"] },
-      { label: "Action", keys: ["action", "event"] },
-      { label: "IP", keys: ["ip", "ipAddress"] },
-      { label: "Result", render: (row) => badge(Portal.pick(row, ["result", "status", "state"], "--"), statusTone(Portal.pick(row, ["result", "status", "state"], ""))) }
-    ];
-    renderLogs("auditLogs", dashboard.auditLogs, auditColumns, { limit: 5, modalTitle: "Audit Logs" });
-    renderIpAllowlist(dashboard.ipAllowlist);
+    renderBreaks(filterStaff(dashboard.breaks));
+    renderNextShiftStaff(filterStaff(dashboard.nextShiftStaff));
     renderCharts();
   };
 
-  const load = async (silent = false) => {
-    if (refreshInFlight) return refreshPromise;
-    refreshInFlight = true;
+  const load = (silent = false, afterWrite = false) => {
+    if (afterWrite && refreshPromise) return refreshPromise.then(() => load(silent));
+    if (refreshPromise) return refreshPromise;
+    if (silent && (document.hidden || navigator.onLine === false)) return;
+    if (!silent && !dashboard.stats) Portal.setStatus(null, "Loading");
     refreshPromise = (async () => {
-      if (!silent) Portal.setStatus(null, "Loading");
       try {
-        const data = await Portal.api.dashboard("admin", { month: "", dashboard_mode: "operations" });
+        const data = await Portal.api.dashboard("admin", { dashboard_mode: "attendance_first" });
         dashboard = normalizeDashboard(data);
-        writeCachedDashboard(data);
         renderAll();
+        const root = data.data || data.dashboard || data;
+        Portal.setText("lastDashboardUpdate", "Updated " + new Date(root.generated_at).toLocaleTimeString());
         Portal.dashboardReady();
       } catch (error) {
-        if (dashboard.stats) renderAll();
-        Portal.dashboardFailure(Boolean(dashboard.stats), () => load(false), error);
+        Portal.dashboardFailure(Boolean(dashboard.stats), () => load(), error);
       } finally {
-        refreshInFlight = false;
         refreshPromise = null;
       }
     })();
@@ -742,15 +587,7 @@
   };
 
   const exportTable = (name) => {
-    const map = {
-      attendance: dashboard.attendance,
-      breaks: dashboard.breaks,
-      schedule: dashboard.schedules,
-      dailyLogs: dashboard.dailyLogs,
-      telegramLogs: dashboard.telegramLogs,
-      auditLogs: dashboard.auditLogs
-    };
-    const rows = map[name] || [];
+    const rows = name === "breaks" ? filterStaff(dashboard.breaks || []) : [];
     if (!rows.length) return Portal.toast("No rows available to export");
     const keys = Array.from(rows.reduce((set, row) => {
       Object.keys(row).forEach((key) => set.add(key));
@@ -766,10 +603,8 @@
     URL.revokeObjectURL(url);
   };
 
-  document.getElementById("staffSearch")?.addEventListener("input", () => renderStaff(dashboard.staff || []));
-  document.getElementById("ipAllowlist")?.addEventListener("input", (event) => event.target.dataset.touched = "1");
-  document.querySelectorAll("[data-export]").forEach((btn) => btn.addEventListener("click", () => exportTable(btn.dataset.export)));
-  document.querySelector("[data-refresh]")?.addEventListener("click", () => load());
+  document.getElementById("staffSearch").addEventListener("input", () => { if (dashboard.stats) renderAll(); });
+  document.querySelectorAll("[data-export]").forEach((button) => button.addEventListener("click", () => exportTable(button.dataset.export)));
   document.getElementById("clearScheduleUpload")?.addEventListener("click", () => {
     const input = document.getElementById("scheduleFile");
     const state = document.getElementById("scheduleUploadState");
@@ -823,48 +658,15 @@
       state.textContent = `Schedule uploaded. Inserted: ${inserted}. Updated: ${updated}. Failed: ${failed}. Skipped: ${skipped}.`;
       Portal.toast("Schedule uploaded");
       await new Promise((resolve) => setTimeout(resolve, 3000));
-      await load(true);
+      await load(false, true);
     } catch (error) {
       if (/abort|524|timeout/i.test(String(error.message || ""))) {
         state.textContent = "Upload may still be processing. Refreshing schedule data...";
         await new Promise((resolve) => setTimeout(resolve, 3000));
-        await load(true);
+        await load(false, true);
         return;
       }
       state.textContent = error.message || "Unable to upload schedule.";
-    }
-  });
-  document.getElementById("singleScheduleForm")?.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const state = document.getElementById("singleScheduleState");
-    const loginId = document.getElementById("singleScheduleLoginId")?.value.trim();
-    const scheduleDate = document.getElementById("singleScheduleDate")?.value;
-    const shiftCode = document.getElementById("singleScheduleShift")?.value.trim().toUpperCase();
-    if (!loginId || !scheduleDate || !shiftCode) {
-      state.hidden = false;
-      state.textContent = "Enter staff login ID, date, and shift.";
-      return;
-    }
-    try {
-      state.hidden = false;
-      state.textContent = "Updating schedule...";
-      form.querySelector("button[type='submit']").disabled = true;
-      const ip = await Portal.api.detectIp();
-      const result = await callFirstValid(["update_single_staff_schedule"], {
-        admin_login_id: session.loginId || session.staffId,
-        login_id: loginId,
-        schedule_date: scheduleDate,
-        shift_code: shiftCode,
-        ip
-      });
-      state.textContent = `Schedule updated for ${result.login_id || loginId} on ${result.schedule_date || scheduleDate}: ${result.shift_code || shiftCode}.`;
-      Portal.toast("Schedule updated");
-      await load(true);
-    } catch (error) {
-      state.textContent = error.message || "Unable to update schedule.";
-    } finally {
-      form.querySelector("button[type='submit']").disabled = false;
     }
   });
   document.getElementById("kpiInputForm")?.addEventListener("submit", async (event) => {
@@ -919,41 +721,13 @@
         : (error.message || "Unable to save KPI.");
     }
   });
-  document.getElementById("saveIpBtn")?.addEventListener("click", async () => {
-    const state = document.getElementById("ipSaveState");
-    try {
-      const ips = document.getElementById("ipAllowlist").value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
-      const ip = await Portal.api.detectIp();
-      await callFirstValid(["save_ip_allowlist", "saveIpAllowlist"], {
-        admin_login_id: session.loginId || session.staffId,
-        ip,
-        ips,
-        ipAllowlist: ips
-      });
-      state.hidden = false;
-      state.textContent = "IP allowlist saved through Worker.";
-      Portal.toast("IP allowlist saved");
-    } catch (error) {
-      state.hidden = false;
-      state.textContent = error.message || "Unable to save IP allowlist.";
-    }
+  load();
+  const refreshTimer = setInterval(() => load(true), 15000);
+  document.addEventListener("visibilitychange", () => load(true));
+  window.addEventListener("online", () => load(true));
+  window.addEventListener("offline", () => {
+    Portal.dashboardFailure(Boolean(dashboard.stats), () => load(), new Error("Network disconnected"));
   });
-
-  const startPolling = () => {
-    if (pollingStarted) return;
-    pollingStarted = true;
-    refreshTimer = setInterval(() => load(true), 15000);
-  };
-
-  const bootstrap = () => {
-    if (bootstrapPromise) return bootstrapPromise;
-    bootstrapPromise = Promise.allSettled([
-      load()
-    ]).finally(startPolling);
-    return bootstrapPromise;
-  };
-
-  bootstrap();
   window.addEventListener("resize", renderCharts);
   window.addEventListener("beforeunload", () => clearInterval(refreshTimer));
 })();

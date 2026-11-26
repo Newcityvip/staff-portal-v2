@@ -1,4 +1,4 @@
-# Monthly Roster Builder: Phase 1 and 1B
+# Monthly Roster Builder: Phases 1, 1B and 1C
 
 This isolated prototype contains fictional identities, a synthetic leave
 fixture and no production connectivity. No login, permission, dashboard or
@@ -45,6 +45,38 @@ use the screenshots and mobile browser fixtures; do not open a public port.
 
 ## Configuration and results
 
+- **Weekly Demand & OFF Planning** stores workload, maximum/preferred OFF,
+  and minimum working staff by team, group and month. Specific dates inherit
+  their weekday settings until overridden. Capacity is the smaller of the OFF
+  cap and available headcount after confirmed leave and mandatory work/shift
+  minima. The rolling seven-day capacity check compares usable slots to twice
+  group headcount; sufficient aggregate capacity is not proof of feasible pairs.
+- Phase 1C enforces a recurrent seven-day cadence per staff member: two
+  consecutive regular OFF days and five non-OFF dates. The cadence may straddle
+  Sunday/Monday or a month boundary. Leave occupies a non-OFF date without
+  counting as work or regular OFF. The solver explores tentative OFF phases
+  while evaluating shift feasibility; it does not fix OFF independently.
+  A preferred OFF pair is soft. A fixed cadence is a deliberate prototype
+  interpretation; rotating OFF weekdays between weeks would need a separate
+  approved policy. A conflict blocks a result rather than assigning extra OFF.
+- Within a working cycle, use the same shift except for one configured
+  adjacent adjustment on the day immediately before the pair. After two OFF
+  days, the next cycle may use a different shift. Affiliate defaults are
+  AM/AM1, AM1/PM1 and PM1/PM; CSP starts with no pair-eve exceptions.
+  The team transition list is editable. Fixed shift, allowed shifts, rotation
+  restrictions, work streak and elapsed rest remain mandatory.
+- The planner checks available previous and next boundary records and warns
+  when either side is incomplete, including during simulated confirmation.
+  A provisional synthetic snapshot does not certify unknown dates. Existing
+  local drafts retain cells, snapshots and preferences; old minimum-only
+  settings are archived at migration and are not enforced in Phase 1C.
+- Daily reporting adds working, OFF, AL/SL/UL, shift totals, shortfalls and
+  OFF capacity. Staff reporting adds per-code totals, paired-week counts,
+  work streaks and transitions. Candidate comparisons include scoped hard
+  validation, workload alignment (lower penalty is better), transition and
+  workday spread, target coverage, and PM share. XLSX adds a Planning summary
+  tab for new snapshots; existing grid sheets and the flat CSV stay compatible.
+
 - Coverage rows are scoped to team, group, month and shift. A checked date rule
   supersedes its weekday rule, which supersedes the daily default. Unchecking
   an override restores inheritance after saving. Phase 1 numeric minimums
@@ -57,9 +89,9 @@ use the screenshots and mobile browser fixtures; do not open a public port.
   enforcing current constraints. Manual prior-month copy remains a separate
   editor operation. The scope can be team, selected group or staff touched by
   selected cells. Fill empty cells only preserves all populated cells.
-- Fixed/allowed shifts, rotation restriction, weekly/consecutive OFF,
-  work streak and rest are mandatory. Preferred shift, weekly rotation,
-  preferred OFF weekdays and OFF streak are soft ordering preferences.
+- Fixed/allowed shifts, rotation restriction, paired OFF, work streak and
+  rest are mandatory. Preferred shift, weekly rotation and preferred OFF pair
+  are soft ordering preferences.
   Rotation restriction means one working shift per staff member for this
   roster month; it does not rewrite the previous month.
 - Up to three distinct valid candidates are displayed with a comparison and
@@ -74,12 +106,27 @@ use the screenshots and mobile browser fixtures; do not open a public port.
   Candidate review can still show a partial-scope result; unrelated
   incomplete cells must be resolved before final preview. The new
   Future_Leave_Requests acknowledgment is fresh each time confirmation opens.
-- December Affiliate benchmark against Phase 1 commit `07f72fa`: with one AM
+- Historical Phase 1B benchmark against Phase 1 commit `07f72fa`: with one AM
   per group per day and two NEW PM on Dec 4, the same staff, leave and remaining
   mandatory inputs produced 88/401 PM assignments (21.95%) in Phase 1 and
   340/402 (84.58%) in the selected Phase 1B candidate. Both passed the current
   hard-rule validator. This is a synthetic comparison, not a production
   staffing target or proof of optimality.
+
+Phase 1C comparison against `dfcd333` uses the same synthetic December people,
+leave, coverage (one AM per Affiliate group daily, one DAY per CSP group),
+rest and streak constraints. The paired policy and shift-cycle rule are the
+intentional differences. Metrics count complete, non-overlapping seven-day
+windows inside the displayed month. A window spanning an OFF pair split at
+its ends counts if it matches a valid repeating weekly pattern.
+
+| Team | Paired windows | Excess OFF | Group-days covered | PM / working | In-cycle changes |
+| --- | --- | --- | --- | --- | --- |
+| Affiliate | 8/72 to 72/72 | 17 to 0 | 62 to 62 | 339/401 to 335/400 | 24 to 0 |
+| CSP | 3/24 to 24/24 | 5 to 0 | 31 to 31 | 0/135 to 0/131 | 61 to 0 |
+
+The benchmark test logs elapsed local candidate generation per run. Results
+are synthetic; the bounded search is not a proof of mathematical optimality.
 
 ## Behavior and limits
 
@@ -90,10 +137,9 @@ use the screenshots and mobile browser fixtures; do not open a public port.
   Fairness and weekly shift rotation are ordering preferences, not claims
   of global optimality. Configured coverage, fixed shifts, known-rest
   boundaries, work streaks, leave, locks, maximums and weekly OFF are hard rules.
-- OFF is a configurable Monday-Sunday minimum; leave does not count as OFF.
-  A missing previous-month boundary is an explicit warning, not evidence
-  of rest or OFF compliance. An incomplete final week reports remaining OFF
-  obligations. Prior-month copy aligns by calendar day, skips leave and
+- Leave does not count as OFF. Missing adjacent-month records are explicit
+  warnings, not evidence of cross-month rest or OFF compliance.
+  Prior-month copy aligns by calendar day, skips leave and
   preserves locks; shorter previous months leave the extra dates untouched.
 - Draft storage is browser-only and is not designed for shared multi-user
   editing. The UI intentionally has no live write, deploy or upload path.

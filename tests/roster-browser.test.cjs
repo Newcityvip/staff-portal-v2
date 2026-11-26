@@ -183,3 +183,32 @@ test('coverage matrix validates independent configurations and jumps to an under
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   } finally { await context.close(); }
 });
+
+test('weekly demand panel saves scoped weekday and date limits and shows capacity on mobile', async () => {
+  const { context, page, errors, external } = await open(390);
+  try {
+    await page.click('#demand');
+    const dialog = page.locator('#dialog');
+    await dialog.getByRole('heading', { name: 'Weekly Demand & OFF Planning' }).waitFor();
+    await dialog.getByLabel('Fri workload').selectOption('Very Busy');
+    await dialog.getByLabel('Fri OFF maximum').fill('1');
+    await dialog.getByLabel('Fri OFF preferred').fill('2');
+    await dialog.getByRole('button', { name: 'Save demand' }).click();
+    await dialog.getByText(/do not set preferred OFF above/).waitFor();
+    await dialog.getByLabel('Fri OFF preferred').fill('1');
+    await dialog.getByRole('button', { name: 'Save demand' }).click();
+    await dialog.getByText('Demand saved.').waitFor();
+    await dialog.getByLabel('Rule period').selectOption('2026-12-04');
+    assert.equal(await dialog.getByLabel('2026-12-04 OFF maximum').inputValue(), '1');
+    await dialog.getByLabel('2026-12-04 OFF maximum').fill('0');
+    await dialog.getByLabel('2026-12-04 OFF preferred').fill('0');
+    await dialog.getByRole('button', { name: 'Save demand' }).click();
+    await dialog.getByText(/not proof of feasible OFF pairs/).waitFor();
+    await dialog.getByLabel('Demand group', { exact: true }).selectOption('new');
+    assert.equal(await dialog.getByLabel('2026-12-04 OFF maximum').inputValue(), '');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-planning-mobile.png') });
+    assert.deepEqual(errors, []);
+    assert.deepEqual(external, []);
+  } finally { await context.close(); }
+});

@@ -1,4 +1,5 @@
 import { coverage, key, totals, weekday, weekdays } from "./roster-model.js";
+import { coverageReport } from "./roster-policy.js";
 
 export function exportName(snapshot, ext, group = "") {
   const title = snapshot.groups.find(item => item.id === group)?.name || "Unassigned";
@@ -29,7 +30,7 @@ export async function workbookBytes(ExcelJS, snapshot, group = "") {
   book.title = "Synthetic roster prototype";
   book.creator = "Staff Portal V2";
   const fill = argb => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
-  const used = new Set(["legend"]);
+  const used = new Set(["legend", "planning summary"]);
   function sheetName(name) {
     const base = name.replace(/[\\/*?:[\]]/g, " ").replace(/^'+|'+$/g, "").trim().slice(0, 25) || "Roster";
     let title = base, n = 2;
@@ -77,6 +78,31 @@ export async function workbookBytes(ExcelJS, snapshot, group = "") {
   for (const shift of snapshot.catalog) {
     const row = legend.addRow([shift.id, shift.kind, shift.start, shift.end]);
     row.getCell(1).fill = fill("FF" + shift.color.slice(1).toUpperCase());
+  }
+  if (snapshot.planning) {
+    const { planning } = snapshot;
+    const sheet = book.addWorksheet("Planning summary", { views: [{ state: "frozen", ySplit: 2 }] });
+    const report = coverageReport({ ...snapshot, draft: planning, leave: planning.leave }, snapshot.cells);
+    const working = snapshot.catalog.filter(shift => shift.kind === "work");
+    sheet.addRow(["SYNTHETIC PROTOTYPE DATA", snapshot.month, "Draft revision " + snapshot.revision]);
+    sheet.addRow(["Group", "Date", ...working.map(s => s.id), "Work", "OFF", "AL", "SL", "UL", "OFF capacity", "Shortfall"]);
+    sheet.columns.forEach((column, i) => { column.width = i === 0 ? 27 : i === 1 ? 16 : 13; });
+    const daily = report.daily.filter(row => !group || row.group === group);
+    if (!group) {
+      for (const date of snapshot.dates) {
+        const rows = daily.filter(row => row.date === date);
+        const sum = field => rows.reduce((n, row) => n + row[field], 0);
+        daily.push({ name: "Combined", date, working: sum("working"), off: sum("off"), cap: sum("cap"), shortfall: sum("shortfall"),
+          counts: Object.fromEntries(snapshot.catalog.map(s => [s.id, rows.reduce((n, row) => n + (row.counts[s.id] || 0), 0)])) });
+      }
+    }
+    for (const row of daily) sheet.addRow([row.name, row.date, ...working.map(s => row.counts[s.id] || 0),
+      row.working, row.off, row.counts.AL || 0, row.counts.SL || 0, row.counts.UL || 0, row.cap, row.shortfall]);
+    sheet.addRow([]);
+    sheet.addRow(["Staff", "Staff ID", "Work", "OFF", "AL", "SL", "UL", "Paired weeks", "Max work streak", "Transitions", "Preferences"]);
+    for (const person of report.staff.filter(p => !group || p.group === group)) sheet.addRow([person.name, person.id, person.work,
+      person.off, person.mix.AL || 0, person.mix.SL || 0, person.mix.UL || 0, person.compliant + "/" + person.weeks,
+      person.maxStreak, person.transitions, person.preferred + "/" + person.opportunities]);
   }
   return book.xlsx.writeBuffer();
 }

@@ -3,6 +3,7 @@ export const key = (id, date) => id + "|" + date;
 export const dayIndex = date => Date.parse(date + "T00:00:00Z") / 86400000;
 export const dateAt = day => new Date(day * 86400000).toISOString().slice(0, 10);
 export const previousMonth = month => dateAt(dayIndex(month + "-01") - 1).slice(0, 7);
+export const nextMonth = month => dateAt(dayIndex(month + "-01") + datesFor(month).length).slice(0, 7);
 export const weekday = date => (dayIndex(date) + 4) % 7;
 export const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export function datesFor(month) {
@@ -37,12 +38,12 @@ export function seed() {
     },
     leave: { [key("SYN-003", "2026-12-09")]: "AL", [key("SYN-015", "2026-12-17")]: "SL",
       [key("SYN-021", "2026-12-11")]: "UL" },
-    drafts: {}, snapshots: []
+    drafts: {}, snapshots: [], transitions: { Affiliate: [["AM", "AM1"], ["AM1", "PM1"], ["PM1", "PM"]], CSP: [] }
   };
 }
 export const draftKey = (team, month) => team + "|" + month;
-export const newDraft = () => ({ cells: {}, locks: {}, staffLocks: {}, coverage: {}, preferences: {},
-  rules: { weeklyOff: 2, maxRun: 6, rest: 11, fair: true }, revision: 0 });
+export const newDraft = () => ({ cells: {}, locks: {}, staffLocks: {}, coverage: {}, demand: {}, preferences: {},
+  rules: { offPolicy: "paired", weeklyOff: 2, maxRun: 6, rest: 11, fair: true }, revision: 0 });
 export function draftFor(model, team, month) {
   const id = draftKey(team, month);
   if (!model.drafts[id]) {
@@ -79,16 +80,23 @@ export function contextFor(model, team, month) {
   const people = model.people.filter(p => p.team === team).map(p => ({ ...p, group: groupOf(model, p.id, month) }));
   const previous = previousMonth(month);
   const recorded = [...model.snapshots].reverse().find(s => s.team === team && s.month === previous);
+  const following = nextMonth(month);
+  const nextRecord = [...model.snapshots].reverse().find(s => s.team === team && s.month === following);
   return { team, month, dates: datesFor(month), people, groups: model.groups.filter(g => g.team === team),
     catalog: model.catalogs[team], leave: model.leave, draft: draftFor(model, team, month),
     previous: recorded?.cells || model.drafts[draftKey(team, previous)]?.cells || {},
     previousCatalog: recorded?.catalog || model.catalogs[team],
+    next: nextRecord?.cells || model.drafts[draftKey(team, following)]?.cells || {},
+    nextCatalog: nextRecord?.catalog || model.catalogs[team], transitions: model.transitions?.[team] || [],
     conflicts: people.filter(p => groupMatches(model, p.id, month).length > 1 ||
       (p.group !== "unassigned" && !model.groups.some(g => g.id === p.group && g.team === team))).map(p => p.id) };
 }
 export function snapshot(context) {
-  const { team, month, dates, people, groups, catalog, draft } = context;
-  return structuredClone({ team, month, dates, people, groups, catalog, revision: draft.revision, cells: draft.cells });
+  const { team, month, dates, people, groups, catalog, draft, leave } = context;
+  const leaveForScope = Object.fromEntries(people.flatMap(person => dates.map(date => key(person.id, date)))
+    .filter(k => leave[k]).map(k => [k, leave[k]]));
+  return structuredClone({ team, month, dates, people, groups, catalog, revision: draft.revision, cells: draft.cells,
+    planning: { coverage: draft.coverage, demand: draft.demand || {}, rules: draft.rules, preferences: draft.preferences, leave: leaveForScope } });
 }
 export const isLocked = (context, id, date) => Boolean(context.leave[key(id, date)] ||
   context.draft.staffLocks[id] || context.draft.locks[key(id, date)]);
@@ -145,13 +153,27 @@ export function createHistory(model) {
   };
 }
 export const storageKey = "spv2.syntheticRoster.v1";
+export function migrate(saved) {
+  const model = saved.model;
+  model.transitions ??= seed().transitions;
+  for (const draft of Object.values(model.drafts)) {
+    draft.demand ??= {};
+    if (draft.rules.offPolicy !== "paired") {
+      draft.legacyOff = { minimum: draft.rules.weeklyOff, staff: Object.fromEntries(Object.entries(draft.preferences)
+        .filter(([, p]) => p.weeklyOff != null || p.consecutiveOff != null)
+        .map(([id, p]) => [id, { minimum: p.weeklyOff, consecutive: p.consecutiveOff }])) };
+      draft.rules.offPolicy = "paired";
+    }
+  }
+  return saved;
+}
 export function restore(storage) {
   try {
     const saved = JSON.parse(storage.getItem(storageKey) || "null");
-    if (saved?.schema === 1 && Array.isArray(saved.model?.people) && saved.model?.catalogs) return saved;
+    if ([1, 2].includes(saved?.schema) && Array.isArray(saved.model?.people) && saved.model?.catalogs) return migrate(saved);
   } catch {}
   return { model: seed(), team: "Affiliate", month: "2026-12" };
 }
 export function save(storage, model, team, month) {
-  storage.setItem(storageKey, JSON.stringify({ schema: 1, model, team, month }));
+  storage.setItem(storageKey, JSON.stringify({ schema: 2, model, team, month }));
 }

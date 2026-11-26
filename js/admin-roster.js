@@ -3,6 +3,7 @@ import { contextFor, coverage, createHistory, datesFor, draftFor, isLocked, key,
 import { validate } from "./roster-generator.js";
 import { downloadRoster } from "./roster-export.js";
 import { asCoverage, coverageKey, coverageReport, priorities, validCoverage } from "./roster-policy.js";
+import { defaultDemand, demandKey, pairNames, validDemand, workloads } from "./roster-weekly.js";
 
 const $ = id => document.getElementById(id);
 const initial = restore(localStorage);
@@ -107,25 +108,32 @@ function renderGrid(report) {
   head.append(make("th", "Work / OFF / Leave", { scope: "col", class: "totals" }));
   function addCoverage(body, people, prefix, groupId = "") {
     const counts = coverage(people, current.dates, current.draft.cells);
-    for (const shift of workShifts()) {
+    for (const shift of [...workShifts(), { id: "_working", label: "Working" }, { id: "OFF" }, { id: "AL" }, { id: "SL" }, { id: "UL" }]) {
       const tr = body.insertRow();
       tr.className = "coverage";
-      tr.append(make("th", prefix + shift.id, { scope: "row", class: "name" }));
+      tr.append(make("th", prefix + (shift.label || shift.id), { scope: "row", class: "name" }));
       counts.forEach((day, index) => {
         const td = tr.insertCell();
-        const actual = day[shift.id] || 0;
-        td.textContent = actual;
         const date = current.dates[index];
         const stats = report.daily.filter(row => row.date === date && (groupId ? row.group === groupId : true));
+        const actual = shift.id === "_working" ? stats.reduce((sum, row) => sum + row.working, 0) : day[shift.id] || 0;
+        td.textContent = actual;
         const rules = stats.flatMap(row => row.shifts.filter(s => s.id === shift.id));
         const min = rules.reduce((n, s) => n + s.min, 0), target = rules.reduce((n, s) => n + s.target, 0);
         const max = groupId ? rules[0]?.max : null;
-        td.dataset.shortfall = actual < min || max != null && actual > max;
+        const dailyCap = stats.reduce((sum, row) => sum + row.cap, 0);
+        const core = actual < min || max != null && actual > max;
+        td.dataset.shortfall = core || shift.id === "OFF" && stats.some(row => row.off > (row.demand.maxOff ?? Infinity) || row.shortfall) ||
+          shift.id === "_working" && stats.some(row => row.shortfall);
         if (groupId) td.dataset.coverage = [groupId, date, shift.id].join("|");
         td.title = date + " / " + shift.id + ": " + actual + " assigned, " + min + " minimum, " + target + " target, " +
           stats.reduce((n, s) => n + s.available, 0) + " available" + (max == null ? "" : ", " + max + " maximum");
+        if (shift.id === "OFF") td.title = date + ": " + actual + "/" + dailyCap + " usable regular OFF slots";
+        if (shift.id === "_working") td.title = date + ": " + actual + " working, " + stats.reduce((n, d) => n + d.shortfall, 0) + " shortfall";
       });
-      tr.insertCell().textContent = counts.reduce((sum, day) => sum + (day[shift.id] || 0), 0);
+      tr.insertCell().textContent = shift.id === "_working"
+        ? report.daily.filter(d => !groupId || d.group === groupId).reduce((sum, d) => sum + d.working, 0)
+        : counts.reduce((sum, day) => sum + (day[shift.id] || 0), 0);
     }
   }
   for (const [id, name] of groupPairs(current)) {
@@ -161,7 +169,9 @@ function renderGrid(report) {
       cell.className = "totals";
       cell.textContent = [count.work, count.off, count.leave].join(" / ");
     }
-    if (people.length || report.daily.some(day => day.group === id && day.shifts.some(s => s.min || s.target))) addCoverage(body, people, "Coverage / ", id);
+    if (people.length || report.daily.some(day => day.group === id && (day.demand.minWork || day.shifts.some(s => s.min || s.target)))) {
+      addCoverage(body, people, "Coverage / ", id);
+    }
   }
   addCoverage(table.createTBody(), current.people, "Combined / ");
   scroll.scrollTop = top;
@@ -190,6 +200,7 @@ function render() {
   $("group").disabled = preview;
   $("rules").disabled = preview;
   $("coverage").disabled = preview;
+  $("demand").disabled = preview;
   $("groups").disabled = preview;
   $("undo").disabled = preview || !history.canUndo;
   $("redo").disabled = preview || !history.canRedo;
@@ -363,6 +374,66 @@ function coverageDialog(initialGroup = group, initialPeriod = "*") {
     })), feedback]);
 }
 
+function demandDialog() {
+  const scope = choose(groupPairs(current), group || current.groups[0]?.id);
+  scope.setAttribute("aria-label", "Demand group");
+  const override = choose([["", "Weekly rules"], ...current.dates.map(date => [date, date + " override"])], "");
+  const table = make("table"), holder = make("div", "", { class: "dialog-table" }), feedback = make("p", "", { role: "status" });
+  const capacity = make("div");
+  holder.append(table);
+  const heading = table.createTHead().insertRow();
+  ["Day", "Workload", "OFF max", "OFF preferred", "Work min"].forEach(text => heading.append(make("th", text, { scope: "col" })));
+  const settings = [];
+  function showCapacity() {
+    const report = coverageReport(current, current.draft.cells);
+    const rows = report.daily.filter(day => day.group === scope.value);
+    const required = current.people.filter(person => person.group === scope.value).length * 2;
+    const weeks = [];
+    for (let i = 0; i + 6 < rows.length; i++) {
+      const week = rows.slice(i, i + 7), slots = week.reduce((sum, day) => sum + day.cap, 0);
+      weeks.push([week[0].date + " to " + week.at(-1).date, required, slots, slots < required ? "Insufficient" : "Aggregate only"]);
+    }
+    capacity.replaceChildren(make("h3", "Weekly OFF capacity"), reportTable(["Dates", "Required", "Available", "Capacity check"], weeks),
+      make("p", "Capacity totals are not proof of feasible OFF pairs or shift coverage."));
+  }
+  const refresh = () => {
+    table.tBodies[0]?.remove();
+    const body = table.createTBody();
+    settings.length = 0;
+    for (const period of override.value ? [override.value] : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]) {
+      const k = demandKey(scope.value, period);
+      const rule = { ...defaultDemand, ...(current.draft.demand[k] || (override.value ? current.draft.demand[demandKey(scope.value, weekdays[weekday(period)])] : null)) };
+      const tr = body.insertRow();
+      tr.append(make("th", period, { scope: "row" }));
+      const workload = choose(workloads.map(name => [name, name]), rule.workload);
+      workload.setAttribute("aria-label", period + " workload");
+      const numeric = (n, name) => input("number", n ?? "", { min: 0, max: 99, step: 1, "aria-label": period + " " + name });
+      const maxOff = numeric(rule.maxOff, "OFF maximum"), preferredOff = numeric(rule.preferredOff, "OFF preferred"), minWork = numeric(rule.minWork, "working minimum");
+      for (const field of [workload, maxOff, preferredOff, minWork]) tr.insertCell().append(field);
+      settings.push({ k, period, workload, maxOff, preferredOff, minWork });
+    }
+    showCapacity();
+  };
+  scope.onchange = override.onchange = refresh;
+  refresh();
+  openDialog("Weekly Demand & OFF Planning", [row(label("Group", scope), label("Rule period", override)), holder, row(
+    button("Save demand", () => {
+      const nullable = field => field.value === "" ? null : +field.value;
+      const entries = settings.map(item => [item.k, { workload: item.workload.value, maxOff: nullable(item.maxOff),
+        preferredOff: nullable(item.preferredOff), minWork: nullable(item.minWork) ?? 0 }]);
+      if (entries.some(([, rule]) => !validDemand(rule) || [rule.maxOff, rule.preferredOff, rule.minWork].some(n => n > 99))) {
+        feedback.textContent = "Use whole numbers and do not set preferred OFF above its maximum."; return;
+      }
+      editDraft(d => { for (const [k, value] of entries) d.demand[k] = value; });
+      showCapacity();
+      feedback.textContent = "Demand saved.";
+    }), button("Clear date override", () => {
+      if (!override.value) { feedback.textContent = "Select a date override first."; return; }
+      editDraft(d => { delete d.demand[demandKey(scope.value, override.value)]; }); refresh();
+      feedback.textContent = "Date override cleared.";
+    })), feedback, capacity]);
+}
+
 function preferencesDialog() {
   const person = choose(current.people.map(p => [p.id, p.name]), current.people[0]?.id);
   const fields = make("div");
@@ -385,25 +456,23 @@ function preferencesDialog() {
     };
     const selectedValues = block => [...block.querySelectorAll("input:checked")].map(c => c.value);
     const allowed = choices(shifts, pref.allowed || []);
-    const offDays = choices(weekdays.map(day => [day, day]), pref.offDays || []);
-    const consecutive = input("number", pref.preferredOffRun ?? (pref.preferConsecutiveOff ? 2 : 0), { min: 0, max: 7, step: 1 });
-    const fieldsByRule = [["weeklyOff", "Weekly OFF minimum", 0, 7], ["consecutiveOff", "Required OFF streak", 0, 7],
-      ["maxRun", "Max work streak", 1, 14], ["rest", "Rest (hours)", 0, 48]].map(([id, name, min, max]) =>
+    const offPair = choose([["", "Optimize automatically"], ...pairNames.map((name, index) => [String(index), name])], String(pref.offPair ?? ""));
+    const fieldsByRule = [["maxRun", "Max work streak", 1, 14], ["rest", "Rest (hours)", 0, 48]].map(([id, name, min, max]) =>
       ({ id, name, min, max, control: input("number", pref[id] ?? "", { min, max, step: 1, placeholder: "Default" }) }));
     const teamGroup = current.groups.find(g => g.id === current.people.find(p => p.id === person.value)?.group)?.name || "Unassigned";
     fields.replaceChildren(make("p", "Monthly group: " + teamGroup), make("h3", "Mandatory"),
       row(label("Fixed shift", fixed), label("Shift rotation", rotation)), make("p", "Allowed shifts (none selected means any eligible shift)"), allowed,
       row(...fieldsByRule.map(item => label(item.name, item.control))), make("h3", "Preferences"),
-      row(label("Preferred shift", preferred), label("Preferred OFF streak", consecutive)), make("p", "Preferred OFF weekdays"), offDays,
+      row(label("Preferred shift", preferred), label("Preferred OFF pair", offPair)),
       row(button("Save preferences", () => {
         const allowedValues = selectedValues(allowed);
-        if (!range(consecutive.value, 0, 7) || fieldsByRule.some(item => item.control.value !== "" && !range(item.control.value, item.min, item.max)) ||
+        if (fieldsByRule.some(item => item.control.value !== "" && !range(item.control.value, item.min, item.max)) ||
           fixed.value && allowedValues.length && !allowedValues.includes(fixed.value)) {
           feedback.textContent = "Check rule ranges and ensure the fixed shift is allowed."; return;
         }
         const numeric = Object.fromEntries(fieldsByRule.filter(item => item.control.value !== "").map(item => [item.id, +item.control.value]));
-        editDraft(d => { d.preferences[person.value] = { ...numeric, fixed: fixed.value, preferred: preferred.value,
-          allowed: allowedValues, offDays: selectedValues(offDays), preferredOffRun: +consecutive.value,
+        editDraft(d => { d.preferences[person.value] = { ...d.preferences[person.value], ...Object.fromEntries(fieldsByRule.map(item => [item.id, numeric[item.id]])), fixed: fixed.value, preferred: preferred.value,
+          allowed: allowedValues, offPair: offPair.value === "" ? null : +offPair.value,
           rotate: rotation.value === "rotate", restrictRotation: rotation.value === "restricted" }; });
         feedback.textContent = "Preferences saved.";
       }), button("Monthly group assignments", groupsDialog)));
@@ -416,7 +485,7 @@ function preferencesDialog() {
 function rulesDialog() {
   const rules = current.draft.rules;
   const numeric = (value, min, max) => input("number", value, { min, max, step: 1 });
-  const off = numeric(rules.weeklyOff, 0, 7), run = numeric(rules.maxRun, 1, 14), rest = numeric(rules.rest, 0, 48), fair = input("checkbox", "");
+  const run = numeric(rules.maxRun, 1, 14), rest = numeric(rules.rest, 0, 48), fair = input("checkbox", "");
   fair.checked = rules.fair;
   const catalogEntry = choose([["", "New shift"], ...current.catalog.map(s => [s.id, s.id])], "");
   const id = input("text", "", { maxlength: 8 }), start = input("time", ""), end = input("time", "");
@@ -433,13 +502,31 @@ function rulesDialog() {
     kind.disabled = Boolean(entry);
   };
   const feedback = make("p", "", { role: "status" });
+  const transitions = make("div", "", { class: "check-grid" });
+  const pairs = workShifts().flatMap((shift, i, all) => all.slice(i + 1).map(other => [shift.id, other.id]));
+  const transitionInputs = pairs.map(([a, b]) => {
+    const check = input("checkbox", "");
+    check.checked = current.transitions.some(pair => pair.includes(a) && pair.includes(b));
+    transitions.append(label(a + " / " + b, check));
+    return check;
+  });
   openDialog("Shift rules", [
-    row(label("Weekly OFF minimum", off), label("Max work streak", run), label("Rest (hours)", rest), label("Fair distribution", fair),
+    make("p", "Weekly OFF: exactly two consecutive regular OFF days per seven-day cycle."),
+    row(label("Max work streak", run), label("Rest (hours)", rest), label("Fair distribution", fair),
       button("Save rules", () => {
-        if (!range(off.value, 0, 7) || !range(run.value, 1, 14) || !range(rest.value, 0, 48)) { feedback.textContent = "Check rule ranges."; return; }
-        editDraft(d => { d.rules = { weeklyOff: +off.value, maxRun: +run.value, rest: +rest.value, fair: fair.checked }; });
+        if (!range(run.value, 1, 14) || !range(rest.value, 0, 48)) { feedback.textContent = "Check rule ranges."; return; }
+        editDraft(d => { Object.assign(d.rules, { maxRun: +run.value, rest: +rest.value, fair: fair.checked }); });
         feedback.textContent = "Rules saved.";
       })),
+    make("h3", "Allowed adjustments before an OFF pair"), transitions,
+    row(button("Save transitions", () => {
+      history.change(model => {
+        model.transitions[team] = pairs.filter((_, i) => transitionInputs[i].checked);
+        draftFor(model, team, month).revision++;
+      });
+      render();
+      feedback.textContent = "Team transitions saved.";
+    })),
     row(button("Coverage matrix", () => coverageDialog()), button("Staff preferences", preferencesDialog)),
     make("h3", "Team shift catalog"),
     row(label("Edit", catalogEntry), label("Code", id), label("Type", kind), label("Start", start), label("End", end), label("Color", color),
@@ -481,6 +568,8 @@ function confirmDialog() {
     make("p", "Production publishing is unavailable in prototype mode."),
     make("p", "Please check the Future_Leave_Requests tab and confirm that all approved leave requests for the selected roster month have been included before proceeding."),
     row(label("I acknowledge the reminder", acknowledgement)),
+    ...(issues.warnings.some(issue => issue.type === "boundary")
+      ? [make("p", "Month-boundary data is incomplete. This synthetic snapshot is provisional.", { class: "warning" })] : []),
     make("p", issues.errors.length ? issues.errors.length + " blocking issues must be resolved first." : "This saves a synthetic snapshot only."),
     accept
   ]);
@@ -507,7 +596,9 @@ function renderReport(report, issues) {
   const combined = current.dates.map(date => {
     const days = report.daily.filter(d => d.date === date);
     return { date, name: "Combined", available: days.reduce((n, d) => n + d.available, 0),
-      shifts: days.flatMap(d => d.shifts) };
+      shifts: days.flatMap(d => d.shifts), working: days.reduce((n, d) => n + d.working, 0), off: days.reduce((n, d) => n + d.off, 0),
+      cap: days.reduce((n, d) => n + d.cap, 0), shortfall: days.reduce((n, d) => n + d.shortfall, 0),
+      counts: Object.fromEntries(current.catalog.map(s => [s.id, days.reduce((sum, d) => sum + (d.counts[s.id] || 0), 0)])) };
   });
   $("result-report").replaceChildren(
     make("p", report.staff.filter(p => p.work || p.off || p.leave).length + " staff / " + report.dates +
@@ -517,23 +608,36 @@ function renderReport(report, issues) {
       issues.errors.filter(e => e.type === "lock").length + " lock conflicts"),
     make("p", "PM coverage: " + report.pmPercent.toFixed(1) + "% (" + report.pm + "/" + report.working +
       " working assignments). Preferences matched: " + report.preferenceHits + "/" + report.preferenceTotal + "."),
+    make("p", "Paired OFF: " + report.offCompliant + "/" + report.offWeeks + " complete seven-day windows / " +
+      report.excessOff + " excess OFF / " + report.cycleTransitions + " in-cycle shift adjustments."),
     make("p", Object.entries(report.distribution).map(([code, n]) => code + " " + n).join(" / ")),
-    reportTable(["Staff", "Group", "Work", "OFF", "Leave", "Preferences"], report.staff.map(p =>
-      [p.name, groupNames.get(p.group), p.work, p.off, p.leave, p.preferred + "/" + p.opportunities])),
+    reportTable(["Staff", "Group", "Work", "OFF", "AL", "SL", "UL", "Shift totals", "Paired weeks", "Max work streak", "Transitions", "Preferences"],
+      report.staff.map(p => [p.name, groupNames.get(p.group), p.work, p.off, p.mix.AL || 0, p.mix.SL || 0, p.mix.UL || 0,
+        workShifts().map(s => s.id + " " + (p.mix[s.id] || 0)).join(" / "), p.compliant + "/" + p.weeks,
+        p.maxStreak, p.transitions, p.preferred + "/" + p.opportunities])),
     make("h3", "Daily coverage"),
-    reportTable(["Group", "Date", "Available", "Minimum", "Limits", "Target met"], [...combined, ...report.daily].map(day =>
-      [day.name, day.date, day.available, day.shifts.reduce((sum, s) => sum + s.min, 0),
-        countPass(day) ? "Met" : "Outside limits", targetRatio(day)]))
+    reportTable(["Group", "Date", ...workShifts().map(s => s.id), "Work", "OFF / capacity", "AL", "SL", "UL", "Shortfall", "Target met"],
+      [...combined, ...report.daily].map(day => [day.name, day.date, ...workShifts().map(s => day.counts[s.id] || 0),
+        day.working, day.off + "/" + day.cap, day.counts.AL || 0, day.counts.SL || 0, day.counts.UL || 0,
+        day.shortfall, targetRatio(day)]))
   );
 }
 function reviewCandidates(candidates, guard) {
   const pick = choose(candidates.map((_, i) => [String(i), "Candidate " + (i + 1)]), "0");
   const selectedPreview = make("div");
-  const compare = reportTable(["Candidate", "Working", "PM", "PM share", "Target (weighted)", "Preferences"], candidates.map((c, i) =>
-    [i + 1, c.report.working, c.report.pm, c.report.pmPercent.toFixed(1) + "%", c.target, c.report.preferenceHits]));
+  const compare = reportTable(["Candidate", "Blocking (scope)", "Paired weeks", "Coverage days met", "Workload penalty",
+    "PM share", "In-cycle changes", "Workdays spread", "Target (weighted)"], candidates.map((c, i) => {
+    const people = c.report.staff.filter(p => c.scopePeople.includes(p.id));
+    const daily = c.report.daily.filter(d => c.scopeGroups.includes(d.group));
+    return [i + 1, 0, people.reduce((n, p) => n + p.compliant, 0) + "/" + people.reduce((n, p) => n + p.weeks, 0),
+      daily.filter(d => countPass(d) && !d.shortfall && d.off <= (d.demand.maxOff ?? Infinity)).length + "/" + daily.length,
+      daily.reduce((n, d) => n + d.alignment, 0), c.report.pmPercent.toFixed(1) + "%",
+      people.reduce((n, p) => n + p.cycleTransitions, 0), Math.max(...people.map(p => p.work)) - Math.min(...people.map(p => p.work)), c.target];
+  }));
   const renderPreview = () => {
     const candidate = candidates[Number(pick.value)];
-    selectedPreview.replaceChildren(make("p", candidate.warnings.length + " validation warnings in generation scope."), reportTable(
+    selectedPreview.replaceChildren(make("p", candidate.warnings.length + " validation warnings in generation scope. " +
+      candidate.scopePeople.length + "/" + current.people.length + " staff in scope; other rows are unchanged."), reportTable(
       ["Staff", ...current.dates.map(date => date.slice(-2))], current.people.map(p =>
         [p.name, ...current.dates.map(date => candidate.cells[key(p.id, date)] || "-")])));
   };
@@ -632,6 +736,7 @@ $("confirm").onclick = confirmDialog;
 $("groups").onclick = groupsDialog;
 $("rules").onclick = rulesDialog;
 $("coverage").onclick = () => coverageDialog();
+$("demand").onclick = demandDialog;
 $("generate").onclick = run;
 $("source").onchange = updateExportGroups;
 for (const format of ["csv", "xlsx"]) $(format).onclick = async () => {

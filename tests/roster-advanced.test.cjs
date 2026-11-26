@@ -54,6 +54,7 @@ test('PM optimization improves actual Phase 1 results on identical mandatory inp
     .replace('"./roster-model.js"', JSON.stringify(pathToFileURL(path.resolve('js/roster-model.js')).href));
   const beforeGenerator = await import('data:text/javascript;base64,' + Buffer.from(legacy).toString('base64'));
   const c = contextFor(seed(), 'Affiliate', '2026-12');
+  c.draft.rules.offPolicy = 'legacy';
   c.draft.coverage['old|*|AM'] = 1;
   c.draft.coverage['new|*|AM'] = 1;
   c.draft.coverage['new|2026-12-04|PM'] = 2;
@@ -79,6 +80,7 @@ test('balanced and custom honor limits, disabled shifts, fixed and multiple allo
   const { generate, validate } = await generator;
   const { coverageReport } = await policy;
   const c = contextFor(seed(), 'Affiliate', '2026-12');
+  c.draft.rules.offPolicy = 'legacy';
   c.draft.coverage['old|*|PM'] = { min: 0, target: 2, max: 2, priority: 3 };
   c.draft.coverage['old|*|PM1'] = { min: 0, target: 0, enabled: false };
   c.draft.coverage['new|*|AM'] = { min: 1, target: 2, max: 3, priority: 2 };
@@ -126,6 +128,7 @@ test('previous pattern ranks old shifts, leaves month data unchanged and reports
   const { seed, contextFor, key } = await model;
   const { generate } = await generator;
   const c = contextFor(seed(), 'CSP', '2026-12');
+  c.draft.rules.offPolicy = 'legacy';
   assert.equal(generate(c, { strategy: 'previous' }).status, 'missing-boundary');
   c.previous[key('SYN-019', '2026-11-01')] = 'MID';
   const before = structuredClone(c.previous);
@@ -139,6 +142,7 @@ test('diagnostics separate leave, blank locks, insufficient staff, rest and week
   const { seed, contextFor, key } = await model;
   const { generate, validate } = await generator;
   const c = contextFor(seed(), 'Affiliate', '2026-12'), id = 'SYN-001';
+  c.draft.rules.offPolicy = 'legacy';
   c.draft.coverage['old|2026-12-09|AM'] = 10;
   assert.equal(generate(c).code, 'staffing');
   c.draft.coverage = {};

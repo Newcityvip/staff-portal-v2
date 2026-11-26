@@ -87,6 +87,9 @@ dialog::backdrop { background: #030811bb; }
 .form-row label { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .form-row + h3 { border-top: 1px solid var(--line); padding-top: 10px; }
 dialog p { margin-bottom: 10px; }
+.diagnostic-list { max-height: 40vh; overflow: auto; overflow-wrap: anywhere; }
+.diagnostic-list details { min-width: 0; border-top: 1px solid var(--line); }
+.diagnostic-list input[type=checkbox] { flex: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 @media (max-width: 560px) {
   .shell { width: calc(100% - 20px); }

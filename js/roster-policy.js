@@ -1,11 +1,12 @@
-import { coverage, key, totals, weekday, weekdays } from "./roster-model.js";
+import { coverage, key, optionalLimit, totals, weekday, weekdays } from "./roster-model.js";
 import { alignment, demandRule, offCapacity, phaseIndices, phasesFor } from "./roster-weekly.js";
 
 export const priorities = ["Low", "Normal", "High", "Highest"];
 export const defaultCoverage = { min: 0, target: 0, max: null, priority: 1, enabled: true };
 export const coverageKey = (group, period, shift) => [group, period, shift].join("|");
 export function asCoverage(value) {
-  return typeof value === "number" ? { ...defaultCoverage, min: value, target: value } : { ...defaultCoverage, ...value };
+  return typeof value === "number" ? { ...defaultCoverage, min: value, target: value } :
+    { ...defaultCoverage, ...value, max: optionalLimit(value?.max) };
 }
 export function validCoverage({ min, target, max, priority, enabled }) {
   return Number.isInteger(min) && min >= 0 && Number.isInteger(target) && target >= min &&

@@ -1,5 +1,5 @@
 import { dateAt, dayIndex, isLocked, key, totals, weekday, weekdays, datesFor, previousMonth } from "./roster-model.js";
-import { coverageReport, coverageRule, eligible, staffRules, validCoverage } from "./roster-policy.js";
+import { coverageKey, coverageReport, coverageRule, eligible, staffRules, validCoverage } from "./roster-policy.js";
 import { alignment, boundary, boundaryPhases, demandRule, desiredOff, endingPhase, offCapacity,
   pairedPolicy, phaseIndices, phasesFor, validDemand } from "./roster-weekly.js";
 
@@ -93,6 +93,26 @@ function advance(state, date, shift, rules) {
   return { next, problems };
 }
 const rulesFor = (context, id) => ({ ...staffRules(context, id), paired: pairedPolicy(context), transitions: context.transitions || [] });
+function generationScope(context, { group = "", people } = {}) {
+  const selected = new Set(people || context.people.map(person => person.id));
+  const groups = (group ? [group] : [...context.groups.map(g => g.id), "unassigned"])
+    .filter(id => !people || context.people.some(person => person.group === id && selected.has(person.id)));
+  return { selected, groups };
+}
+function coversMinimums(slots, requirements) {
+  const matched = [];
+  const assign = (shift, seen) => slots.some((slot, i) => {
+    if (seen.has(i) || !slot.codes.includes(shift)) return false;
+    seen.add(i);
+    if (matched[i] && !assign(matched[i], seen)) return false;
+    matched[i] = shift;
+    return true;
+  });
+  return requirements.every(({ id, min }) => {
+    for (let i = 0; i < min; i++) if (!assign(id, new Set())) return false;
+    return true;
+  });
+}
 function nextProblems(state, edges, rules) {
   const found = [];
   for (const { date, shift } of edges?.next || []) {
@@ -169,26 +189,185 @@ export function validate(context, cells = context.draft.cells, scope = {}) {
   return { errors, warnings };
 }
 
+export function diagnose(context, options = {}) {
+  const { selected, groups } = generationScope(context, options);
+  const catalog = lookup(context.catalog), shifts = context.catalog.filter(s => s.kind === "work");
+  const issues = [], suggestions = new Map();
+  const paired = pairedPolicy(context);
+  const add = (code, reason, ref, current, available, action, certainty = "Confirmed") =>
+    issues.push({ code, reason, ...ref, current, available, action, certainty });
+  const refill = () => suggestions.set("refill", { id: "refill", current: "Fill empty cells only", proposed: "Regenerate unlocked assignments",
+    effect: "Search can replace unlocked assignments. Locks and confirmed leave remain unchanged." });
+  for (const person of context.people.filter(p => selected.has(p.id) && context.conflicts?.includes(p.id))) {
+    add("membership", "Invalid or conflicting effective brand membership", { group: person.group, staff: person.name, setting: "groups" },
+      person.group, "One valid brand in this team", "Review the effective transfer month and brand membership.");
+  }
+  for (const group of groups) {
+    const people = context.people.filter(p => p.group === group);
+    const days = [];
+    const fixed = (p, date) => {
+      const k = key(p.id, date), saved = context.draft.cells[k];
+      return { saved, locked: isLocked(context, p.id, date), outside: !selected.has(p.id), leave: context.leave[k],
+        retained: Boolean(!selected.has(p.id) || isLocked(context, p.id, date) || options.keepAssigned && saved) };
+    };
+    const masks = new Map();
+    for (const p of people.filter(person => selected.has(person.id))) {
+      const rules = rulesFor(context, p.id), edges = paired ? boundary(context, p.id) : null;
+      let state = initialState(context, p, edges);
+      if (edges && !state.phases) add("boundary-pair", "Known adjacent-month assignments rule out all regular OFF pairs",
+        { group, staff: p.name, date: context.dates[0], cell: key(p.id, context.dates[0]) },
+        "Previous and next month assignments", "One consistent two-day OFF pair", "Review the adjacent-month assignments.");
+      if (edges && [...edges.previous, ...edges.next].some(row => !row.shift)) {
+        add("boundary", "Cross-month OFF and shift continuity are provisional", { group, staff: p.name, date: context.dates[0], cell: key(p.id, context.dates[0]) },
+          "Adjacent month incomplete", "Only recorded dates constrain the search", "Review known boundary assignments.", "Unknown");
+      }
+      for (const date of context.dates) {
+        const k = key(p.id, date), { saved, locked, retained, leave } = fixed(p, date);
+        const shift = catalog.get(leave || (retained ? saved : ""));
+        const ref = { group, date, staff: p.name, cell: k, shift: shift?.id };
+        if (leave && saved && saved !== leave || locked && !shift) {
+          add(leave ? "leave" : "lock", leave ? "Confirmed leave conflicts with the saved cell" : "Locked cell has no valid shift",
+            ref, String(saved || "Blank"), leave || "A valid locked assignment", "Review the original assignment; confirmed leave and locks will not be changed automatically.");
+        } else if (retained && saved && !shift) {
+          add("assignment", "Retained cell has an invalid shift", ref, String(saved), "A shift in this team catalog", "Correct the assignment.");
+        }
+        if (shift && !eligible(rules, shift)) add("eligibility", "Retained shift is not eligible for this staff member",
+          { ...ref, setting: "staff" }, shift.id, rules.fixed || rules.allowed?.join(", "), "Review staff shift eligibility or the retained cell.");
+        const step = advance(state, date, shift, rules);
+        for (const problem of step.problems) {
+          if (!state.phases && problem.startsWith("Exactly")) continue;
+          // A blank between known shifts can change cycle continuity, but cannot add rest.
+          add("retained-policy", problem, ref, shift?.id || "Blank", "Current mandatory roster rules",
+            "Review retained cells, leave and adjacent-month assignments.");
+          if (options.keepAssigned && retained && !locked && !leave) refill();
+        }
+        state = step.next;
+      }
+      for (const { date, problems } of nextProblems(state, edges, rules)) for (const reason of problems) {
+        if (!state.phases && reason.startsWith("Exactly")) continue;
+        add("boundary-policy", reason, { group, staff: p.name, date, cell: key(p.id, context.dates.at(-1)) },
+          "Known next-month assignment", "Current mandatory roster rules", "Review the next month's saved assignments.");
+      }
+      if (paired) {
+        masks.set(p.id, state.phases);
+        if (!state.phases && options.keepAssigned && context.dates.some(date => {
+          const slot = fixed(p, date);
+          return slot.saved && !slot.locked && !slot.leave;
+        })) refill();
+      }
+    }
+    for (const date of context.dates) {
+      const rule = demandRule(context, group, date), settings = shifts.map(shift => coverageRule(context, group, date, shift.id));
+      const slots = people.map(p => {
+        const entry = fixed(p, date), mask = masks.get(p.id);
+        const codes = entry.leave ? [] : entry.retained ? [entry.saved] :
+          mask && !(mask & phasesFor(date, false)) ? [] :
+          shifts.filter((s, i) => settings[i].enabled && eligible(staffRules(context, p.id), s)).map(s => s.id);
+        const mandatoryOff = entry.retained ? entry.saved === "OFF" : mask && !(mask & phasesFor(date, false));
+        return { codes, mandatoryOff, retained: entry.retained, replaceable: entry.retained && !entry.outside && !entry.locked && !entry.leave };
+      });
+      const available = slots.filter(slot => slot.codes.some(code => shifts.some(s => s.id === code))).length;
+      const min = settings.reduce((sum, entry) => sum + entry.min, 0);
+      const off = slots.filter(s => s.mandatoryOff).length;
+      const ref = { group, date, setting: "demand", coverage: [group, date, "OFF"] };
+      const cap = offCapacity(rule, people.filter(p => !fixed(p, date).leave).length, min);
+      days.push({ date, cap });
+      if (paired && !validDemand(rule)) add("demand", "Invalid daily OFF or working rule", ref,
+        "OFF cap " + (rule.maxOff ?? "unlimited") + " / preferred " + (rule.preferredOff ?? "auto") + " / work minimum " + rule.minWork,
+        "Nonnegative whole numbers; preferred OFF cannot exceed the cap", "Review Weekly Demand & OFF Planning.");
+      if (paired && Number.isInteger(rule.maxOff) && rule.maxOff >= 0 && rule.preferredOff > rule.maxOff) {
+        const id = group + "|" + date + "|preferredOff";
+        suggestions.set(id, { id, group, date, shift: "OFF", field: "preferredOff", value: rule.maxOff,
+          current: rule.preferredOff, proposed: rule.maxOff, effect: "Fit preferred OFF within the daily cap; mandatory settings remain unchanged." });
+      }
+      if (paired && rule.maxOff !== null && off > rule.maxOff) add("off-cap", "Required OFF assignments exceed the daily OFF cap", ref,
+        rule.maxOff, off + " required OFF", "Review retained assignments or explicitly edit the daily OFF cap.");
+      if (min > available || paired && rule.minWork > available) add("staffing", "Working minimum exceeds available staff",
+        min >= rule.minWork ? { ...ref, setting: "coverage", coverage: [group, date, shifts[0]?.id || ""] } : ref,
+        Math.max(min, rulesMinimum(paired, rule)), available, "Review eligibility, fixed cells, leave and brand allocation before changing minimums.");
+      const requirements = shifts.map((s, i) => ({ id: s.id, min: settings[i].min }));
+      if (min && min <= available && settings.every(validCoverage) &&
+        requirements.every(s => slots.filter(slot => slot.codes.includes(s.id)).length >= s.min) && !coversMinimums(slots, requirements)) {
+        add("overlapping-eligibility", "Shift minimums compete for the same eligible staff",
+          { ...ref, setting: "coverage", coverage: [group, date, ""], shift: requirements.filter(s => s.min).map(s => s.id).join(", ") },
+          min + " minimum assignments", available + " possible workers, but no distinct eligible match",
+          "Review staff eligibility or fixed assignments; one person cannot cover two shifts on the same day.");
+      }
+      shifts.forEach((shift, i) => {
+        const s = settings[i], shiftRef = { group, date, shift: shift.id, setting: "coverage", coverage: [group, date, shift.id] };
+        const possible = slots.filter(slot => slot.codes.includes(shift.id)).length;
+        const fixedCount = slots.filter(slot => slot.retained && slot.codes.includes(shift.id)).length;
+        const propose = (field, value, effect) => {
+          const id = coverageKey(group, date, shift.id) + "|" + field;
+          suggestions.set(id, { id, group, date, shift: shift.id, field, value, current: s[field], proposed: value, effect });
+        };
+        if (!validCoverage(s)) {
+          add("coverage-rule", "Invalid shift minimum, target, maximum or priority", shiftRef,
+            s.min + " / " + s.target + " / " + (s.max ?? "unlimited"), "Minimum <= target <= maximum", "Review the effective coverage override.");
+          if (s.enabled && Number.isInteger(s.max) && s.max >= s.min && s.target > s.max) propose("target", s.max, "Bring the optional target within the configured cap; minimum unchanged.");
+        } else if (s.min > possible) add("eligible-coverage", "Too few eligible staff for the shift minimum", shiftRef, s.min, possible,
+          "Review shift eligibility, fixed assignments or brand allocation.");
+        else if (s.target > possible) {
+          add("target", "Optional target exceeds eligible staff", shiftRef, s.target, possible, "Review optional target or eligibility.", "Preference");
+          propose("target", possible, "Align the target with the number of eligible staff. Minimum unchanged; coverage is not guaranteed.");
+        }
+        if (s.max !== null && fixedCount > s.max) {
+          add("shift-cap", "Retained assignments exceed the shift maximum", shiftRef, s.max, fixedCount,
+            "Review this date's coverage override or regenerate unlocked assignments.");
+          if (validCoverage(s)) propose("max", fixedCount, "Allow the retained assignments on this date; minimum and target unchanged.");
+          if (options.keepAssigned && slots.some(slot => slot.replaceable && slot.codes.includes(shift.id))) refill();
+        }
+      });
+    }
+    if (paired && people.every(p => selected.has(p.id))) for (let i = 0; i + 6 < days.length; i++) {
+      const week = days.slice(i, i + 7), capacity = week.reduce((sum, day) => sum + day.cap, 0);
+      if (capacity < people.length * 2) add("weekly-capacity", "Weekly capacity cannot accommodate two regular OFF days per staff member",
+        { group, date: week[0].date, end: week.at(-1).date, setting: "demand" }, people.length * 2, capacity,
+        "Review daily OFF caps, working minimums, leave and shift coverage.");
+    }
+  }
+  return { issues, suggestions: [...suggestions.values()], people: selected, groups };
+}
+const rulesMinimum = (paired, rule) => paired ? rule.minWork : 0;
+
+export function adjustmentTrial(context, options, suggestions) {
+  const trial = structuredClone(context), next = { ...options };
+  for (const item of suggestions) {
+    if (item.id === "refill") next.keepAssigned = false;
+    else if (item.field === "preferredOff") {
+      trial.draft.demand[item.group + "|" + item.date] = { ...demandRule(trial, item.group, item.date), preferredOff: item.value };
+    } else {
+      const k = coverageKey(item.group, item.date, item.shift);
+      trial.draft.coverage[k] = { ...coverageRule(trial, item.group, item.date, item.shift), [item.field]: item.value };
+    }
+  }
+  return { context: trial, options: next };
+}
+
 export function generate(context, { group = "", people: staffIds, keepAssigned = false, budget = 180000, timeout = 3500,
-  strategy = context.team === "Affiliate" ? "pm" : "balanced", variant = 0, progress } = {}) {
+  strategy = context.team === "Affiliate" ? "pm" : "balanced", variant = 0, progress, recover = false } = {}) {
   const cells = { ...context.draft.cells }, rules = context.draft.rules;
   const shifts = context.catalog.filter(s => s.kind === "work");
   const off = context.catalog.find(s => s.kind === "off"), catalog = lookup(context.catalog);
-  const selected = new Set(staffIds || context.people.map(person => person.id));
-  const groups = (group ? [group] : [...context.groups.map(g => g.id), "unassigned"])
-    .filter(id => !staffIds || context.people.some(person => person.group === id && selected.has(person.id)));
+  const { selected, groups } = generationScope(context, { group, people: staffIds });
   const priorDates = datesFor(previousMonth(context.month));
   const deadline = performance.now() + timeout;
   let steps = 0, stopped = false, deepest = -1, reason = "";
-  if (!off || context.conflicts?.length || !groups.length) return { status: "infeasible", reason: "Resolve invalid catalog, scope, or group membership first." };
+  const scopePeople = context.people.filter(person => groups.includes(person.group) && selected.has(person.id)).map(p => p.id);
+  if (!off || context.conflicts?.some(id => scopePeople.includes(id)) || !scopePeople.length) return {
+    status: "infeasible", reason: "Resolve invalid catalog, scope, or group membership first."
+  };
   if (strategy === "previous" && !Object.keys(context.previous).length) {
     return { status: "missing-boundary", reason: "No previous-month draft or snapshot is available. Choose another strategy or prepare the previous month." };
   }
-  for (const id of groups) {
+  let best, completed = 0;
+  const observations = new Map();
+  for (const [groupIndex, id] of groups.entries()) {
     const people = context.people.filter(p => p.group === id);
     const config = context.dates.map(date => shifts.map(s => coverageRule(context, id, date, s.id)));
     const paired = pairedPolicy(context);
     const preferences = people.map(person => rulesFor(context, person.id));
+    const selectedCount = people.filter(person => selected.has(person.id)).length;
     const edges = people.map(person => paired ? boundary(context, person.id) : null);
     const states = people.map((person, i) => initialState(context, person, edges[i]));
     const demands = context.dates.map((date, i) => {
@@ -244,11 +423,27 @@ export function generate(context, { group = "", people: staffIds, keepAssigned =
     deepest = -1;
     reason = "";
     function nameFor(groupId) { return context.groups.find(g => g.id === groupId)?.name || "Unassigned"; }
-    const track = (index, message) => {
+    const track = (index, message, details = {}) => {
       if (index >= deepest) { deepest = index; reason = (context.groups.find(g => g.id === id)?.name || "Unassigned") +
         " on " + context.dates[index] + ": " + message; }
+      const k = id + "|" + message;
+      const previous = observations.get(k);
+      if (!previous || index >= previous.index) observations.set(k, { index, issue: { code: "search", certainty: "Observed branch",
+        reason: message, group: id, date: context.dates[index], action: "Review the settings shown or retry with a wider search.", ...details } });
     };
     function solveDay(index, states) {
+      if (recover && index > 0 && completed + index * selectedCount > (best?.completed || 0)) {
+        const partial = { ...context.draft.cells };
+        for (const candidate of context.people) {
+          const depth = candidate.group === id ? index : groups.indexOf(candidate.group) >= 0 && groups.indexOf(candidate.group) < groupIndex ?
+            context.dates.length : 0;
+          if (selected.has(candidate.id)) for (const date of context.dates.slice(0, depth)) {
+            const k = key(candidate.id, date);
+            if (cells[k]) partial[k] = cells[k];
+          }
+        }
+        best = { cells: partial, completed: completed + index * selectedCount, scopePeople, scopeGroups: groups };
+      }
       if (index === context.dates.length) {
         for (const [n, person] of people.entries()) {
           if (!selected.has(person.id)) continue;
@@ -271,7 +466,9 @@ export function generate(context, { group = "", people: staffIds, keepAssigned =
       }).sort((a, b) => a.choices.length - b.choices.length ||
         states[b.n].work - states[a.n].work || ((a.n + index) % people.length) - ((b.n + index) % people.length));
       if (options.some(entry => !entry.choices.length)) {
-        track(index, "a lock, confirmed leave, fixed shift, rest, consecutive work, or weekly OFF rule leaves no eligible assignment");
+        const entry = options.find(item => !item.choices.length);
+        track(index, "No eligible assignment remains for this staff member in this search branch",
+          { staff: people[entry.n].name, cell: entry.k, current: context.draft.cells[entry.k] || "Blank", available: 0 });
         return false;
       }
       const counts = shifts.map(() => 0), next = [];
@@ -279,14 +476,24 @@ export function generate(context, { group = "", people: staffIds, keepAssigned =
       function assign(i) {
         if (++steps > budget || (steps % 64 === 0 && performance.now() >= deadline)) { stopped = true; return false; }
         if (steps % 4096 === 0) progress?.({ steps, date, group: id });
+        const remaining = options.slice(i);
         for (const [n, rule] of settings.entries()) {
           const needed = rule.min - counts[n];
-          if (needed > 0 && options.slice(i).filter(entry => entry.choices.some(c => c.shift?.id === shifts[n].id)).length < needed) {
-            track(index, shifts[n].id + " coverage cannot be met with eligible staff");
+          const shift = shifts[n].id, ref = { shift, setting: "coverage", coverage: [id, date, shift] };
+          const possible = needed > 0 ? remaining.filter(entry => entry.choices.some(c => c.shift?.id === shift)).length : 0;
+          if (needed > 0 && possible < needed) {
+            track(index, shift + " coverage cannot be met with eligible staff", { ...ref, current: rule.min, available: counts[n] + possible });
             return false;
           }
+          if (rule.max !== null) {
+            const forced = counts[n] + remaining.filter(entry => entry.choices.every(c => c.shift?.id === shift)).length;
+            if (forced > rule.max) {
+              track(index, shift + " maximum pruned a search branch", { ...ref, current: rule.max, available: forced + " forced on this branch" });
+              return false;
+            }
+          }
         }
-        if (paired && working + options.slice(i).filter(entry => entry.choices.some(c => c.shift?.kind === "work")).length < demand.rule.minWork) {
+        if (paired && demand.rule.minWork > working && working + remaining.filter(entry => entry.choices.some(c => c.shift?.kind === "work")).length < demand.rule.minWork) {
           track(index, "minimum working staff cannot be met with available assignments");
           return false;
         }
@@ -332,11 +539,12 @@ export function generate(context, { group = "", people: staffIds, keepAssigned =
           const n = shifts.indexOf(choice.shift);
           const regularOff = choice.shift?.kind === "off";
           if (paired && regularOff && assignedOff >= (demand.rule.maxOff ?? Infinity)) {
-            track(index, "daily OFF cap conflicts with consecutive OFF pairs");
+            track(index, "Daily OFF cap pruned a search branch", { setting: "demand", current: demand.rule.maxOff, available: assignedOff + 1 });
             continue;
           }
           if (n >= 0 && settings[n].max !== null && counts[n] >= settings[n].max) {
-            track(index, shifts[n].id + " maximum conflicts with eligible or fixed assignments");
+            track(index, shifts[n].id + " maximum pruned a search branch", { shift: shifts[n].id,
+              setting: "coverage", coverage: [id, date, shifts[n].id], current: settings[n].max, available: counts[n] + 1 });
             continue;
           }
           if (n >= 0) { counts[n]++; working++; }
@@ -354,8 +562,10 @@ export function generate(context, { group = "", people: staffIds, keepAssigned =
     }
     if (!solveDay(0, states)) {
       return { status: stopped ? "timeout" : "infeasible", reason: (reason || id + ": no candidate found within the search budget") +
-        ". Review locks, rest rules, eligible shifts and coverage.", steps };
+        ". Review locks, rest rules, eligible shifts and coverage.", steps, best,
+        observations: [...observations.values()].sort((a, b) => b.index - a.index).slice(0, 8).map(item => item.issue) };
     }
+    completed += context.dates.length * selectedCount;
   }
   const selectedIds = new Set(context.people.filter(person => groups.includes(person.group) && selected.has(person.id)).map(person => person.id));
   const checked = validate(context, cells, { people: selectedIds, groups });
@@ -367,14 +577,22 @@ export function generate(context, { group = "", people: staffIds, keepAssigned =
 export function generateCandidates(context, options = {}, progress) {
   const candidates = [], seen = new Set();
   const strategy = options.strategy || (context.team === "Affiliate" ? "pm" : "balanced");
-  let firstFailure;
+  const { issues, suggestions } = diagnose(context, options);
+  if (issues.some(issue => issue.certainty === "Confirmed")) {
+    return { status: "infeasible", reason: "Preflight found confirmed conflicts.", issues, suggestions };
+  }
+  let firstFailure, best;
+  const recovery = Boolean(options.retry);
+  const budget = recovery ? 180000 : 60000, timeout = recovery ? 2300 : 1150;
   for (let variant = 0; variant < 3; variant++) {
     progress?.({ variant: variant + 1 });
-    const result = generate(context, { ...options, strategy, variant, timeout: Math.min(options.timeout ?? 1150, 1150),
-      budget: Math.min(options.budget ?? 60000, 60000),
+    const ordering = recovery && variant === 2 && ["balanced", "pm"].includes(strategy) ? (strategy === "pm" ? "balanced" : "pm") : strategy;
+    const result = generate(context, { ...options, strategy: ordering, variant: variant + (recovery ? 3 : 0), recover: true,
+      timeout: Math.min(options.timeout ?? timeout, timeout), budget: Math.min(options.budget ?? budget, budget),
       progress: update => progress?.({ variant: variant + 1, ...update }) });
     if (result.status !== "feasible") {
-      firstFailure ||= result;
+      if (!firstFailure || result.status !== "timeout") firstFailure = result;
+      if (result.best && result.best.completed > (best?.completed || 0)) best = result.best;
       if (result.status !== "timeout") break;
       continue;
     }
@@ -385,7 +603,17 @@ export function generateCandidates(context, options = {}, progress) {
     const target = report.daily.flatMap(day => day.shifts).reduce((sum, s) => sum + Math.min(s.count, s.target) * (1 + s.priority), 0);
     candidates.push({ ...result, report, target, variant });
   }
-  if (!candidates.length) return firstFailure;
+  if (!candidates.length) {
+    if (options.keepAssigned && !suggestions.some(item => item.id === "refill") && context.people.some(p => {
+      const { selected, groups } = generationScope(context, options);
+      return selected.has(p.id) && groups.includes(p.group) && context.dates.some(date => {
+        const k = key(p.id, date);
+        return context.draft.cells[k] && !context.leave[k] && !isLocked(context, p.id, date);
+      });
+    })) suggestions.push({ id: "refill", current: "Fill empty cells only", proposed: "Regenerate unlocked assignments",
+      effect: "Search can replace unlocked assignments. Locks and confirmed leave remain unchanged." });
+    return { ...firstFailure, best, issues: [...issues, ...(firstFailure.observations || [])], suggestions };
+  }
   const scopeMetric = (candidate, metric) => {
     if (metric === "alignment") return candidate.report.daily.filter(day => candidate.scopeGroups.includes(day.group))
       .reduce((sum, day) => sum + day.alignment, 0);
@@ -395,7 +623,7 @@ export function generateCandidates(context, options = {}, progress) {
     scopeMetric(a, "cycleTransitions") - scopeMetric(b, "cycleTransitions") : 0) || (strategy === "pm" ? b.report.pm - a.report.pm : 0) ||
     b.target - a.target || b.report.preferenceHits - a.report.preferenceHits ||
     (pairedPolicy(context) && context.draft.rules.fair ? a.report.fairness - b.report.fairness : 0) || a.variant - b.variant);
-  return { status: "feasible", candidates };
+  return { status: "feasible", candidates, issues };
 }
 
 if (typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope) {

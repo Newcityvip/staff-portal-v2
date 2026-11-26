@@ -1,4 +1,4 @@
-import { dateAt, dayIndex, key, weekday, weekdays } from "./roster-model.js";
+import { dateAt, dayIndex, key, optionalLimit, weekday, weekdays } from "./roster-model.js";
 
 export const pairedPolicy = context => context.draft.rules.offPolicy === "paired";
 export const pairNames = weekdays.map((day, i) => day + " / " + weekdays[(i + 1) % 7]);
@@ -33,7 +33,8 @@ export const defaultDemand = { workload: "Normal", maxOff: null, preferredOff: n
 export const demandKey = (group, period) => group + "|" + period;
 export function demandRule(context, group, date) {
   const stored = context.draft.demand || {};
-  return { ...defaultDemand, ...(stored[demandKey(group, date)] ?? stored[demandKey(group, weekdays[weekday(date)])]) };
+  const rule = { ...defaultDemand, ...(stored[demandKey(group, date)] ?? stored[demandKey(group, weekdays[weekday(date)])]) };
+  return { ...rule, maxOff: optionalLimit(rule.maxOff), preferredOff: optionalLimit(rule.preferredOff) };
 }
 export function validDemand({ workload, maxOff, preferredOff, minWork }) {
   const count = n => Number.isInteger(n) && n >= 0;

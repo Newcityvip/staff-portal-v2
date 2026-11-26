@@ -1,6 +1,6 @@
 import { contextFor, coverage, createHistory, datesFor, draftFor, isLocked, key, previousPattern,
   restore, save, snapshot, totals, transferMany, weekday, weekdays } from "./roster-model.js";
-import { validate } from "./roster-generator.js";
+import { adjustmentTrial, validate } from "./roster-generator.js";
 import { downloadRoster } from "./roster-export.js";
 import { asCoverage, coverageKey, coverageReport, priorities, validCoverage } from "./roster-policy.js";
 import { defaultDemand, demandKey, pairNames, validDemand, workloads } from "./roster-weekly.js";
@@ -217,18 +217,45 @@ function render() {
   if (showReport) renderReport(report, issues);
   $("preview").disabled = Boolean(!preview && issues.errors.length);
   $("preview").title = $("preview").disabled ? "Resolve blocking validation issues before preview" : "";
-  $("validation-title").textContent = "Validation / " + issues.errors.length + " blocking / " + issues.warnings.length + " warnings";
-  $("issues").replaceChildren(...[["Blocking issues", issues.errors, "error"], ["Warnings", issues.warnings, "warning"]].map(([text, list, cls]) => {
-    const block = make("section"), items = make("ul", "", { class: cls });
-    items.append(...list.map(item => {
-      const li = make("li");
-      if (item.cell || item.coverage) li.append(button(item.label, () => focusIssue(item), { class: "issue-link" }));
-      else li.textContent = item.label;
-      return li;
-    }));
-    block.append(make("b", text), list.length ? items : make("p", "None"));
-    return block;
-  }));
+  const blanks = issues.errors.filter(item => item.type === "missing").length;
+  $("validation-title").textContent = "Monthly validation / " + (issues.errors.length - blanks) + " blocking / " +
+    blanks + " unassigned / " + issues.warnings.length + " warnings";
+  $("issues").replaceChildren(validationSummary(issues));
+}
+
+function validationSummary({ errors, warnings }) {
+  const root = make("div");
+  const config = item => item.type === "group" || /: invalid (coverage|workload)/.test(item.label);
+  const coverage = item => !config(item) && ["coverage", "demand"].includes(item.type);
+  const sections = [["Configuration errors", errors.filter(config)], ["Unassigned roster cells", errors.filter(item => item.type === "missing")],
+    ["Coverage shortfalls and limits", errors.filter(coverage)],
+    ["Mandatory policy violations", errors.filter(item => !config(item) && !coverage(item) && item.type !== "missing")],
+    ["Optional preference shortfalls", warnings.filter(item => item.type === "target")],
+    ["Month-boundary warnings", warnings.filter(item => item.type === "boundary")],
+    ["Other warnings", warnings.filter(item => !["target", "boundary"].includes(item.type))]];
+  for (const [title, list] of sections) {
+    if (!list.length) continue;
+    const details = make("details"), items = make("ul"), grouped = new Map();
+    details.open = title === "Coverage shortfalls and limits";
+    details.append(make("summary", title + " (" + list.length + ")"));
+    for (const item of list) {
+      const signature = item.type + "|" + (item.coverage ? item.coverage[0] + "|" + item.coverage[2] : "") +
+        "|" + (item.label.includes(":") ? item.label.split(":")[0] : item.type);
+      const batch = grouped.get(signature) || [];
+      batch.push(item); grouped.set(signature, batch);
+    }
+    for (const batch of grouped.values()) {
+      const item = batch[0], li = make("li");
+      const title = item.label + (batch.length > 1 ? " (" + batch.length + " occurrences; first shown)" : "");
+      if (item.cell || item.coverage) li.append(button(title, () => { $("dialog").close(); focusIssue(item); }, { class: "issue-link" }));
+      else li.textContent = title;
+      items.append(li);
+    }
+    details.append(items);
+    root.append(details);
+  }
+  if (!root.childElementCount) root.append(make("p", "No validation issues."));
+  return root;
 }
 
 function focusIssue(issue) {
@@ -374,10 +401,10 @@ function coverageDialog(initialGroup = group, initialPeriod = "*") {
     })), feedback]);
 }
 
-function demandDialog() {
-  const scope = choose(groupPairs(current), group || current.groups[0]?.id);
+function demandDialog(initialGroup = group, initialDate = "") {
+  const scope = choose(groupPairs(current), initialGroup || current.groups[0]?.id);
   scope.setAttribute("aria-label", "Demand group");
-  const override = choose([["", "Weekly rules"], ...current.dates.map(date => [date, date + " override"])], "");
+  const override = choose([["", "Weekly rules"], ...current.dates.map(date => [date, date + " override"])], initialDate);
   const table = make("table"), holder = make("div", "", { class: "dialog-table" }), feedback = make("p", "", { role: "status" });
   const capacity = make("div");
   holder.append(table);
@@ -434,8 +461,8 @@ function demandDialog() {
     })), feedback, capacity]);
 }
 
-function preferencesDialog() {
-  const person = choose(current.people.map(p => [p.id, p.name]), current.people[0]?.id);
+function preferencesDialog(initialStaff) {
+  const person = choose(current.people.map(p => [p.id, p.name]), initialStaff || current.people[0]?.id);
   const fields = make("div");
   const feedback = make("p", "", { role: "status" });
   const refresh = () => {
@@ -622,7 +649,7 @@ function renderReport(report, issues) {
         day.shortfall, targetRatio(day)]))
   );
 }
-function reviewCandidates(candidates, guard) {
+function reviewCandidates(candidates, guard, trial) {
   const pick = choose(candidates.map((_, i) => [String(i), "Candidate " + (i + 1)]), "0");
   const selectedPreview = make("div");
   const compare = reportTable(["Candidate", "Blocking (scope)", "Paired weeks", "Coverage days met", "Workload penalty",
@@ -643,16 +670,114 @@ function reviewCandidates(candidates, guard) {
   };
   pick.onchange = renderPreview;
   renderPreview();
-  openDialog("Review generated candidates", [compare, row(label("Preview", pick)), selectedPreview,
-    row(button("Apply candidate", () => {
+  openDialog("Review generated candidates", [
+    ...(trial ? [make("p", "The trial produced a valid candidate for this scope. Review and apply to save the selected changes and assignments together.")] : []),
+    compare, row(label("Preview", pick)), selectedPreview,
+    row(button(trial ? "Apply tested changes and candidate" : "Apply candidate", () => {
       if (!guard()) { $("dialog").close(); notify("Draft changed. Generate candidates again."); return; }
       const result = candidates[Number(pick.value)];
       $("dialog").close();
       showReport = true;
-      editDraft(d => { d.cells = result.cells; });
+      editDraft(d => {
+        if (trial) { d.coverage = trial.draft.coverage; d.demand = trial.draft.demand; }
+        d.cells = result.cells;
+      });
       $("results").open = true;
       notify("Generated " + result.selectedCount + " staff assignments; review " + result.warnings.length + " warnings.");
     }, { class: "primary" }), button("Discard candidates", () => { $("dialog").close(); notify("Draft unchanged."); }))]);
+}
+
+function openDiagnosticSetting(issue) {
+  if (issue.setting === "coverage") return coverageDialog(issue.group, issue.date);
+  if (issue.setting === "demand") return demandDialog(issue.group, issue.date);
+  if (issue.setting === "groups") return groupsDialog();
+  if (issue.setting === "staff") return preferencesDialog(issue.cell?.split("|")[0]);
+  if (issue.cell) { $("dialog").close(); focusIssue(issue); }
+}
+
+function recoveryDialog(result, options, guard, trialFailed = false) {
+  const headings = {
+    timeout: "Search budget reached. Feasibility is unknown.",
+    infeasible: "No valid candidate under the selected constraints.",
+    "missing-boundary": "Previous-month data is unavailable.",
+    error: "The generator could not complete."
+  };
+  const affectedGroups = options.group ? [options.group] : options.people ?
+    [...new Set(current.people.filter(p => options.people.includes(p.id)).map(p => p.group))] : groupPairs(current).map(([id]) => id);
+  const people = new Set(current.people.filter(p => affectedGroups.includes(p.group) && (!options.people || options.people.includes(p.id))).map(p => p.id));
+  const scoped = validate(current, current.draft.cells, { groups: affectedGroups, people });
+  const monthly = validate(current);
+  const counts = value => value.errors.filter(i => i.type === "missing").length + " unassigned, " +
+    value.errors.filter(i => i.type !== "missing").length + " other validation issues, " + value.warnings.length + " warnings";
+  const grouped = new Map(), names = new Map(groupPairs(current));
+  const orderedIssues = [...(result.issues || [])].sort((a, b) => Number(b.certainty === "Confirmed") - Number(a.certainty === "Confirmed"));
+  for (const issue of orderedIssues) {
+    const k = JSON.stringify([issue.certainty, issue.code, issue.reason, issue.group, issue.shift, issue.staff, issue.current, issue.available]);
+    const batch = grouped.get(k) || [];
+    batch.push(issue); grouped.set(k, batch);
+  }
+  const details = make("div", "", { class: "diagnostic-list" });
+  for (const batch of grouped.values()) {
+    const item = batch[0], section = make("details");
+    const dates = batch.map(i => i.date).filter(Boolean);
+    const first = dates[0], last = batch.at(-1).end || dates.at(-1);
+    section.append(make("summary", item.certainty + ": " + item.reason + " / " + (names.get(item.group) || item.group) +
+      (item.shift ? " / " + item.shift : "") + (batch.length > 1 ? " (" + batch.length + " occurrences)" : "")),
+      make("p", [item.staff, first && (first === last ? first : first + " to " + last)].filter(Boolean).join(" / ")),
+      make("p", "Current: " + (item.current ?? "Not determined") + " / Required or available: " + (item.available ?? "Not determined")),
+      make("p", item.action));
+    section.open = item.certainty === "Confirmed" && details.childElementCount < 2;
+    if (item.setting || item.cell) section.append(button(batch.length > 1 ? "Open first affected setting or cell" : "Open affected setting or cell",
+      () => openDiagnosticSetting(item)));
+    details.append(section);
+  }
+  const list = make("div", "", { class: "diagnostic-list" });
+  const selectedItems = [];
+  const restart = (proposals = []) => {
+    if (!guard()) { $("dialog").close(); return notify("Draft changed. Generate again."); }
+    $("dialog").close();
+    launchGeneration({ ...options, retry: true }, proposals, result.suggestions);
+  };
+  const apply = button("Apply & Regenerate", () => restart(selectedItems.filter(entry => entry.control.checked).map(entry => entry.item)));
+  apply.disabled = true;
+  for (const item of result.suggestions || []) {
+    const control = input("checkbox", "");
+    control.onchange = () => { apply.disabled = !selectedItems.some(entry => entry.control.checked); };
+    selectedItems.push({ item, control });
+    list.append(row(label((item.group ? [names.get(item.group), item.date, item.shift].join(" / ") + ": " : "") +
+      item.current + " to " + item.proposed, control)), make("p", item.effect));
+  }
+  const controls = row(button("Retry Generation", () => restart()));
+  if (result.best) controls.append(button("View Best Possible Draft", () => {
+    const best = result.best;
+    const checked = validate(current, best.cells, { groups: best.scopeGroups, people: new Set(best.scopePeople) });
+    const unresolved = (result.issues || []).filter(item => item.certainty === "Confirmed");
+    const staff = current.people.filter(p => best.scopePeople.includes(p.id));
+    const invalid = new Set(checked.errors.map(issue => issue.cell).filter(Boolean));
+    const grid = reportTable(["Staff", ...current.dates.map(date => date.slice(-2))],
+      staff.map(p => [p.name, ...current.dates.map(date => best.cells[key(p.id, date)] || "-")]));
+    [...grid.querySelectorAll("tbody tr")].forEach((tr, i) => [...tr.cells].slice(1).forEach((td, n) => {
+      if (invalid.has(key(staff[i].id, current.dates[n]))) td.classList.add("error");
+    }));
+    openDialog("Best Possible Draft (incomplete)", [
+      make("p", "Invalid for final confirmation or publishing. Read-only preview; original draft unchanged."),
+      make("p", best.completed + " candidate assignments evaluated. " + counts(checked) + " in this scope."),
+      ...(unresolved.length ? [make("p", unresolved.map(item => item.reason).join(" / "))] : []),
+      validationSummary(checked), grid,
+      row(button("Back to diagnostics", () => recoveryDialog(result, options, guard, trialFailed)))
+    ]);
+  }));
+  openDialog("Generation diagnostics", [
+    make("p", headings[result.status] || "No candidate was generated."),
+    ...(trialFailed ? [make("p", "The proposed trial did not succeed. No settings or assignments were changed.")] : []),
+    make("p", "Selected scope: " + counts(scoped) + ". Full month: " + counts(monthly) + "."),
+    make("p", "Generation conflicts: " + (result.issues || []).filter(item => item.certainty === "Confirmed").length +
+      " confirmed before search. Unassigned draft cells are not generation conflicts."),
+    ...(result.steps ? [make("p", result.steps + " steps in the reported attempt. Observed branches do not prove the cause of failure.")] : []),
+    ...(details.childElementCount ? [details] : [make("p", result.reason)]), controls,
+    ...(selectedItems.length ? [make("h3", "Smart Adjustments"), make("p", "Provisional suggestions. Selected changes are tested in a temporary draft before you can apply them."),
+      list, row(apply)] : [])
+  ]);
 }
 
 function run() {
@@ -670,37 +795,54 @@ function run() {
   if (scope === "group" && !group) return notify("Select a group first.");
   const ids = scope === "staff" ? [...new Set([...selected].map(k => k.split("|")[0]))] : undefined;
   if (ids && !ids.length) return notify("Select a cell for each staff member to include.");
+  launchGeneration({ strategy, people: ids, group: scope === "group" ? group : "", keepAssigned: $("empty-only").checked });
+}
+
+function launchGeneration(options, proposals = [], availableProposals = []) {
+  if (worker) return;
   const before = history.current, beforeTeam = team, beforeMonth = month;
   const unchanged = () => history.current === before && team === beforeTeam && month === beforeMonth && !preview;
+  const trial = proposals.length ? adjustmentTrial(current, options, proposals) : null;
   const job = new Worker(new URL("./roster-generator.js", import.meta.url), { type: "module" });
   worker = job;
   $("generate").disabled = true;
   $("cancel-generation").hidden = false;
-  notify("Generating candidates...");
+  notify("");
+  const progress = $("generation-progress");
+  progress.hidden = false;
+  progress.textContent = trial ? "Testing selected adjustments..." : options.retry ?
+    "Retrying with a wider search..." : "Checking constraints and generating candidates...";
   const done = result => {
     if (worker !== job) return;
     job.terminate();
     worker = null;
     $("cancel-generation").hidden = true;
+    progress.hidden = true;
     render();
     if (!unchanged()) return notify("Roster changed during generation. Run it again.");
     if (result.status === "feasible") {
       notify(result.candidates.length + " candidate(s) ready to review. Draft unchanged.");
-      reviewCandidates(result.candidates, unchanged);
+      reviewCandidates(result.candidates, unchanged, trial?.context);
     } else {
-      notify(({ timeout: "Search limit reached (feasibility unknown): ", infeasible: "No feasible draft: ",
-        "missing-boundary": "Previous-month data unavailable: ", error: "Generator failed: ", cancelled: "" })[result.status] + result.reason);
+      if (result.status === "cancelled") return notify(result.reason);
+      notify("No candidate applied. Draft unchanged.");
+      // Do not offer partial trials computed with settings that were never committed.
+      if (trial) {
+        result.best = undefined;
+        result.suggestions = availableProposals;
+      }
+      recoveryDialog(result, options, unchanged, Boolean(trial));
     }
   };
   $("cancel-generation").onclick = () => done({ status: "cancelled", reason: "Generation cancelled. Draft unchanged." });
   worker.onmessage = ({ data }) => {
     if (worker !== job) return;
-    if (data.progress) notify("Searching candidate " + data.progress.variant + " of 3" + (data.progress.date ? " / " + data.progress.date : ""));
+    if (data.progress) progress.textContent = "Searching candidate " + data.progress.variant + " of 3" + (data.progress.date ?
+      " / " + data.progress.date + " / " + data.progress.steps + " steps" : "");
     else done(data);
   };
   worker.onerror = () => done({ status: "error", reason: "Worker unavailable." });
-  worker.postMessage({ context: current, options: { strategy, people: ids, group: scope === "group" ? group : "",
-    keepAssigned: $("empty-only").checked } });
+  worker.postMessage(trial || { context: current, options });
 }
 
 $("team").onchange = () => {
@@ -736,7 +878,7 @@ $("confirm").onclick = confirmDialog;
 $("groups").onclick = groupsDialog;
 $("rules").onclick = rulesDialog;
 $("coverage").onclick = () => coverageDialog();
-$("demand").onclick = demandDialog;
+$("demand").onclick = () => demandDialog();
 $("generate").onclick = run;
 $("source").onchange = updateExportGroups;
 for (const format of ["csv", "xlsx"]) $(format).onclick = async () => {

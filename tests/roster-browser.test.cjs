@@ -212,3 +212,105 @@ test('weekly demand panel saves scoped weekday and date limits and shows capacit
     assert.deepEqual(external, []);
   } finally { await context.close(); }
 });
+
+async function setRecoveryDraft(page) {
+  await page.evaluate(async () => {
+    const { seed, draftFor, save } = await import(new URL('js/roster-model.js', location.href));
+    const model = seed(), draft = draftFor(model, 'Affiliate', '2026-12');
+    for (const date of ['2026-12-07', '2026-12-08']) {
+      draft.cells['SYN-001|' + date] = 'PM';
+      draft.locks['SYN-001|' + date] = true;
+      draft.coverage['old|' + date + '|PM'] = { min: 0, target: 0, max: 0 };
+    }
+    save(localStorage, model, 'Affiliate', '2026-12');
+  });
+  await page.reload();
+  await page.selectOption('#group', 'old');
+  await page.selectOption('#scope', 'group');
+  await page.selectOption('#generation', 'balanced');
+  await page.check('#empty-only');
+}
+
+test('desktop recovery trial failure is atomic, a verified second trial applies, and Undo restores both settings and cells', async () => {
+  const { context, page, external, errors } = await open(1440, 950);
+  try {
+    await setRecoveryDraft(page);
+    const revision = await page.locator('#summary').textContent();
+    const dialog = page.locator('#dialog');
+    await page.click('#generate');
+    await dialog.getByRole('heading', { name: 'Generation diagnostics' }).waitFor();
+    await dialog.getByText(/Selected scope: 307 unassigned.*Full month: 554 unassigned/).waitFor();
+    const first = dialog.getByLabel(/2026-12-07.*0 to 1/), second = dialog.getByLabel(/2026-12-08.*0 to 1/);
+    await first.check();
+    await dialog.getByRole('button', { name: 'Apply & Regenerate' }).click();
+    await dialog.getByText(/No settings or assignments were changed/).waitFor();
+    assert.equal(await page.locator('#summary').textContent(), revision);
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-recovery-failure.png') });
+    await first.check();
+    await second.check();
+    await dialog.getByRole('button', { name: 'Apply & Regenerate' }).click();
+    await dialog.getByText(/trial produced a valid candidate/).waitFor();
+    assert.equal(await page.locator('#summary').textContent(), revision);
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-recovery-success.png') });
+    await dialog.getByRole('button', { name: 'Apply tested changes and candidate' }).click();
+    assert.equal(await cell(page, 'SYN-001', '2026-12-07').textContent(), 'PM');
+    assert.notEqual(await cell(page, 'SYN-002', '2026-12-07').textContent(), '-');
+    await page.click('#undo');
+    assert.equal(await page.locator('#summary').textContent(), revision);
+    assert.equal(await cell(page, 'SYN-002', '2026-12-07').textContent(), '-');
+    await page.click('#generate');
+    await dialog.getByRole('heading', { name: 'Generation diagnostics' }).waitFor();
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('mobile diagnostics navigate to an effective date and do not overflow', async () => {
+  const { context, page, external, errors } = await open(390);
+  try {
+    await setRecoveryDraft(page);
+    const dialog = page.locator('#dialog');
+    await page.click('#generate');
+    await dialog.getByRole('heading', { name: 'Generation diagnostics' }).waitFor();
+    assert.ok(await dialog.evaluate(node => node.getBoundingClientRect().right <= innerWidth));
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-recovery-mobile.png') });
+    await dialog.getByRole('button', { name: 'Open first affected setting or cell' }).click();
+    await dialog.getByRole('heading', { name: 'Coverage matrix' }).waitFor();
+    assert.equal(await dialog.getByLabel('Rule period').inputValue(), '2026-12-07');
+    assert.equal(await dialog.getByLabel('PM maximum', { exact: true }).inputValue(), '0');
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('manual retry recovers after a budget-limited worker; incomplete candidate is view-only', async () => {
+  const { context, page, external, errors } = await open(1180);
+  try {
+    await page.addInitScript(() => {
+      const Original = window.Worker;
+      window.Worker = class extends Original {
+        postMessage(data) {
+          super.postMessage(data.options.retry ? data : { ...data, options: { ...data.options, budget: 40 } });
+        }
+      };
+    });
+    await page.reload();
+    await page.selectOption('#group', 'old');
+    await page.selectOption('#scope', 'group');
+    await page.selectOption('#generation', 'balanced');
+    await page.click('#generate');
+    const dialog = page.locator('#dialog');
+    await dialog.getByText(/Search budget reached. Feasibility is unknown/).waitFor();
+    await dialog.getByRole('button', { name: 'View Best Possible Draft' }).click();
+    await dialog.getByText(/Invalid for final confirmation or publishing/).waitFor();
+    assert.equal(await dialog.getByRole('button', { name: /apply|confirm|publish/i }).count(), 0);
+    assert.ok(await dialog.locator('td.error').count() > 0);
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-recovery-incomplete.png') });
+    await dialog.getByRole('button', { name: 'Back to diagnostics' }).click();
+    await dialog.getByRole('button', { name: 'Retry Generation' }).click();
+    await dialog.getByRole('heading', { name: 'Review generated candidates' }).waitFor();
+    assert.equal(await cell(page, 'SYN-002', '2026-12-07').textContent(), '-');
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});

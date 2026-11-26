@@ -1,4 +1,5 @@
 export const teams = ["Affiliate", "CSP"];
+export const optionalLimit = value => value == null || typeof value === "string" && !value.trim() ? null : value;
 export const key = (id, date) => id + "|" + date;
 export const dayIndex = date => Date.parse(date + "T00:00:00Z") / 86400000;
 export const dateAt = day => new Date(day * 86400000).toISOString().slice(0, 10);
@@ -158,6 +159,11 @@ export function migrate(saved) {
   model.transitions ??= seed().transitions;
   for (const draft of Object.values(model.drafts)) {
     draft.demand ??= {};
+    for (const rule of Object.values(draft.coverage)) if (rule && typeof rule === "object") rule.max = optionalLimit(rule.max);
+    for (const rule of Object.values(draft.demand)) if (rule && typeof rule === "object") {
+      rule.maxOff = optionalLimit(rule.maxOff);
+      rule.preferredOff = optionalLimit(rule.preferredOff);
+    }
     if (draft.rules.offPolicy !== "paired") {
       draft.legacyOff = { minimum: draft.rules.weeklyOff, staff: Object.fromEntries(Object.entries(draft.preferences)
         .filter(([, p]) => p.weeklyOff != null || p.consecutiveOff != null)

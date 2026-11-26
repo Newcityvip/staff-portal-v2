@@ -170,3 +170,40 @@ staging before any publisher is considered. Publishing also requires stale
 preview, writer coordination, audit and partial recovery controls.
 
 No production rollout or rollback is needed for Phase 1. Keep the PR draft.
+## Phase 1D: Diagnostics and recovery
+
+Run generation as usual. Preflight checks the selected scope using effective brand
+membership, daily and weekday overrides, retained cells, leave, eligibility,
+working minimums, regular OFF capacity, and known adjacent-month assignments.
+Blank optional caps are unlimited; a numeric zero remains a real limit. Legacy
+blank strings are normalized without changing assignments, locks or history.
+
+The diagnostics distinguish confirmed contradictions, optional preferences,
+unknown month boundaries, and branches pruned during search. Several dates can
+share one diagnosis. Use the setting or cell link to inspect the first affected
+date. Unassigned cells still block complete-month confirmation but are counted
+separately from generation conflicts.
+
+Retry runs up to three bounded worker attempts with wider budgets and, for
+Balanced and PM priority, an alternate ordering. Cancel remains available.
+Smart Adjustments show the old and proposed values. Selected proposals are
+tested in a copy. A validated candidate can be reviewed and explicitly applied;
+Undo restores both the settings and the assignments. Failed or cancelled
+trials leave the draft alone. Mandatory limits and rules remain enforced for
+each trial; only explicitly selected changes to optional settings are considered.
+
+When a search reaches a usable partial state, Best Possible Draft shows the
+furthest completed prefix found in the bounded attempts. It is diagnostic only,
+not a proven optimum, and cannot be applied, exported from that preview, or
+confirmed. Completing search is not guaranteed; aggregate OFF capacity does
+not prove that compatible pairs or shift coverage exist.
+
+The original browser draft was not available. With the reported December 2026
+OLD Brands workloads, zero working minimums, blank caps, and a synthetic AM
+minimum of five to reproduce 34-35 aggregate OFF slots, the selected-group
+Balanced run generates 10 staff with zero scoped blockers. A second fixture
+retains a locked PM on December 7 and adds an explicit PM cap of zero: Phase 1C
+exhausts its search and reports a branch-level symptom; Phase 1D identifies the
+cap conflict before search. A temporary exact-date cap of one yields a valid
+10-staff candidate without changing the locked shift. Neither fixture proves
+which settings were present in the original browser draft.

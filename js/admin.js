@@ -5,6 +5,7 @@
 
   let dashboard = {};
   let refreshPromise = null;
+  let refreshRevision = 0;
   const empty = (message, span = 8) => `<tr><td colspan="${span}" class="empty-state">${message}</td></tr>`;
   const badge = (text, tone = "") => `<span class="badge ${tone}">${text || "--"}</span>`;
   const previewLimit = 5;
@@ -301,19 +302,25 @@
   };
 
   const load = (silent = false, afterWrite = false) => {
-    if (afterWrite && refreshPromise) return refreshPromise.then(() => load(silent));
+    if (afterWrite && refreshPromise) {
+      refreshRevision++;
+      return refreshPromise.then(() => load(silent));
+    }
     if (refreshPromise) return refreshPromise;
     if (silent && (document.hidden || navigator.onLine === false)) return;
     if (!silent && !dashboard.stats) Portal.setStatus(null, "Loading");
+    const revision = refreshRevision;
     refreshPromise = (async () => {
       try {
         const data = await Portal.api.dashboard("admin", { dashboard_mode: "attendance_first" });
+        if (revision !== refreshRevision) return;
         dashboard = normalizeDashboard(data);
         renderAll();
         const root = data.data || data.dashboard || data;
         Portal.setText("lastDashboardUpdate", "Updated " + new Date(root.generated_at).toLocaleTimeString());
         Portal.dashboardReady();
       } catch (error) {
+        if (revision !== refreshRevision) return;
         Portal.dashboardFailure(Boolean(dashboard.stats), () => load(), error);
       } finally {
         refreshPromise = null;
@@ -326,7 +333,7 @@
     let lastError;
     for (const action of actions) {
       try {
-        const data = await Portal.api.action(action, payload);
+        const data = await Portal.api.action(action, payload, { updateStatus: false });
         if (/invalid action/i.test(String(data?.message || data?.error || ""))) {
           lastError = new Error(data.message || data.error);
           continue;
@@ -724,8 +731,12 @@
   load();
   const refreshTimer = setInterval(() => load(true), 15000);
   document.addEventListener("visibilitychange", () => load(true));
-  window.addEventListener("online", () => load(true));
+  window.addEventListener("online", async () => {
+    await refreshPromise;
+    load(true);
+  });
   window.addEventListener("offline", () => {
+    refreshRevision++;
     Portal.dashboardFailure(Boolean(dashboard.stats), () => load(), new Error("Network disconnected"));
   });
   window.addEventListener("resize", renderCharts);

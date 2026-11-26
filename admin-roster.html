@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b121e">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/admin-roster.css">
+  <title>Monthly Roster Builder | Staff Portal V2</title>
+</head>
+<body>
+  <header class="shell top">
+    <div class="brand"><img src="assets/logo.svg" width="36" height="36" alt=""><div><span>Staff Portal V2</span><h1>Monthly Roster Builder</h1></div></div>
+    <span class="prototype">Synthetic prototype</span>
+  </header>
+  <main class="shell">
+    <section class="controls" aria-label="Roster settings">
+      <label>Team <select id="team"><option>Affiliate</option><option>CSP</option></select></label>
+      <label>Month <input id="month" type="month" required min="2020-01" max="2099-12"></label>
+      <label>Group <select id="group"></select></label>
+      <div class="spacer"></div>
+      <button id="groups" type="button">Brand groups</button>
+      <button id="rules" type="button">Shift rules</button>
+      <button id="save" type="button">Save draft</button>
+      <button id="preview" type="button" class="primary" aria-pressed="false">Preview</button>
+    </section>
+    <section class="board" aria-label="Monthly roster">
+      <div class="board-heading">
+        <div><h2 id="period"></h2><p id="summary"></p></div>
+        <div class="actions">
+          <label class="sr-only" for="generation">Generation action</label>
+          <select id="generation">
+            <option value="all">Generate all groups</option><option value="group">Generate selected group</option>
+            <option value="unlocked">Regenerate unlocked cells</option><option value="previous">Copy previous month pattern</option>
+          </select>
+          <button id="generate" type="button" class="primary">Run</button>
+        </div>
+      </div>
+      <div class="toolbar" aria-label="Assignments">
+        <label class="sr-only" for="assignment">Shift assignment</label>
+        <select id="assignment"></select>
+        <button id="apply" type="button">Assign</button>
+        <label class="toggle"><input id="multi" type="checkbox"> Multi-select</label>
+        <button id="copy" type="button" title="Copy selected assignments" aria-label="Copy selected assignments">&#x2398;</button>
+        <button id="paste" type="button" title="Paste assignments" aria-label="Paste assignments">&#x21E9;</button>
+        <button id="clear" type="button" title="Clear assignments" aria-label="Clear assignments">&#x232B;</button>
+        <button id="lock" type="button" title="Toggle cell locks" aria-label="Toggle cell locks">Lock</button>
+        <button id="undo" type="button" title="Undo" aria-label="Undo">&#x21B6;</button>
+        <button id="redo" type="button" title="Redo" aria-label="Redo">&#x21B7;</button>
+        <span id="selection" class="muted"></span>
+      </div>
+      <div id="legend" class="legend" aria-label="Shift legend"></div>
+      <div id="scroll" class="scroll" tabindex="0" aria-label="Scrollable roster grid">
+        <table id="matrix"></table>
+      </div>
+    </section>
+    <section class="bottom" aria-label="Validation and export">
+      <details id="validation"><summary id="validation-title">Validation</summary><div id="issues"></div></details>
+      <div class="actions">
+        <label class="sr-only" for="source">Export source</label><select id="source"></select>
+        <label class="sr-only" for="export-group">Export group</label><select id="export-group"></select>
+        <button id="csv" type="button">CSV</button><button id="xlsx" type="button">Excel</button>
+        <button id="confirm" type="button" hidden>Review confirmation</button>
+      </div>
+    </section>
+    <p id="notice" role="status" class="muted"></p>
+  </main>
+  <dialog id="dialog" aria-labelledby="dialog-title">
+    <div class="dialog-heading"><h2 id="dialog-title"></h2><form method="dialog"><button type="submit" aria-label="Close dialog" title="Close">&#x2715;</button></form></div>
+    <div id="dialog-content"></div>
+  </dialog>
+  <script type="module" src="js/admin-roster.js"></script>
+</body>
+</html>

@@ -27,6 +27,13 @@ async function fixture(role, options = {}) {
   const errors = [], requests = [];
   page.on('pageerror', e => errors.push(e.message));
   const control = { response: payload(role, 'AM', options.baseline), status: 200, fail: false, hold: null, ...options };
+  let lastAdminTimestamp = 0;
+  const responseSnapshot = action => {
+    const data = control.response;
+    if (role !== 'admin' || !/^get_.*dashboard/.test(action) || !data?.generated_at || control.fixedAdminTimestamp) return data;
+    lastAdminTimestamp = Math.max(lastAdminTimestamp + 1, Date.now(), Date.parse(data.generated_at));
+    return { ...data, generated_at: new Date(lastAdminTimestamp).toISOString() };
+  };
   await context.addInitScript(({ role, handoff, sessionIp, login }) => {
     if (location.pathname.endsWith('/index.html')) return;
     if (login) return;
@@ -62,8 +69,11 @@ async function fixture(role, options = {}) {
       }
       if (body.action === 'attendance_action' && control.dropWrite) return route.abort('failed');
       if (body.action === 'save_monthly_kpi') return route.fulfill({ json: { ok: true } });
+      if (role === 'admin' && /^get_.*dashboard/.test(body.action) && control.adminRead) {
+        return control.adminRead(route, responseSnapshot(body.action));
+      }
       if (/^get_.*dashboard/.test(body.action) && control.holdDashboard) {
-        const snapshot = structuredClone(control.response);
+        const snapshot = structuredClone(responseSnapshot(body.action));
         await control.holdDashboard;
         return route.fulfill({ json: snapshot });
       }
@@ -78,11 +88,12 @@ async function fixture(role, options = {}) {
         if (body.event_type === 'BREAK_END') { state.activeBreak = ''; state.breakStartedAt = null; }
         return route.fulfill({ json: { ok: true, event_id: "test-event", state } });
       }
-      return route.fulfill({ status: control.status, json: control.response });
+      return route.fulfill({ status: control.status, json: responseSnapshot(body.action) });
     }
     if (url.hostname !== 'portal.test') throw Error('Unexpected external request: ' + url.hostname);
     const file = url.pathname.replace(/^\/(?:staff-portal-v2\/)?/, '') || 'index.html';
-    const ref = options.phaseOne ? 'ea513ae283caaf365b2ac023d26f9ca105fa9e17' :
+    const ref = options.phaseTwo ? 'cc49017d9e3f4b9402b28510312647f15c335350' :
+      options.phaseOne ? 'ea513ae283caaf365b2ac023d26f9ca105fa9e17' :
       options.baseline ? 'c5b7bf0d6c1bf5b8b277b07f37abeac43750b7e9' : null;
     let body = ref ? cp.execFileSync('git', ['show', `${ref}:${file}`]) : fs.readFileSync(file);
     const ext = path.extname(file);
@@ -336,6 +347,135 @@ test('a successful admin KPI write cannot label a stale dashboard Live', async (
     release();
     await f.page.waitForFunction(() => document.getElementById('connectionStatus').textContent === 'Live');
   } finally { await f.context.close(); }
+});
+
+const adminStatus = f => f.page.locator('#connectionStatus');
+const adminReads = f => f.requests.filter(r => r.action === 'get_admin_dashboard_full').length;
+const startAdminRefresh = f => f.page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+const hasAdminStatus = (f, value) => f.page.waitForFunction(text => document.getElementById('connectionStatus').textContent === text, value);
+
+test('admin timeout reconnects once, preserves data and does not overlap refreshes', async () => {
+  const f = await fixture('admin');
+  let releaseFirst;
+  let releaseRetry;
+  try {
+    await hasAdminStatus(f, 'Live');
+    const lastUpdate = await f.page.locator('#lastDashboardUpdate').textContent();
+    await f.page.evaluate(() => Object.defineProperty(document, 'hidden', { configurable: true, value: true }));
+    await startAdminRefresh(f);
+    assert.equal(adminReads(f), 1);
+    await f.page.evaluate(() => { delete document.hidden; });
+    await f.page.clock.install();
+    const first = new Promise(resolve => { releaseFirst = resolve; });
+    const second = new Promise(resolve => { releaseRetry = resolve; });
+    let attempt = 0;
+    f.control.adminRead = async (route, data) => {
+      const number = ++attempt;
+      await (number === 1 ? first : second);
+      if (number === 1) { await route.abort().catch(() => {}); return; }
+      await route.fulfill({ json: { ...data, summary: { ...data.summary, total_staff: 2 } } });
+    };
+    const requested = f.page.waitForRequest(req => req.postDataJSON()?.action === 'get_admin_dashboard_full');
+    await startAdminRefresh(f);
+    await requested;
+    await hasAdminStatus(f, 'Refreshing');
+    for (let i = 0; i < 4; i++) await startAdminRefresh(f);
+    assert.equal(adminReads(f), 2);
+    await f.page.clock.runFor(15001);
+    await hasAdminStatus(f, 'Reconnecting');
+    releaseFirst();
+    await f.page.clock.runFor(701);
+    assert.equal(await f.page.locator('#lastDashboardUpdate').textContent(), lastUpdate);
+    assert.equal(await f.page.locator('#totalStaff').textContent(), '1');
+    assert.equal(await adminStatus(f).textContent(), 'Reconnecting');
+    releaseRetry();
+    await hasAdminStatus(f, 'Live');
+    assert.equal(adminReads(f), 3);
+    assert.equal(await f.page.locator('#totalStaff').textContent(), '2');
+  } finally { releaseFirst?.(); releaseRetry?.(); await f.context.close(); }
+});
+
+test('admin exhausted transient retries keep data stale and throttle automatic reads; manual Retry recovers', async () => {
+  const f = await fixture('admin');
+  try {
+    await hasAdminStatus(f, 'Live');
+    const lastUpdate = await f.page.locator('#lastDashboardUpdate').textContent();
+    f.control.status = 503;
+    f.control.response = { ok: false, message: 'Busy' };
+    await startAdminRefresh(f);
+    await hasAdminStatus(f, 'Stale data - Retry');
+    assert.equal(adminReads(f), 3);
+    await startAdminRefresh(f);
+    assert.equal(adminReads(f), 3);
+    assert.equal(await f.page.locator('#lastDashboardUpdate').textContent(), lastUpdate);
+    assert.equal(await f.page.locator('#totalStaff').textContent(), '1');
+    f.control.status = 200;
+    f.control.response = payload('admin');
+    await f.page.locator('#dashboardRetry').click();
+    await hasAdminStatus(f, 'Live');
+    assert.equal(adminReads(f), 4);
+  } finally { await f.context.close(); }
+});
+
+test('admin rejects an older response without replacing the displayed data or timestamp', async () => {
+  const f = await fixture('admin', { fixedAdminTimestamp: true });
+  try {
+    await hasAdminStatus(f, 'Live');
+    const lastUpdate = await f.page.locator('#lastDashboardUpdate').textContent();
+    f.control.response = { ...payload('admin'), generated_at: new Date(Date.now() - 60000).toISOString(),
+      summary: { total_staff: 99, summary_details: {} } };
+    await startAdminRefresh(f);
+    await hasAdminStatus(f, 'Stale data - Retry');
+    assert.equal(await f.page.locator('#totalStaff').textContent(), '1');
+    assert.equal(await f.page.locator('#lastDashboardUpdate').textContent(), lastUpdate);
+    assert.equal(adminReads(f), 2);
+  } finally { await f.context.close(); }
+});
+
+test('developer credit is centered below the login card or Logout on desktop and mobile', async () => {
+  for (const width of [1200, 390, 320]) {
+    for (const [role, login] of [['staff', true], ['staff', false], ['admin', false]]) {
+      const f = await fixture(role, { login, viewport: { width, height: 844 } });
+      try {
+        const selector = login ? 'footer.developer-credit' : width > 900 ? '.sidebar .developer-credit' : '.mobile-nav .developer-credit';
+        const credit = f.page.locator(selector);
+        assert.equal(await credit.isVisible(), true);
+        assert.equal(await credit.textContent(), 'Developed by Robi');
+        const position = await credit.evaluate(el => ({
+          centered: getComputedStyle(el).textAlign === 'center',
+          below: el.getBoundingClientRect().top >= el.previousElementSibling.getBoundingClientRect().bottom - 1,
+          fits: el.getBoundingClientRect().left >= 0 && el.getBoundingClientRect().right <= innerWidth
+        }));
+        assert.deepEqual(position, { centered: true, below: true, fits: true }, JSON.stringify({ role, login, width }));
+        const documentWidth = await f.page.evaluate(() => document.documentElement.scrollWidth);
+        if (documentWidth > width) {
+          const baseline = await fixture(role, { login, phaseTwo: true, viewport: { width, height: 844 } });
+          try {
+            const baselineWidth = await baseline.page.evaluate(() => document.documentElement.scrollWidth);
+            assert.ok(documentWidth <= baselineWidth, JSON.stringify({ role, login, width, documentWidth, baselineWidth }));
+          } finally { await baseline.context.close(); }
+        }
+      } finally { await f.context.close(); }
+    }
+  }
+});
+
+test('staff login keeps one IP discovery and no blocking dashboard read against production baseline', async t => {
+  for (const phaseTwo of [true, false]) {
+    const f = await fixture('staff', { login: true, phaseTwo });
+    try {
+      await f.page.locator('#identity').fill('TEST001');
+      const sent = f.page.waitForResponse(res => res.request().postDataJSON()?.action === 'staff_login').then(() => performance.now());
+      await f.page.locator('#loginBtn').click();
+      const responseAt = await sent;
+      await f.page.waitForURL('**/staff.html');
+      await f.page.waitForFunction(() => !document.querySelector('[data-action="checkIn"]').disabled);
+      assert.equal(f.requests.filter(row => row.action === 'trace').length, 1);
+      assert.equal(f.requests.filter(row => row.action === 'get_staff_dashboard').length, 0);
+      t.diagnostic(JSON.stringify({ version: phaseTwo ? 'production-baseline' : 'hotfix',
+        fixturePostLoginReadyMs: Math.round(performance.now() - responseAt) }));
+    } finally { await f.context.close(); }
+  }
 });
 
 test('staff login response enables attendance after navigation without a second blocking request', async t => {

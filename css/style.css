@@ -268,6 +268,19 @@ h1, h2, p { margin-top: 0; }
   min-height: 46px;
 }
 
+.developer-credit {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: .75rem;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.mobile-nav .developer-credit {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
 .main-panel {
   min-width: 0;
   display: grid;
@@ -715,6 +728,8 @@ canvas {
   .app-shell { grid-template-columns: 1fr; width: min(100% - 22px, 760px); padding-top: 12px; }
   .sidebar { display: none; }
   .mobile-nav { display: grid; }
+  [data-page="staff"] .mobile-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  [data-page="admin"] .mobile-nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .topbar, .hero-grid, .content-grid { grid-template-columns: 1fr; display: grid; }
   .top-actions { justify-content: start; }
   .profile-card { grid-template-columns: 1fr; padding-top: 58px; }
@@ -723,6 +738,8 @@ canvas {
 
 @media (max-width: 560px) {
   .auth-shell { width: min(100% - 22px, 430px); }
+  .auth-shell { grid-template-columns: minmax(0, 1fr); }
+  .auth-brand h1 { overflow-wrap: anywhere; }
   .login-card { padding: 18px; }
   .auth-brand h1 { font-size: 3.25rem; }
   .form-row { align-items: flex-start; flex-direction: column; }

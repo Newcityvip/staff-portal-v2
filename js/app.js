@@ -213,7 +213,12 @@
       const retryDelays = options.retryRead ? [0, 700] : [0];
       let lastError;
       for (let attempt = 0; attempt < retryDelays.length; attempt++) {
-        if (retryDelays[attempt]) await sleep(retryDelays[attempt]);
+        if (retryDelays[attempt]) {
+          if (options.canRetry && !options.canRetry()) break;
+          options.onRetry?.();
+          await sleep(retryDelays[attempt]);
+          if (options.canRetry && !options.canRetry()) break;
+        }
         for (const url of endpoints) {
           const timeout = withTimeout(options.timeoutMs || 15000);
           try {
@@ -337,7 +342,7 @@
       }
       throw lastError || new Error("Login action is not available");
     },
-    async dashboard(role, extraPayload = {}) {
+    async dashboard(role, extraPayload = {}, { canRetry, onRetry } = {}) {
       const actions = role === "admin"
         ? ["get_admin_dashboard_full", "get_admin_dashboard"]
         : ["get_staff_dashboard"];
@@ -354,7 +359,8 @@
       let lastError;
       for (const action of actions) {
         try {
-          const data = await this.call(action, payload, { endpoints: [API_BASE], timeoutMs: 15000, retryRead: true, updateStatus: false });
+          const data = await this.call(action, payload, { endpoints: [API_BASE], timeoutMs: 15000, retryRead: true,
+            updateStatus: false, canRetry, onRetry });
           if (data?.error && /invalid action/i.test(String(data.error))) {
             lastError = new Error(data.error);
             continue;
@@ -597,6 +603,7 @@
     dashboardReady,
     toast,
     isAbortLike,
+    isRetryableReadError,
     staffDate,
     takeStaffBootstrap,
     getSession,

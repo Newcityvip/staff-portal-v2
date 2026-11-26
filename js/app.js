@@ -92,10 +92,21 @@
   };
 
   // Validate operational fields, not whether schedules or score lists are non-empty.
-  const validDashboard = (role, payload) => {
+  const validDashboard = (role, payload, mode) => {
     const root = payload?.data || payload?.dashboard || payload;
     const record = (value) => value && typeof value === "object" && !Array.isArray(value);
     if (!record(root) || payload?.ok === false || root.ok === false || !(payload?.ok === true || root.ok === true)) return false;
+    if (mode === "attendance_first") {
+      if (root.dashboard_mode !== mode || !Number.isFinite(Date.parse(root.generated_at))) return false;
+      if (role === "admin") return record(root.summary) && Number.isInteger(root.summary.total_staff) && record(root.summary.summary_details) &&
+        Array.isArray(root.breakBoard) && Array.isArray(root.next_shift_staff_all);
+      const state = root.attendance_state;
+      return record(root.staff) && Boolean(root.staff.login_id) && record(root.today_schedule) && typeof root.today_schedule.ok === "boolean" &&
+        record(root.ip) && root.ip.allowed === true && /^\d{4}-\d{2}-\d{2}$/.test(root.today) &&
+        typeof root.timezone === "string" && record(state) && typeof state.hasCheckIn === "boolean" &&
+        typeof state.hasCheckOut === "boolean" && typeof state.activeBreak === "string" &&
+        record(state.counts) && ["BREAK", "BIO_BREAK", "PRAYER_BREAK"].every((key) => Number.isInteger(state.counts[key]) && state.counts[key] >= 0);
+    }
     if (role === "staff") return record(root.staff) && record(root.attendance_state) &&
       Object.prototype.hasOwnProperty.call(root, "today_schedule") &&
       (root.today_schedule === null || record(root.today_schedule)) && Array.isArray(root.monthly_schedule);
@@ -194,9 +205,8 @@
               credentials: "omit",
               signal: timeout.controller.signal
             });
-            // Dashboard reads must remain bounded while receiving the body too.
-            // Preserve the existing deadline handling for single-shot writes.
-            if (!options.retryRead) clearTimeout(timeout.timer);
+            // A stalled attendance response is ambiguous even after headers arrive.
+            if (!options.retryRead && !options.deadlineThroughBody) clearTimeout(timeout.timer);
             const data = await safeJson(response);
             clearTimeout(timeout.timer);
             if (response.status === 401 || response.status === 403) {
@@ -280,7 +290,8 @@
         requestIp: attemptedIp,
         attempted_ip: attemptedIp,
         client_ip: attemptedIp,
-        ip_address: attemptedIp
+        ip_address: attemptedIp,
+        ...(role === "staff" ? { dashboard_mode: "attendance_first" } : {})
       };
       const adminPayload = {
         ...staffPayload,
@@ -343,7 +354,7 @@
             continue;
           }
           if (data?.ok === false) throw new Error(data.message || data.error || "Dashboard request failed");
-          if (!validDashboard(role, data)) throw new Error("Invalid dashboard response. Please retry.");
+          if (!validDashboard(role, data, extraPayload.dashboard_mode)) throw new Error("Invalid dashboard response. Please retry.");
           return data;
         } catch (error) {
           if (/invalid action/i.test(String(error.message))) {
@@ -355,7 +366,19 @@
       }
       throw lastError || new Error("Dashboard action is not available");
     },
-    async action(action, payload = {}) { return this.call(action, payload, { endpoints: [API_BASE], timeoutMs: 20000, retryRead: false }); }
+    async staffAttendanceHistory() {
+      const session = getSession(false);
+      const data = await this.call("get_staff_attendance_history", {
+        login_id: session?.loginId || session?.staffId || "",
+        ip: await this.detectIp()
+      }, { retryRead: true, updateStatus: false });
+      if (data?.ok !== true || !Array.isArray(data.attendance_events)) throw new Error(data?.message || "Unable to load attendance history.");
+      return data.attendance_events;
+    },
+    async action(action, payload = {}) {
+      const attendance = action === "attendance_action";
+      return this.call(action, payload, { endpoints: [API_BASE], timeoutMs: 20000, retryRead: false, deadlineThroughBody: attendance, updateStatus: !attendance });
+    }
   };
 
   const getSession = (redirect = true) => {
@@ -378,7 +401,33 @@
     }
   };
 
+  const STAFF_BOOTSTRAP_KEY = "spv2_staff_attendance_bootstrap";
+  const staffDate = (timezone) => {
+    const parts = new Intl.DateTimeFormat("en", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts();
+    const get = (type) => parts.find((part) => part.type === type)?.value;
+    return `${get("year")}-${get("month")}-${get("day")}`;
+  };
+  const storeStaffBootstrap = (data, session) => {
+    if (!validDashboard("staff", data, "attendance_first")) return;
+    try { sessionStorage.setItem(STAFF_BOOTSTRAP_KEY, JSON.stringify({ data, createdAt: session.createdAt })); } catch (error) {}
+  };
+  const takeStaffBootstrap = (session) => {
+    try {
+      const raw = sessionStorage.getItem(STAFF_BOOTSTRAP_KEY);
+      sessionStorage.removeItem(STAFF_BOOTSTRAP_KEY);
+      const handoff = JSON.parse(raw || "null");
+      const data = handoff?.data;
+      if (!validDashboard("staff", data, "attendance_first")) return null;
+      const age = Date.now() - Date.parse(data.generated_at);
+      if (session.role !== "staff" || handoff.createdAt !== session.createdAt || data.staff.login_id !== session.loginId ||
+        !session.ip || data.ip.address !== session.ip || data.ip.address !== localStorage.getItem(CLIENT_IP_KEY) ||
+        age < 0 || age > 10000 || data.today !== staffDate(data.timezone)) return null;
+      return data;
+    } catch (error) { return null; }
+  };
+
   const saveSession = (session, remember) => {
+    clearSession();
     const data = JSON.stringify({ ...session, createdAt: Date.now() });
     const store = remember ? localStorage : sessionStorage;
     store.setItem(SESSION_KEY, data);
@@ -388,6 +437,7 @@
   const clearSession = () => {
     localStorage.removeItem(SESSION_KEY);
     sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(STAFF_BOOTSTRAP_KEY);
   };
 
   const normalizeSession = (role, identity, data, ip = "") => {
@@ -437,7 +487,6 @@
     const remember = document.getElementById("remember");
     remember.checked = localStorage.getItem(REMEMBER_KEY) !== "0";
     api.health().catch(() => {});
-    api.detectIp().catch(() => {});
 
     document.querySelectorAll(".tab-btn").forEach((tab) => {
       tab.addEventListener("click", () => {
@@ -470,6 +519,7 @@
           throw new Error(formatLoginError(data, attemptedIp));
         }
         saveSession(normalizeSession(role, identity, data, attemptedIp), remember.checked);
+        if (role === "staff" && data.ok === true) storeStaffBootstrap(data.attendance_bootstrap, getSession(false));
         location.href = role === "admin" ? "admin.html" : "staff.html";
       } catch (error) {
         if (/ip not allowed|not allowed/i.test(String(error.message)) && !attemptedIp) attemptedIp = await api.detectIp();
@@ -524,6 +574,8 @@
     dashboardReady,
     toast,
     isAbortLike,
+    staffDate,
+    takeStaffBootstrap,
     getSession,
     saveSession,
     clearSession,

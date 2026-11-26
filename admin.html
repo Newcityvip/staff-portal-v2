@@ -15,7 +15,6 @@
         <a class="active" href="#overview">Overview</a>
         <a href="#boards">Boards</a>
         <a href="#management">Management</a>
-        <a href="#logs">Logs</a>
       </nav>
       <button class="logout-btn" data-logout type="button">Logout</button>
     </aside>
@@ -29,8 +28,10 @@
         <div class="top-actions">
           <input id="staffSearch" class="search-input" placeholder="Search staff">
           <a class="mini-btn" href="https://staff-performance-score.pages.dev/" target="_blank" rel="noopener noreferrer">View Staff Scores</a>
+          <a class="mini-btn" href="https://staff-leave-management-v1.pages.dev/" target="_blank" rel="noopener noreferrer">Schedule &amp; Leave</a>
           <button id="dashboardRetry" class="mini-btn" type="button" hidden>Retry</button>
           <span id="connectionStatus" class="status-pill">Connecting</span>
+          <span id="lastDashboardUpdate" class="clock">Not updated yet</span>
           <span id="liveClock" class="clock">--:--:--</span>
         </div>
       </header>
@@ -55,27 +56,18 @@
 
       <section id="boards" class="content-grid">
         <article class="glass-panel table-panel">
-          <div class="panel-title"><h2>Live Attendance Board</h2><button class="mini-btn" data-export="attendance">Export</button></div>
-          <div class="table-wrap"><table><thead><tr><th>Staff</th><th>Department</th><th>Status</th><th>Check In</th><th>IP</th></tr></thead><tbody id="attendanceBoard"></tbody></table></div>
-        </article>
-        <article class="glass-panel table-panel">
           <div class="panel-title"><h2>Live Break Board</h2><button class="mini-btn" data-export="breaks">Export</button></div>
           <div class="table-wrap"><table><thead><tr><th>Staff</th><th>Break Start</th><th>Duration</th><th>Status</th></tr></thead><tbody id="breakBoard"></tbody></table></div>
         </article>
       </section>
 
-      <section id="management" class="content-grid">
-        <article class="glass-panel table-panel">
-          <div class="panel-title"><h2>Staff Management</h2><button class="mini-btn" data-refresh>Refresh</button></div>
-          <div class="table-wrap"><table><thead><tr><th>Name</th><th>Role</th><th>Department</th><th>Status</th></tr></thead><tbody id="staffTable"></tbody></table></div>
-        </article>
-        <article class="glass-panel table-panel">
-          <div class="panel-title"><h2>Schedule Management</h2><button class="mini-btn" data-export="schedule">Export</button></div>
-          <div class="table-wrap"><table><thead><tr><th>Staff</th><th>Date</th><th>Shift</th><th>Start</th><th>End</th><th>Status</th></tr></thead><tbody id="scheduleTable"></tbody></table></div>
+      <section class="content-grid">
+        <article class="glass-panel table-panel full-span">
+          <div class="panel-title"><h2>Next Shift Staff</h2></div>
+          <div class="table-wrap"><table><thead><tr><th>Staff</th><th>Team</th><th>Date</th><th>Shift</th><th>Start</th><th>End</th><th>Status</th></tr></thead><tbody id="nextShiftStaff"></tbody></table></div>
         </article>
       </section>
-
-      <section class="content-grid">
+      <section id="management" class="content-grid">
         <div class="management-card-stack">
           <article class="glass-panel">
             <div class="panel-title"><h2>Upload Schedule</h2><span>CSV import</span></div>
@@ -90,34 +82,6 @@
             </form>
           </article>
 
-          <article class="glass-panel">
-            <div class="panel-title"><h2>Update Single Schedule</h2><span>One date</span></div>
-            <form id="singleScheduleForm" class="control-grid">
-              <label class="field">
-                <span>Staff Login ID</span>
-                <input id="singleScheduleLoginId" required placeholder="AKM001">
-              </label>
-              <label class="field">
-                <span>Date</span>
-                <input id="singleScheduleDate" type="date" required>
-              </label>
-              <label class="field">
-                <span>Shift</span>
-                <select id="singleScheduleShift" required>
-                  <option value="AM">AM</option>
-                  <option value="AM1">AM1</option>
-                  <option value="PM">PM</option>
-                  <option value="PM1">PM1</option>
-                  <option value="OFF">OFF</option>
-                  <option value="AL">AL</option>
-                  <option value="SL">SL</option>
-                  <option value="UL">UL</option>
-                </select>
-              </label>
-              <button class="primary-btn" type="submit">Update Schedule</button>
-              <div id="singleScheduleState" class="inline-alert subtle full-span" hidden></div>
-            </form>
-          </article>
         </div>
 
         <article class="glass-panel">
@@ -165,37 +129,15 @@
         </article>
       </section>
 
-      <section class="content-grid">
-        <article class="glass-panel table-panel">
-          <div class="panel-title"><h2>IP Allowlist</h2><button class="mini-btn" id="saveIpBtn">Save</button></div>
-          <textarea id="ipAllowlist" class="control-textarea" placeholder="One IP address or CIDR per line"></textarea>
-          <div id="ipSaveState" class="inline-alert subtle" hidden></div>
-        </article>
-      </section>
-
-      <section id="logs" class="content-grid">
-        <article class="glass-panel table-panel">
-          <div class="panel-title"><h2>Daily Logs</h2><button class="mini-btn" data-export="dailyLogs">Export</button></div>
-          <div class="table-wrap"><table><thead><tr><th>Time</th><th>Staff</th><th>Action</th><th>Status</th></tr></thead><tbody id="dailyLogs"></tbody></table></div>
-        </article>
-        <article class="glass-panel table-panel">
-          <div class="panel-title"><h2>Telegram Logs</h2><button class="mini-btn" data-export="telegramLogs">Export</button></div>
-          <div class="table-wrap"><table><thead><tr><th>Time</th><th>Target</th><th>Message</th><th>Status</th></tr></thead><tbody id="telegramLogs"></tbody></table></div>
-        </article>
-        <article class="glass-panel table-panel full-span">
-          <div class="panel-title"><h2>Audit Logs</h2><button class="mini-btn" data-export="auditLogs">Export</button></div>
-          <div class="table-wrap"><table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>IP</th><th>Result</th></tr></thead><tbody id="auditLogs"></tbody></table></div>
-        </article>
-      </section>
     </main>
   </div>
 
   <nav class="mobile-nav">
-    <a href="#overview">Stats</a><a href="#boards">Boards</a><a href="#management">Manage</a><a href="#logs">Logs</a><button data-logout type="button">Logout</button>
+    <a href="#overview">Stats</a><a href="#boards">Boards</a><a href="#management">Manage</a><button data-logout type="button">Logout</button>
   </nav>
 
   <div id="toastHost" class="toast-host"></div>
-  <script src="js/app.js?v=operations-v1"></script>
-  <script src="js/admin.js?v=operations-v1"></script>
+  <script src="js/app.js?v=attendance-first-v1"></script>
+  <script src="js/admin.js?v=attendance-first-v1"></script>
 </body>
 </html>

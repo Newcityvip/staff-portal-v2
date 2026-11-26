@@ -14,7 +14,6 @@
       <nav class="side-nav">
         <a class="active" href="#overview">Overview</a>
         <a href="#attendance">Attendance</a>
-        <a href="#schedule">Schedule</a>
       </nav>
       <button class="logout-btn" data-logout type="button">Logout</button>
     </aside>
@@ -27,6 +26,7 @@
         </div>
         <div class="top-actions">
           <a class="mini-btn" href="https://staff-performance-score.pages.dev/" target="_blank" rel="noopener noreferrer">View Your Score</a>
+          <a class="mini-btn" href="https://staff-leave-management-v1.pages.dev/" target="_blank" rel="noopener noreferrer">Schedule &amp; Leave</a>
           <button id="dashboardRetry" class="mini-btn" type="button" hidden>Retry</button>
           <span id="connectionStatus" class="status-pill">Connecting</span>
           <span id="liveClock" class="clock">--:--:--</span>
@@ -66,27 +66,27 @@
       </section>
 
       <section class="action-grid" aria-label="Attendance actions">
-        <button class="action-btn cyan" data-action="checkIn" type="button">Check In<span id="checkInState">Ready</span></button>
-        <button class="action-btn red" data-action="checkOut" type="button">Check Out<span id="checkOutState">Pending</span></button>
-        <button class="action-btn amber" data-action="breakStart" type="button">Break Start<span id="breakStartState">Available</span></button>
-        <button class="action-btn green" data-action="breakEnd" type="button">Break End<span id="breakEndState">Inactive</span></button>
+        <button class="action-btn cyan" data-action="checkIn" type="button" disabled>Check In<span id="checkInState">Verifying</span></button>
+        <button class="action-btn red" data-action="checkOut" type="button" disabled>Check Out<span id="checkOutState">Verifying</span></button>
+        <button class="action-btn amber" data-action="breakStart" type="button" disabled>Break Start<span id="breakStartState">Verifying</span></button>
+        <button class="action-btn green" data-action="breakEnd" type="button" disabled>Break End<span id="breakEndState">Verifying</span></button>
       </section>
 
       <section id="attendance" class="hero-grid">
         <article class="metric-card glass-panel"><span>Attendance</span><strong id="attendanceStatus">--</strong><small>Live state</small></article>
-        <article class="metric-card glass-panel"><span>Break</span><strong id="breakStatus">--</strong><small id="breakTimer">00:00:00</small></article>
+        <article class="metric-card glass-panel"><span>Break</span><strong id="breakStatus">--</strong><small id="breakTimer">--</small></article>
       </section>
 
-      <section id="schedule" class="content-grid">
+      <section class="content-grid" aria-label="Attendance history">
         <article class="glass-panel table-panel full-span">
           <div class="panel-title">
-            <h2>Upcoming Schedule</h2>
-            <input id="scheduleMonth" class="search-input" type="month">
+            <h2>Attendance History</h2>
+            <button id="loadAttendanceHistory" class="mini-btn" type="button">Load History</button>
           </div>
           <div class="table-wrap">
             <table>
-              <thead><tr><th>Date</th><th>Shift</th><th>Start</th><th>End</th><th>Status</th></tr></thead>
-              <tbody id="upcomingSchedule"></tbody>
+              <thead><tr><th>Date</th><th>Time</th><th>Action</th><th>Break</th><th>Shift</th></tr></thead>
+              <tbody id="attendanceHistory"></tbody>
             </table>
           </div>
         </article>
@@ -96,11 +96,11 @@
   </div>
 
   <nav class="mobile-nav">
-    <a href="#overview">Home</a><a href="#attendance">Live</a><a href="#schedule">Schedule</a><button data-logout type="button">Logout</button>
+    <a href="#overview">Home</a><a href="#attendance">Attendance</a><button data-logout type="button">Logout</button>
   </nav>
 
   <div id="toastHost" class="toast-host"></div>
-  <script src="js/app.js?v=operations-v1"></script>
-  <script src="js/staff.js?v=operations-v1"></script>
+  <script src="js/app.js?v=attendance-first-v1"></script>
+  <script src="js/staff.js?v=attendance-first-v1"></script>
 </body>
 </html>

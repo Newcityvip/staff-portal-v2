@@ -11,29 +11,50 @@ after(async () => { await browser?.close(); });
 const day = new Date().toISOString().slice(0, 10);
 const staff = { full_name: 'Test Staff', login_id: 'TEST001', team: 'CSP', role: 'Agent', status: 'ACTIVE' };
 const shift = { ok: true, schedule_date: day, shift_code: 'AM', status: 'WORKING', start_time: '06:30', end_time: '15:30' };
-function payload(role, code = 'AM') {
+function payload(role, code = 'AM', baseline = false) {
   const schedule = { ...shift, shift_code: code, status: code === 'AM' ? 'WORKING' : code };
-  return role === 'staff' ? { ok: true, staff, selected_month: day.slice(0, 7), today_schedule: schedule,
-    attendance_state: { hasCheckIn: false, hasCheckOut: false, counts: {} }, monthly_schedule: [schedule], upcoming_schedule: [schedule] }
-    : { ok: true, summary: { total_staff: 1, summary_details: { total_staff: [staff] } }, staff_count: 1,
-      staff_list: [staff], schedule_list: [schedule], attendance_events: [], breakBoard: [], audit_logs: [], telegram_logs: [], ip_allowlist: [] };
+  const metadata = { ok: true, dashboard_mode: 'attendance_first', generated_at: new Date().toISOString() };
+  return role === 'staff' ? { ...metadata, staff, today: day, timezone: 'UTC', ip: { allowed: true, address: '192.0.2.1' }, today_schedule: schedule,
+    attendance_state: { hasCheckIn: false, hasCheckOut: false, activeBreak: '', counts: { BREAK: 0, BIO_BREAK: 0, PRAYER_BREAK: 0 } },
+    ...(baseline ? { selected_month: day.slice(0, 7), monthly_schedule: [schedule], upcoming_schedule: [schedule] } : {}) }
+    : { ...metadata, summary: { total_staff: 1, summary_details: { total_staff: [staff] } },
+      breakBoard: [], next_shift_staff_all: [],
+      ...(baseline ? { staff_list: [staff], schedule_list: [schedule], attendance_events: [], audit_logs: [], telegram_logs: [], ip_allowlist: [] } : {}) };
 }
 async function fixture(role, options = {}) {
   const context = await browser.newContext(options.viewport ? { viewport: options.viewport } : {});
   const page = await context.newPage();
   const errors = [], requests = [];
   page.on('pageerror', e => errors.push(e.message));
-  const control = { response: payload(role), status: 200, fail: false, hold: null, ...options };
-  await context.addInitScript(({ role }) => {
+  const control = { response: payload(role, 'AM', options.baseline), status: 200, fail: false, hold: null, ...options };
+  await context.addInitScript(({ role, handoff, sessionIp, login }) => {
     if (location.pathname.endsWith('/index.html')) return;
-    localStorage.setItem('staffPortalV2.session', JSON.stringify({ role, loginId: 'TEST001', staffId: 'TEST-ID', name: 'Test Staff', createdAt: Date.now() }));
+    if (login) return;
+    const createdAt = Date.now();
+    localStorage.setItem('staffPortalV2.session', JSON.stringify({ role, loginId: 'TEST001', staffId: 'TEST-ID', name: 'Test Staff', createdAt, ip: sessionIp || '192.0.2.1' }));
     localStorage.setItem('staffPortalV2.clientIp', '192.0.2.1');
-  }, { role });
+    if (handoff && !sessionStorage.getItem('test.handoffSeeded')) {
+      sessionStorage.setItem('test.handoffSeeded', '1');
+      sessionStorage.setItem('spv2_staff_attendance_bootstrap', JSON.stringify({ data: handoff, createdAt }));
+    }
+  }, { role, handoff: options.handoff, sessionIp: options.sessionIp, login: options.login });
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
     if (url.hostname === 'staff-portal-api-v2.mdrobiulislam.workers.dev') {
       const body = route.request().postDataJSON() || {};
       requests.push(body);
+      if (options.login && route.request().method() === 'GET') return route.fulfill({ json: { ok: true } });
+      if (options.login && body.action === 'clientIp') return route.fulfill({ json: { ok: true, ip: '192.0.2.1' } });
+      if (options.login && body.action === 'staff_login') return route.fulfill({ json: {
+        ok: true, staff, attendance_bootstrap: { ...payload(role), generated_at: new Date().toISOString() }
+      } });
+      if (body.action === 'get_staff_attendance_history') return route.fulfill({ json: { ok: true, attendance_events: [{ event_type: 'CHECK_IN' }] } });
+      if (body.action === 'attendance_action' && control.dropWrite) return route.abort('failed');
+      if (/^get_.*dashboard/.test(body.action) && control.holdDashboard) {
+        const snapshot = structuredClone(control.response);
+        await control.holdDashboard;
+        return route.fulfill({ json: snapshot });
+      }
       if (control.hold) await control.hold;
       if (control.fail) return route.abort('failed');
       if (body.action === 'attendance_action') {
@@ -43,18 +64,18 @@ async function fixture(role, options = {}) {
         if (body.event_type === 'CHECK_OUT') state.hasCheckOut = true;
         if (body.event_type === 'BREAK_START') { state.activeBreak = body.break_type; state.breakStartedAt = new Date(Date.now() - 60000).toISOString(); }
         if (body.event_type === 'BREAK_END') { state.activeBreak = ''; state.breakStartedAt = null; }
-        return route.fulfill({ json: { ok: true, state } });
+        return route.fulfill({ json: { ok: true, event_id: "test-event", state } });
       }
       return route.fulfill({ status: control.status, json: control.response });
     }
     if (url.hostname !== 'portal.test') throw Error('Unexpected external request: ' + url.hostname);
     const file = url.pathname.slice(1) || 'index.html';
-    let body = options.baseline ? cp.execFileSync('git', ['show', `a57ce4cc3ba4264f9a2260b4c8546293daa10afa:${file}`]) : fs.readFileSync(file);
+    let body = options.baseline ? cp.execFileSync('git', ['show', `c5b7bf0d6c1bf5b8b277b07f37abeac43750b7e9:${file}`]) : fs.readFileSync(file);
     const ext = path.extname(file);
     return route.fulfill({ body, contentType: ext === '.js' ? 'application/javascript' : ext === '.css' ? 'text/css' : 'text/html' });
   });
   const started = performance.now();
-  await page.goto(`https://portal.test/${role}.html`);
+  await page.goto(`https://portal.test/${options.login ? 'index' : role}.html`);
   return { context, page, control, requests, errors, started };
 }
 for (const role of ['staff', 'admin']) {
@@ -63,16 +84,17 @@ for (const role of ['staff', 'admin']) {
     try {
       await f.page.waitForFunction(() => document.getElementById('connectionStatus').textContent === 'Live');
       assert.equal(f.requests.length, 1);
-      assert.equal(f.requests[0].dashboard_mode, 'operations');
+      assert.equal(f.requests[0].dashboard_mode, 'attendance_first');
       const link = f.page.locator('a[href="https://staff-performance-score.pages.dev/"]');
       assert.equal(await link.getAttribute('rel'), 'noopener noreferrer');
       assert.equal(await link.getAttribute('target'), '_blank');
-      assert.equal(await f.page.locator('#leaderboardPreview, #topPerformers, #kpiChart, #attendanceHistory').count(), 0);
+      assert.equal(await f.page.locator('#leaderboardPreview, #topPerformers, #kpiChart, #upcomingSchedule, #scheduleTable, #staffTable, #attendanceBoard, #dailyLogs, #telegramLogs, #auditLogs, #saveIpBtn, #singleScheduleForm').count(), 0);
+      assert.equal(await f.page.locator('a[href="https://staff-leave-management-v1.pages.dev/"]').getAttribute('rel'), 'noopener noreferrer');
       if (role === 'admin') {
         await f.page.locator('#totalStaff').click();
         assert.match(await f.page.locator('#dataModalBody').textContent(), /Test Staff/);
         await f.page.locator('#dataModal [data-modal-close]').click();
-        for (const id of ['scheduleUploadForm', 'singleScheduleForm', 'kpiInputForm', 'saveIpBtn']) assert.equal(await f.page.locator('#' + id).count(), 1);
+        for (const id of ['scheduleUploadForm', 'kpiInputForm', 'breakBoard', 'nextShiftStaff', 'lastDashboardUpdate']) assert.equal(await f.page.locator('#' + id).count(), 1);
       }
       await f.page.clock.install();
       f.control.response = {};
@@ -182,17 +204,107 @@ test('pending clicks and failed attendance writes are not retried or reported as
   } finally { await f.context.close(); }
 });
 
-test('valid empty admin data and null staff schedule are not malformed', async () => {
+test('valid empty admin data and missing staff schedule are not malformed', async () => {
   for (const role of ['admin', 'staff']) {
     const response = role === 'admin'
-      ? { ok: true, summary: { total_staff: 0, summary_details: {} }, staff_count: 0, staff_list: [], schedule_list: [], attendance_events: [] }
-      : { ok: true, staff, attendance_state: {}, today_schedule: null, monthly_schedule: [] };
+      ? { ...payload(role), summary: { total_staff: 0, summary_details: {} } }
+      : { ...payload(role), today_schedule: { ok: false } };
     const f = await fixture(role, { response });
     try {
       await f.page.waitForFunction(() => document.getElementById('connectionStatus').textContent === 'Live');
       assert.deepEqual(f.errors, []);
     } finally { await f.context.close(); }
   }
+});
+
+test('verified login handoff needs no dashboard read; history is explicit and reload reads state', async () => {
+  const f = await fixture('staff', { handoff: payload('staff') });
+  try {
+    assert.equal(await f.page.locator('[data-action="checkIn"]').isEnabled(), true);
+    assert.equal(f.requests.length, 0);
+    await f.page.locator('#loadAttendanceHistory').click();
+    await f.page.locator('#attendanceHistory').getByText('CHECK_IN').waitFor();
+    assert.deepEqual(f.requests.map(row => row.action), ['get_staff_attendance_history']);
+    await f.page.reload();
+    await f.page.waitForFunction(() => document.getElementById('connectionStatus').textContent === 'Live');
+    assert.equal(f.requests.filter(row => row.action === 'get_staff_dashboard').length, 1);
+  } finally { await f.context.close(); }
+});
+
+test('staff login response enables attendance after navigation without a second blocking request', async t => {
+  for (const baseline of [true, false]) {
+    const f = await fixture('staff', { login: true, baseline });
+    try {
+      await f.page.locator('#identity').fill('TEST001');
+      const submittedAt = performance.now();
+      const loginResponse = f.page.waitForResponse(res => res.request().postDataJSON()?.action === 'staff_login').then(() => performance.now());
+      await f.page.locator('#loginBtn').click();
+      const respondedAt = await loginResponse;
+      await f.page.waitForURL('**/staff.html');
+      await f.page.waitForFunction(() => document.getElementById('connectionStatus').textContent === 'Live' &&
+        !document.querySelector('[data-action="checkIn"]').disabled);
+      const blockingDashboardReads = f.requests.filter(row => row.action === 'get_staff_dashboard').length;
+      assert.equal(blockingDashboardReads, baseline ? 1 : 0);
+      assert.equal(f.requests.find(row => row.action === 'staff_login').dashboard_mode, baseline ? undefined : 'attendance_first');
+      t.diagnostic(JSON.stringify({ version: baseline ? 'baseline' : 'attendance-first', blockingDashboardReads,
+        mockedLoginMs: Math.round(respondedAt - submittedAt), mockedPostLoginReadyMs: Math.round(performance.now() - respondedAt) }));
+    } finally { await f.context.close(); }
+  }
+});
+
+for (const reason of ['age', 'account', 'ip', 'day']) {
+  test(`invalid handoff (${reason}) falls back to a dashboard read`, async () => {
+    const handoff = payload('staff');
+    if (reason === 'age') handoff.generated_at = new Date(Date.now() - 30000).toISOString();
+    if (reason === 'account') handoff.staff = { ...staff, login_id: 'OTHER' };
+    if (reason === 'ip') handoff.ip.address = '192.0.2.2';
+    if (reason === 'day') handoff.today = '2026-01-01';
+    const f = await fixture('staff', { handoff });
+    try {
+      await f.page.waitForFunction(() => document.getElementById('connectionStatus').textContent === 'Live');
+      assert.equal(f.requests.filter(row => row.action === 'get_staff_dashboard').length, 1);
+    } finally { await f.context.close(); }
+  });
+}
+
+test('ambiguous write remains single-shot and controls wait for reconciliation', async () => {
+  const f = await fixture('staff');
+  try {
+    await f.page.waitForFunction(() => document.getElementById('connectionStatus').textContent === 'Live');
+    let release;
+    f.control.holdDashboard = new Promise(resolve => { release = resolve; });
+    f.control.dropWrite = true;
+    f.control.response.attendance_state.hasCheckIn = true;
+    await f.page.locator('[data-action="checkIn"]').click();
+    await f.page.locator('.toast.error').waitFor();
+    assert.equal(await f.page.locator('[data-action="checkOut"]').isDisabled(), true);
+    assert.equal(f.requests.filter(r => r.action === 'attendance_action').length, 1);
+    f.control.holdDashboard = null;
+    release();
+    await f.page.waitForFunction(() => !document.querySelector('[data-action="checkOut"]').disabled);
+    assert.equal(await f.page.locator('#attendanceStatus').textContent(), 'Checked in');
+  } finally { await f.context.close(); }
+});
+
+test('an older poll cannot overwrite confirmed attendance', async () => {
+  const f = await fixture('staff');
+  try {
+    await f.page.waitForFunction(() => document.getElementById('connectionStatus').textContent === 'Live');
+    await f.page.clock.install();
+    let release;
+    f.control.holdDashboard = new Promise(resolve => { release = resolve; });
+    const poll = f.page.waitForRequest(req => req.postDataJSON()?.action === 'get_staff_dashboard');
+    await f.page.clock.runFor(15001);
+    await poll;
+    await f.page.locator('[data-action="checkIn"]').click();
+    await f.page.waitForFunction(() => document.getElementById('attendanceStatus').textContent === 'Checked in');
+    f.control.holdDashboard = null;
+    const refreshed = f.page.waitForResponse(res => res.request().postDataJSON()?.action === 'get_staff_dashboard' &&
+      res.json().then(body => body.attendance_state.hasCheckIn));
+    release();
+    await refreshed;
+    assert.equal(await f.page.locator('#attendanceStatus').textContent(), 'Checked in');
+  } finally { await f.context.close(); }
 });
 
 test('mock browser measurement: baseline versus operations bootstrap', async t => {
@@ -204,7 +316,7 @@ test('mock browser measurement: baseline versus operations bootstrap', async t =
           ? document.getElementById('staffName').textContent === 'Test Staff'
           : document.getElementById('totalStaff').textContent === '1', role);
         const readyMs = Math.round(performance.now() - f.started);
-        t.diagnostic(JSON.stringify({ role, version: baseline ? 'baseline' : 'operations', requests: f.requests.length, mockedReadyMs: readyMs }));
+        t.diagnostic(JSON.stringify({ role, version: baseline ? 'baseline' : 'attendance-first', requests: f.requests.length, mockedReadyMs: readyMs }));
       } finally { await f.context.close(); }
     }
   }

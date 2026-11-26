@@ -314,3 +314,54 @@ test('manual retry recovers after a budget-limited worker; incomplete candidate 
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });
+
+test('mobile monthly recovery shows 100 percent assignment with cap conflicts and cannot apply the provisional plan', async () => {
+  const { context, page, external, errors } = await open(390);
+  try {
+    await setRecoveryDraft(page);
+    const dialog = page.locator('#dialog');
+    await page.click('#generate');
+    await dialog.getByText(/Disproven under current settings/).waitFor();
+    await dialog.getByText(/before: 100.0% assigned/i).first().waitFor();
+    await dialog.getByRole('button', { name: 'Review monthly candidates' }).click();
+    await dialog.getByRole('heading', { name: 'Best Available Monthly Roster' }).waitFor();
+    await dialog.getByText(/Provisional plans cannot be applied/).waitFor();
+    await dialog.getByText(/100.0% assigned/).waitFor();
+    assert.equal(await dialog.getByRole('button', { name: /apply|confirm|publish/i }).count(), 0);
+    assert.ok(await dialog.evaluate(node => node.getBoundingClientRect().right <= innerWidth));
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-monthly-provisional-mobile.png') });
+    await dialog.getByRole('button', { name: 'Back to diagnostics' }).click();
+    await dialog.getByLabel(/2026-12-07.*0 to 1/).check();
+    await dialog.getByLabel(/2026-12-08.*0 to 1/).check();
+    await dialog.getByRole('button', { name: 'Apply & Regenerate' }).click();
+    await dialog.getByText(/Before trial:.*After trial:/).waitFor();
+    await dialog.getByRole('button', { name: 'Discard candidates' }).click();
+    assert.equal(await cell(page, 'SYN-002', '2026-12-07').textContent(), '-');
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('desktop diagnostic export and isolated replay retain settings without overwriting browser storage', async () => {
+  const { context, page, external, errors } = await open(1360);
+  try {
+    await setRecoveryDraft(page);
+    const dialog = page.locator('#dialog');
+    const original = await page.evaluate(() => localStorage.getItem('spv2.syntheticRoster.v1'));
+    await page.click('#diagnostic-bundle');
+    const downloading = page.waitForEvent('download');
+    await dialog.getByRole('button', { name: 'Export anonymized diagnostic bundle' }).click();
+    const file = await downloading;
+    const data = await fs.readFile(await file.path());
+    assert.doesNotMatch(data.toString(), /Avery Vale|SYNLOGIN|SYN-001/);
+    await dialog.getByLabel('Diagnostic JSON').setInputFiles({ name: file.suggestedFilename(), mimeType: 'application/json', buffer: data });
+    await dialog.getByRole('button', { name: 'Replay imported bundle' }).click();
+    await dialog.getByRole('heading', { name: 'Best Available Monthly Roster' }).waitFor();
+    await dialog.getByRole('cell', { name: 'Staff-01', exact: true }).waitFor();
+    assert.equal(await dialog.getByRole('button', { name: /apply|confirm|publish/i }).count(), 0);
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-diagnostic-replay-desktop.png') });
+    assert.equal(await page.evaluate(() => localStorage.getItem('spv2.syntheticRoster.v1')), original);
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});

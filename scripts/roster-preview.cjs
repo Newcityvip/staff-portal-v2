@@ -8,7 +8,7 @@ const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/cs
 const assets = new Set([
   'admin-roster.html', 'css/admin-roster.css', 'assets/logo.svg', 'assets/favicon.svg',
   'js/admin-roster.js', 'js/roster-model.js', 'js/roster-generator.js', 'js/roster-policy.js', 'js/roster-export.js',
-  'js/roster-weekly.js',
+  'js/roster-weekly.js', 'js/roster-optimize.js', 'js/roster-diagnostic-bundle.js',
   'vendor/exceljs-4.4.0/dist/exceljs.min.js'
 ]);
 

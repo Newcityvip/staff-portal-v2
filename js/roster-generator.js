@@ -2,6 +2,7 @@ import { dateAt, dayIndex, isLocked, key, totals, weekday, weekdays, datesFor, p
 import { coverageKey, coverageReport, coverageRule, eligible, staffRules, validCoverage } from "./roster-policy.js";
 import { alignment, boundary, boundaryPhases, demandRule, desiredOff, endingPhase, offCapacity,
   pairedPolicy, phaseIndices, phasesFor, validDemand } from "./roster-weekly.js";
+import { optimizeMonth } from "./roster-optimize.js";
 
 const time = value => {
   const [hour, minute, second = 0] = value.split(":").map(Number);
@@ -334,14 +335,133 @@ export function adjustmentTrial(context, options, suggestions) {
   const trial = structuredClone(context), next = { ...options };
   for (const item of suggestions) {
     if (item.id === "refill") next.keepAssigned = false;
-    else if (item.field === "preferredOff") {
-      trial.draft.demand[item.group + "|" + item.date] = { ...demandRule(trial, item.group, item.date), preferredOff: item.value };
+    else if (item.field === "preferredOff" || item.field === "minWork") {
+      trial.draft.demand[item.group + "|" + item.date] = {
+        ...demandRule(trial, item.group, item.date), [item.field]: item.value
+      };
     } else {
       const k = coverageKey(item.group, item.date, item.shift);
       trial.draft.coverage[k] = { ...coverageRule(trial, item.group, item.date, item.shift), [item.field]: item.value };
     }
   }
   return { context: trial, options: next };
+}
+
+export function candidateMetrics(context, cells, scopePeople, scopeGroups, checked = validate(context, cells, {
+  people: new Set(scopePeople), groups: scopeGroups
+})) {
+  const report = coverageReport(context, cells), people = report.staff.filter(p => scopePeople.includes(p.id));
+  const days = report.daily.filter(day => scopeGroups.includes(day.group)), shortages = [], overflow = [];
+  let needed = 0, met = 0, pm = 0, work = 0;
+  for (const day of days) {
+    pm += day.counts.PM || 0; work += day.working;
+    const list = [
+      ...day.shifts.map(s => ({ shift: s.id, required: s.min, actual: s.count, maximum: s.max })),
+      { shift: "Working staff", required: day.demand.minWork, actual: day.working, maximum: null },
+      { shift: "OFF", required: 0, actual: day.off, maximum: day.demand.maxOff }
+    ];
+    for (const item of list) {
+      needed += item.required; met += Math.min(item.actual, item.required);
+      const row = { ...item, group: day.group, name: day.name, date: day.date };
+      if (item.actual < item.required) shortages.push(row);
+      if (item.maximum !== null && item.actual > item.maximum) overflow.push(row);
+    }
+  }
+  const expected = scopePeople.length * context.dates.length;
+  const assigned = people.reduce((n, p) => n + p.work + p.off + p.leave, 0);
+  const leave = Object.entries(context.leave).filter(([k]) => {
+    const [id, date] = k.split("|");
+    return scopePeople.includes(id) && context.dates.includes(date);
+  });
+  return { report, people, shortages, overflow, assigned, expected, completion: expected ? 100 * assigned / expected : 0,
+    coverage: needed ? 100 * met / needed : 100, shortfall: needed - met,
+    met, needed,
+    excess: overflow.reduce((n, row) => n + row.actual - row.maximum, 0),
+    paired: people.reduce((n, p) => n + p.compliant, 0), windows: people.reduce((n, p) => n + p.weeks, 0),
+    pm, work, fairness: people.length ? Math.max(...people.map(p => p.work)) - Math.min(...people.map(p => p.work)) : 0,
+    leaveMet: leave.filter(([k, value]) => cells[k] === value).length, leaveTotal: leave.length,
+    blockers: checked.errors.length, staffBlockers: checked.errors.filter(e => !["coverage", "demand"].includes(e.type)).length };
+}
+
+const monthConstraints = { rulesFor, initialState, advance, nextProblems };
+const candidateOrder = (a, b) => a.metrics.staffBlockers - b.metrics.staffBlockers ||
+  (a.metrics.shortfall + a.metrics.excess) - (b.metrics.shortfall + b.metrics.excess) || a.metrics.blockers - b.metrics.blockers;
+const stats = ({ assigned, expected, completion, coverage, shortfall, excess, blockers, staffBlockers, paired, windows, pm, work, fairness, met, needed }) =>
+  ({ assigned, expected, completion, coverage, shortfall, excess, blockers, staffBlockers, paired, windows, pm, work, fairness, met, needed });
+
+function generateMonthly(context, options, progress, check = diagnose(context, options)) {
+  const { selected, groups } = generationScope(context, options);
+  const scopePeople = context.people.filter(p => groups.includes(p.group) && selected.has(p.id)).map(p => p.id);
+  if (!scopePeople.length) return { status: "infeasible", reason: "No staff in this generation scope.", issues: check.issues, suggestions: [] };
+  const mode = options.strategy || (context.team === "Affiliate" ? "pm" : "balanced");
+  const primary = mode === "custom" ? "demand" : mode;
+  const profiles = options.trial ? [primary] : [primary, ...["balanced", "pm", "demand"].filter(profile => profile !== primary)];
+  const { candidates: plans, impossible } = optimizeMonth(context, options, { selected, groups }, monthConstraints, profiles, progress);
+  const seen = new Set();
+  const candidates = plans.map(plan => {
+    const scope = { people: new Set(scopePeople), groups }, checked = validate(context, plan.cells, scope);
+    const metrics = candidateMetrics(context, plan.cells, scopePeople, groups, checked);
+    return { ...plan, metrics, report: metrics.report, scopePeople, scopeGroups: groups, selectedCount: scopePeople.length,
+      completed: metrics.assigned, warnings: checked.warnings, errors: checked.errors,
+      status: checked.errors.length ? "provisional" : "feasible",
+      target: metrics.report.daily.filter(day => groups.includes(day.group)).flatMap(day => day.shifts)
+        .reduce((sum, s) => sum + Math.min(s.count, s.target) * (1 + s.priority), 0) };
+  }).sort(candidateOrder).filter(plan => {
+    const signature = JSON.stringify(plan.cells);
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
+  });
+  const feasible = candidates.some(plan => plan.status === "feasible");
+  const issues = [...check.issues];
+  for (const { person, group } of impossible) {
+    issues.push({ code: "staff-pattern", certainty: "Confirmed", reason: "No legal month pattern for this staff member",
+      group, staff: person.name, date: context.dates[0], end: context.dates.at(-1), setting: "staff",
+      cell: key(person.id, context.dates[0]), current: "Retained assignments, leave, eligibility and boundary settings",
+      available: "Zero compatible staff patterns", action: "Inspect the retained dates and effective coverage override. Do not change a lock or confirmed leave to force a result." });
+  }
+  const confirmed = issues.some(issue => issue.certainty === "Confirmed");
+  const result = { status: feasible ? "feasible" : confirmed ? "infeasible" : "timeout",
+    feasibility: feasible ? "Confirmed feasible" : confirmed ? "Disproven under current settings" : "Unknown (no valid plan found)",
+    reason: feasible ? "" : "The monthly optimizer found no fully valid plan under the current settings.", candidates, issues, suggestions: [] };
+  if (options.trial || feasible || !candidates.length) return result;
+  const best = candidates[0];
+  const proposals = new Map(check.suggestions.map(s => [s.id, s]));
+  const pushCoverage = (row, field, value, effect) => {
+    const id = coverageKey(row.group, row.date, row.shift) + "|" + field;
+    if (value <= 99) proposals.set(id, { id, group: row.group, date: row.date, shift: row.shift, field, value,
+      current: field === "min" ? row.required : row.maximum, proposed: value, effect });
+  };
+  for (const row of best.metrics.overflow) if (!["OFF", "Working staff"].includes(row.shift)) {
+    pushCoverage(row, "max", row.actual, "Raises the explicit cap on this date only; review the staffing impact before approving.");
+  }
+  // An explicit coverage reduction is never automatic and is shown only after an isolated trial.
+  const firstShortages = best.metrics.shortages.filter(row => row.shift !== "Working staff");
+  const workShortage = best.metrics.shortages.find(row => row.shift === "Working staff");
+  if (workShortage) {
+    const { group, date, actual, required } = workShortage;
+    const id = group + "|" + date + "|minWork";
+    proposals.set(id, { id, group, date, shift: "Working staff", field: "minWork", value: actual,
+      current: required, proposed: actual, effect: "Lowers only this date's working-staff requirement; shift minimums remain unchanged." });
+  }
+  for (const row of firstShortages.slice(0, 2)) pushCoverage(row, "min", row.actual,
+    "Lowers the required staffing on this date only. This changes a coverage requirement, not the number of available staff.");
+  if (options.keepAssigned && context.people.some(p => scopePeople.includes(p.id) && context.dates.some(date =>
+    context.draft.cells[key(p.id, date)] && !isLocked(context, p.id, date)))) proposals.set("refill", {
+    id: "refill", current: "Fill empty cells only", proposed: "Regenerate unlocked assignments",
+    effect: "Replan unlocked assignments. Locks and confirmed leave remain unchanged."
+  });
+  const pool = [...proposals.values()];
+  const tested = pool.length <= 5 ? pool : [...pool.slice(0, 4), pool.at(-1)];
+  for (const item of tested) {
+    const trial = adjustmentTrial(context, { ...options, retry: false, trial: true }, [item]);
+    const candidate = generateMonthly(trial.context, trial.options).candidates?.[0];
+    if (!candidate) continue;
+    const improves = candidateOrder(candidate, best) < 0 || candidate.metrics.assigned > best.metrics.assigned;
+    result.suggestions.push({ ...item, impact: { before: stats(best.metrics), after: stats(candidate.metrics),
+      outcome: candidate.status === "feasible" ? "Resolves in this trial" : improves ? "Improves in this trial" : "No improvement alone" } });
+  }
+  return result;
 }
 
 export function generate(context, { group = "", people: staffIds, keepAssigned = false, budget = 180000, timeout = 3500,
@@ -575,6 +695,23 @@ export function generate(context, { group = "", people: staffIds, keepAssigned =
 }
 
 export function generateCandidates(context, options = {}, progress) {
+  if (!pairedPolicy(context) || options.strategy === "previous" || options.budget != null || options.timeout != null) {
+    return generateSequentialCandidates(context, options, progress);
+  }
+  const monthly = generateMonthly(context, options, progress);
+  if (monthly.status !== "timeout" || options.trial) return monthly;
+  // Preserve cases solvable by the old search, without discarding the full monthly alternative.
+  progress?.({ profile: "coverage validation fallback" });
+  const fallback = generateSequentialCandidates(context, { ...options, retry: false });
+  if (fallback.status !== "feasible") return monthly;
+  const best = fallback.candidates[0];
+  const checked = validate(context, best.cells, { people: new Set(best.scopePeople), groups: best.scopeGroups });
+  const metrics = candidateMetrics(context, best.cells, best.scopePeople, best.scopeGroups, checked);
+  return { ...monthly, status: "feasible", feasibility: "Confirmed feasible",
+    candidates: [{ ...best, metrics, errors: checked.errors, profile: "Validated fallback" }, ...monthly.candidates].slice(0, 3) };
+}
+
+function generateSequentialCandidates(context, options, progress) {
   const candidates = [], seen = new Set();
   const strategy = options.strategy || (context.team === "Affiliate" ? "pm" : "balanced");
   const { issues, suggestions } = diagnose(context, options);

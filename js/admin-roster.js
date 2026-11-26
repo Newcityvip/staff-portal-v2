@@ -4,6 +4,7 @@ import { adjustmentTrial, validate } from "./roster-generator.js";
 import { downloadRoster } from "./roster-export.js";
 import { asCoverage, coverageKey, coverageReport, priorities, validCoverage } from "./roster-policy.js";
 import { defaultDemand, demandKey, pairNames, validDemand, workloads } from "./roster-weekly.js";
+import { createDiagnosticBundle, diagnosticMaxBytes, readDiagnosticBundle } from "./roster-diagnostic-bundle.js";
 
 const $ = id => document.getElementById(id);
 const initial = restore(localStorage);
@@ -649,42 +650,82 @@ function renderReport(report, issues) {
         day.shortfall, targetRatio(day)]))
   );
 }
-function reviewCandidates(candidates, guard, trial) {
-  const pick = choose(candidates.map((_, i) => [String(i), "Candidate " + (i + 1)]), "0");
+const percent = n => n.toFixed(1) + "%";
+const metricLine = m => percent(m.completion) + " assigned / " + percent(m.coverage) + " minimum coverage / " +
+  m.met + "/" + m.needed + " required slots met / " + m.shortfall + " short / " + m.excess + " over caps / " + m.blockers + " blockers";
+function reviewCandidates(candidates, guard, trial, detail = {}) {
+  const source = trial?.context || current;
+  const pick = choose(candidates.map((c, i) => [String(i), c.profile || "Candidate " + (i + 1)]), "0");
   const selectedPreview = make("div");
-  const compare = reportTable(["Candidate", "Blocking (scope)", "Paired weeks", "Coverage days met", "Workload penalty",
-    "PM share", "In-cycle changes", "Workdays spread", "Target (weighted)"], candidates.map((c, i) => {
+  const compare = reportTable(["Candidate", "Status", "Complete", "Minimum coverage", "Paired weeks", "PM share",
+    "Workdays spread", "Blockers"], candidates.map((c, i) => {
     const people = c.report.staff.filter(p => c.scopePeople.includes(p.id));
     const daily = c.report.daily.filter(d => c.scopeGroups.includes(d.group));
-    return [i + 1, 0, people.reduce((n, p) => n + p.compliant, 0) + "/" + people.reduce((n, p) => n + p.weeks, 0),
+    if (c.metrics) {
+      const m = c.metrics;
+      return [c.profile, c.status === "feasible" ? "Feasible" : "Provisional", percent(m.completion), percent(m.coverage),
+        m.paired + "/" + m.windows, m.pm + "/" + m.work, m.fairness, m.blockers];
+    }
+    return [i + 1, "Feasible", "100%",
       daily.filter(d => countPass(d) && !d.shortfall && d.off <= (d.demand.maxOff ?? Infinity)).length + "/" + daily.length,
-      daily.reduce((n, d) => n + d.alignment, 0), c.report.pmPercent.toFixed(1) + "%",
-      people.reduce((n, p) => n + p.cycleTransitions, 0), Math.max(...people.map(p => p.work)) - Math.min(...people.map(p => p.work)), c.target];
+      people.reduce((n, p) => n + p.compliant, 0) + "/" + people.reduce((n, p) => n + p.weeks, 0),
+      percent(c.report.pmPercent), Math.max(...people.map(p => p.work)) - Math.min(...people.map(p => p.work)), 0];
   }));
+  const apply = button(trial ? "Apply tested changes and candidate" : "Apply candidate", () => {
+    const result = candidates[Number(pick.value)];
+    if (detail.readOnly || result.status !== "feasible") return;
+    if (!guard()) { $("dialog").close(); notify("Draft changed. Generate candidates again."); return; }
+    $("dialog").close();
+    showReport = true;
+    editDraft(d => {
+      if (trial) {
+        d.coverage = trial.context.draft.coverage;
+        d.demand = trial.context.draft.demand;
+        d.preferences = trial.context.draft.preferences;
+      }
+      d.cells = result.cells;
+    });
+    $("results").open = true;
+    notify("Generated " + result.selectedCount + " staff assignments; review " + result.warnings.length + " warnings.");
+  }, { class: "primary" });
   const renderPreview = () => {
     const candidate = candidates[Number(pick.value)];
+    apply.hidden = detail.readOnly || candidate.status !== "feasible";
+    const metrics = candidate.metrics;
+    const staff = source.people.filter(p => candidate.scopePeople.includes(p.id));
+    const grid = reportTable(["Staff", ...source.dates.map(date => date.slice(-2))], staff.map(p =>
+      [p.name, ...source.dates.map(date => candidate.cells[key(p.id, date)] || "-")]));
+    const nodes = [];
+    if (metrics) {
+      nodes.push(make("p", metricLine(metrics) + ". Confirmed leave: " + metrics.leaveMet + "/" + metrics.leaveTotal + "."));
+      if (detail.before) nodes.push(make("p", "Before trial: " + metricLine(detail.before) + ". After trial: " + metricLine(metrics) + "."));
+      const staffTotals = make("details");
+      staffTotals.append(make("summary", "Staff totals"), reportTable(["Staff", "Workdays", "OFF", "Leave", "PM", "Paired weeks"],
+        metrics.people.map(p => [p.name, p.work, p.off, p.leave, p.mix.PM || 0, p.compliant + "/" + p.weeks])));
+      nodes.push(staffTotals);
+      if (metrics.shortages.length || metrics.overflow.length) {
+        const shortages = make("details");
+        shortages.append(make("summary", "Coverage shortages and caps (" + (metrics.shortages.length + metrics.overflow.length) + ")"),
+          reportTable(["Group", "Date", "Shift", "Actual", "Requirement"], [
+            ...metrics.shortages.map(r => [r.name, r.date, r.shift, r.actual, "Min " + r.required]),
+            ...metrics.overflow.map(r => [r.name, r.date, r.shift, r.actual, "Max " + r.maximum])
+          ]));
+        nodes.push(shortages);
+      }
+      if (candidate.errors.length) nodes.push(validationSummary({ errors: candidate.errors, warnings: [] }));
+    }
     selectedPreview.replaceChildren(make("p", candidate.warnings.length + " validation warnings in generation scope. " +
-      candidate.scopePeople.length + "/" + current.people.length + " staff in scope; other rows are unchanged."), reportTable(
-      ["Staff", ...current.dates.map(date => date.slice(-2))], current.people.map(p =>
-        [p.name, ...current.dates.map(date => candidate.cells[key(p.id, date)] || "-")])));
+      staff.length + "/" + source.people.length + " staff in scope; other rows are unchanged."), ...nodes, grid);
   };
   pick.onchange = renderPreview;
   renderPreview();
-  openDialog("Review generated candidates", [
-    ...(trial ? [make("p", "The trial produced a valid candidate for this scope. Review and apply to save the selected changes and assignments together.")] : []),
-    compare, row(label("Preview", pick)), selectedPreview,
-    row(button(trial ? "Apply tested changes and candidate" : "Apply candidate", () => {
-      if (!guard()) { $("dialog").close(); notify("Draft changed. Generate candidates again."); return; }
-      const result = candidates[Number(pick.value)];
-      $("dialog").close();
-      showReport = true;
-      editDraft(d => {
-        if (trial) { d.coverage = trial.draft.coverage; d.demand = trial.draft.demand; }
-        d.cells = result.cells;
-      });
-      $("results").open = true;
-      notify("Generated " + result.selectedCount + " staff assignments; review " + result.warnings.length + " warnings.");
-    }, { class: "primary" }), button("Discard candidates", () => { $("dialog").close(); notify("Draft unchanged."); }))]);
+  openDialog(detail.readOnly ? "Best Available Monthly Roster" : "Review generated candidates", [
+    ...(detail.readOnly ? [make("p", "Read-only. Provisional plans cannot be applied, confirmed or published. " + (detail.feasibility || ""))] :
+      trial ? [make("p", "The trial produced a valid candidate for this scope. Review and apply to save the selected changes and assignments together.")] : []),
+    compare, row(label("Preview", pick)),
+    row(...(detail.readOnly ? [] : [apply]),
+      detail.back ? button("Back to diagnostics", detail.back) : button("Discard candidates", () => { $("dialog").close(); notify("Draft unchanged."); })),
+    selectedPreview]);
 }
 
 function openDiagnosticSetting(issue) {
@@ -695,7 +736,8 @@ function openDiagnosticSetting(issue) {
   if (issue.cell) { $("dialog").close(); focusIssue(issue); }
 }
 
-function recoveryDialog(result, options, guard, trialFailed = false) {
+function recoveryDialog(result, options, guard, trial = null, before = null) {
+  const trialFailed = Boolean(trial);
   const headings = {
     timeout: "Search budget reached. Feasibility is unknown.",
     infeasible: "No valid candidate under the selected constraints.",
@@ -712,7 +754,8 @@ function recoveryDialog(result, options, guard, trialFailed = false) {
   const grouped = new Map(), names = new Map(groupPairs(current));
   const orderedIssues = [...(result.issues || [])].sort((a, b) => Number(b.certainty === "Confirmed") - Number(a.certainty === "Confirmed"));
   for (const issue of orderedIssues) {
-    const k = JSON.stringify([issue.certainty, issue.code, issue.reason, issue.group, issue.shift, issue.staff, issue.current, issue.available]);
+    const k = JSON.stringify([issue.certainty, issue.code, issue.reason, issue.group, issue.shift,
+      issue.code === "boundary" ? "" : issue.staff, issue.current, issue.available]);
     const batch = grouped.get(k) || [];
     batch.push(issue); grouped.set(k, batch);
   }
@@ -723,7 +766,8 @@ function recoveryDialog(result, options, guard, trialFailed = false) {
     const first = dates[0], last = batch.at(-1).end || dates.at(-1);
     section.append(make("summary", item.certainty + ": " + item.reason + " / " + (names.get(item.group) || item.group) +
       (item.shift ? " / " + item.shift : "") + (batch.length > 1 ? " (" + batch.length + " occurrences)" : "")),
-      make("p", [item.staff, first && (first === last ? first : first + " to " + last)].filter(Boolean).join(" / ")),
+      make("p", [[...new Set(batch.map(i => i.staff).filter(Boolean))].join(", "),
+        first && (first === last ? first : first + " to " + last)].filter(Boolean).join(" / ")),
       make("p", "Current: " + (item.current ?? "Not determined") + " / Required or available: " + (item.available ?? "Not determined")),
       make("p", item.action));
     section.open = item.certainty === "Confirmed" && details.childElementCount < 2;
@@ -736,7 +780,7 @@ function recoveryDialog(result, options, guard, trialFailed = false) {
   const restart = (proposals = []) => {
     if (!guard()) { $("dialog").close(); return notify("Draft changed. Generate again."); }
     $("dialog").close();
-    launchGeneration({ ...options, retry: true }, proposals, result.suggestions);
+    launchGeneration({ ...options, retry: true }, proposals, result.suggestions, before || result.candidates?.[0]?.metrics);
   };
   const apply = button("Apply & Regenerate", () => restart(selectedItems.filter(entry => entry.control.checked).map(entry => entry.item)));
   apply.disabled = true;
@@ -745,9 +789,15 @@ function recoveryDialog(result, options, guard, trialFailed = false) {
     control.onchange = () => { apply.disabled = !selectedItems.some(entry => entry.control.checked); };
     selectedItems.push({ item, control });
     list.append(row(label((item.group ? [names.get(item.group), item.date, item.shift].join(" / ") + ": " : "") +
-      item.current + " to " + item.proposed, control)), make("p", item.effect));
+      item.current + " to " + item.proposed, control)), make("p", item.effect),
+      ...(item.impact ? [make("p", item.impact.outcome + ". Before: " + metricLine(item.impact.before) +
+        ". After: " + metricLine(item.impact.after) + ".")] : []));
   }
   const controls = row(button("Retry Generation", () => restart()));
+  controls.append(button("Diagnostic bundle", () => diagnosticDialog(options, () => recoveryDialog(result, options, guard, trial, before))));
+  if (result.candidates?.length) controls.prepend(button("Review monthly candidates", () =>
+    reviewCandidates(result.candidates, guard, trial, { readOnly: true, feasibility: result.feasibility, before,
+      back: () => recoveryDialog(result, options, guard, trial, before) }), { class: "primary" }));
   if (result.best) controls.append(button("View Best Possible Draft", () => {
     const best = result.best;
     const checked = validate(current, best.cells, { groups: best.scopeGroups, people: new Set(best.scopePeople) });
@@ -764,19 +814,57 @@ function recoveryDialog(result, options, guard, trialFailed = false) {
       make("p", best.completed + " candidate assignments evaluated. " + counts(checked) + " in this scope."),
       ...(unresolved.length ? [make("p", unresolved.map(item => item.reason).join(" / "))] : []),
       validationSummary(checked), grid,
-      row(button("Back to diagnostics", () => recoveryDialog(result, options, guard, trialFailed)))
+      row(button("Back to diagnostics", () => recoveryDialog(result, options, guard, trial, before)))
     ]);
   }));
   openDialog("Generation diagnostics", [
-    make("p", headings[result.status] || "No candidate was generated."),
+    make("p", result.feasibility || headings[result.status] || "No candidate was generated."),
     ...(trialFailed ? [make("p", "The proposed trial did not succeed. No settings or assignments were changed.")] : []),
     make("p", "Selected scope: " + counts(scoped) + ". Full month: " + counts(monthly) + "."),
     make("p", "Generation conflicts: " + (result.issues || []).filter(item => item.certainty === "Confirmed").length +
       " confirmed before search. Unassigned draft cells are not generation conflicts."),
     ...(result.steps ? [make("p", result.steps + " steps in the reported attempt. Observed branches do not prove the cause of failure.")] : []),
-    ...(details.childElementCount ? [details] : [make("p", result.reason)]), controls,
-    ...(selectedItems.length ? [make("h3", "Smart Adjustments"), make("p", "Provisional suggestions. Selected changes are tested in a temporary draft before you can apply them."),
-      list, row(apply)] : [])
+    ...(result.candidates?.length ? [make("p", metricLine(result.candidates[0].metrics) + ".")] : []),
+    controls,
+    ...(selectedItems.length ? [make("h3", "Smart Adjustments"), make("p", "Select changes to test together before approving them."),
+      list, row(apply)] : []),
+    ...(details.childElementCount ? [details] : [make("p", result.reason)])
+  ]);
+}
+
+function diagnosticDialog(options, back) {
+  const file = input("file", "", { accept: ".json,application/json" });
+  const feedback = make("p", "", { role: "status" });
+  const exportOptions = options || {
+    strategy: $("generation").value === "copy" ? "previous" : $("generation").value,
+    group: $("scope").value === "group" ? group : "", keepAssigned: $("empty-only").checked,
+    people: $("scope").value === "staff" ? [...new Set([...selected].map(k => k.split("|")[0]))] : undefined
+  };
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([createDiagnosticBundle(current, exportOptions)], { type: "application/json" }));
+    const link = make("a", "", { href: url, download: "roster-diagnostic-" + current.team + "-" + month + ".json" });
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  const replay = button("Replay imported bundle", async () => {
+    const chosen = file.files[0];
+    if (!chosen || chosen.size > diagnosticMaxBytes) { feedback.textContent = "Choose a supported JSON bundle under 512 KB."; return; }
+    replay.disabled = true;
+    try {
+      const imported = readDiagnosticBundle(await chosen.text());
+      if (!$("dialog").open || !replay.isConnected) return;
+      if (worker) { feedback.textContent = "Cancel or wait for the current generation before replaying."; return; }
+      $("dialog").close();
+      launchGeneration(imported.options, [], [], null, imported.context);
+    } catch { feedback.textContent = "This file is not a supported anonymized roster diagnostic bundle."; }
+    finally { replay.disabled = false; }
+  });
+  openDialog("Diagnostic bundle", [
+    make("p", "Export the current roster inputs with staff aliases and no login IDs. The bundle contains coverage, assignments, locks, leave and nearby roster dates. Review it before sharing."),
+    row(button("Export anonymized diagnostic bundle", download)),
+    row(label("Diagnostic JSON", file), replay),
+    make("p", "Replay is local and read-only. It does not replace the current draft or browser storage."),
+    feedback, ...(back ? [button("Back to diagnostics", back)] : [])
   ]);
 }
 
@@ -798,7 +886,7 @@ function run() {
   launchGeneration({ strategy, people: ids, group: scope === "group" ? group : "", keepAssigned: $("empty-only").checked });
 }
 
-function launchGeneration(options, proposals = [], availableProposals = []) {
+function launchGeneration(options, proposals = [], availableProposals = [], baseline, replay) {
   if (worker) return;
   const before = history.current, beforeTeam = team, beforeMonth = month;
   const unchanged = () => history.current === before && team === beforeTeam && month === beforeMonth && !preview;
@@ -820,29 +908,39 @@ function launchGeneration(options, proposals = [], availableProposals = []) {
     progress.hidden = true;
     render();
     if (!unchanged()) return notify("Roster changed during generation. Run it again.");
+    if (result.status === "cancelled") return notify(result.reason);
+    if (replay) {
+      if (result.candidates?.length) {
+        reviewCandidates(result.candidates, unchanged, { context: replay }, { readOnly: true, feasibility: result.feasibility ||
+          "Imported replay. The saved draft is unchanged." });
+      } else openDialog("Diagnostic replay result", [make("p", result.reason),
+        make("p", "Read-only imported replay. The saved draft is unchanged."),
+        ...result.issues?.filter(i => i.certainty === "Confirmed").slice(0, 12).map(i =>
+          make("p", [i.group, i.staff, i.date, i.shift, i.reason].filter(Boolean).join(" / "))) || []]);
+      return;
+    }
     if (result.status === "feasible") {
       notify(result.candidates.length + " candidate(s) ready to review. Draft unchanged.");
-      reviewCandidates(result.candidates, unchanged, trial?.context);
+      reviewCandidates(result.candidates, unchanged, trial, { before: baseline });
     } else {
-      if (result.status === "cancelled") return notify(result.reason);
       notify("No candidate applied. Draft unchanged.");
       // Do not offer partial trials computed with settings that were never committed.
       if (trial) {
         result.best = undefined;
         result.suggestions = availableProposals;
       }
-      recoveryDialog(result, options, unchanged, Boolean(trial));
+      recoveryDialog(result, options, unchanged, trial, baseline);
     }
   };
   $("cancel-generation").onclick = () => done({ status: "cancelled", reason: "Generation cancelled. Draft unchanged." });
   worker.onmessage = ({ data }) => {
     if (worker !== job) return;
-    if (data.progress) progress.textContent = "Searching candidate " + data.progress.variant + " of 3" + (data.progress.date ?
+    if (data.progress) progress.textContent = (data.progress.profile ? "Planning " + data.progress.profile : "Searching candidate " + data.progress.variant + " of 3") + (data.progress.date ?
       " / " + data.progress.date + " / " + data.progress.steps + " steps" : "");
     else done(data);
   };
   worker.onerror = () => done({ status: "error", reason: "Worker unavailable." });
-  worker.postMessage(trial || { context: current, options });
+  worker.postMessage(trial || { context: replay || current, options });
 }
 
 $("team").onchange = () => {
@@ -880,6 +978,7 @@ $("rules").onclick = rulesDialog;
 $("coverage").onclick = () => coverageDialog();
 $("demand").onclick = () => demandDialog();
 $("generate").onclick = run;
+$("diagnostic-bundle").onclick = () => diagnosticDialog();
 $("source").onchange = updateExportGroups;
 for (const format of ["csv", "xlsx"]) $(format).onclick = async () => {
   try { $(format).disabled = true; await downloadRoster(exportRecord(), format, $("export-group").value); }

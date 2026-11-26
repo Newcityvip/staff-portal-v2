@@ -207,3 +207,39 @@ exhausts its search and reports a branch-level symptom; Phase 1D identifies the
 cap conflict before search. A temporary exact-date cap of one yields a valid
 10-staff candidate without changing the locked shift. Neither fixture proves
 which settings were present in the original browser draft.
+
+## Phase 1E: Whole-month optimization
+
+Normal paired-OFF generation now starts with a graph of legal whole-month
+patterns for each staff member. It selects patterns against each group's
+effective minimums, caps and demand, then tries alternate initial orders and
+bounded two-person repair. Compare Best Balanced, PM Priority and Demand Priority
+when their assignments differ. The original bounded search remains available for
+previous-month pattern mode and as an unchanged-budget validation fallback when
+the monthly optimizer cannot find a fully valid plan. This is not an exact
+group optimizer: a failed search alone cannot disprove feasibility.
+
+Coverage compromises are visible only as provisional alternatives. The review
+shows completion, actual versus required coverage, paired OFF and leave
+compliance, caps, staff totals, PM mix and outstanding blockers. Any unresolved
+minimum, cap or staff constraint prevents applying a candidate. One-click
+alternatives are evaluated separately; selected proposals are then tested
+together on a temporary copy. A feasible result can be approved or rejected
+after inspection. Undo restores settings and cells together. A lower minimum
+may improve coverage percentage without adding a worker, so the actual and
+required counts are both shown.
+
+To reproduce a browser-only failure, open the same preview origin and browser
+profile that already holds the draft. Set the original group, strategy, scope
+and Fill empty cells option. Use **Diagnostic bundle > Export anonymized
+diagnostic bundle**. The JSON replaces staff identities with stable aliases
+and excludes account IDs and unrelated months. It retains assignments, group
+labels, approved leave codes, date overrides, nearby boundaries and rules; review
+those details before sharing. **Replay imported bundle** works locally and cannot
+update the saved draft. The original browser draft has not yet been supplied.
+
+The fixed synthetic OLD Brands benchmark uses date-specific limits derived from
+a valid 10-person roster. Phase 1D reaches 60,001 steps and retains 100 of 310
+assignments; Phase 1E finds 310 of 310 with 100% minimum coverage, 40/40 paired
+weeks, confirmed leave intact, and zero blockers. The test logs elapsed times.
+This fixture proves a search limitation, not the cause of an unseen draft.

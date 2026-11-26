@@ -279,7 +279,9 @@
         for (const key of ["event_date", "event_time", "event_type", "break_type", "shift_code"]) tr.insertCell().textContent = row[key] || "--";
       }
     } catch (error) {
-      notice("Unable to load attendance history. Select Load History to retry.");
+      if (Portal.isAbortLike(error)) notice("Attendance history timed out. Select Load History to retry.");
+      else if (error.status === 401 || error.status === 403) notice("Attendance history access denied. Verify your network and staff sign-in.");
+      else notice("Unable to load attendance history. Select Load History to retry.");
     } finally {
       loadHistory.disabled = false;
     }
@@ -312,7 +314,7 @@
   document.addEventListener("visibilitychange", () => load(true));
   window.addEventListener("offline", () => invalidateNetworkState("Network disconnected"));
   window.addEventListener("online", async () => {
-    if (!await Portal.api.detectIp(true)) localStorage.removeItem(Portal.CLIENT_IP_KEY);
+    if (!await Portal.api.detectIp(true, true)) localStorage.removeItem(Portal.CLIENT_IP_KEY);
     await refreshPromise;
     load(true);
   });

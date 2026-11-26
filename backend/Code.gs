@@ -634,10 +634,10 @@ function getStaffByIdentifier(identifier) {
 
 /***** SCHEDULE *****/
 
-function getScheduleForDate(identity, dateStr) {
+function getScheduleForDate(identity, dateStr, attendanceRead) {
   const key = normalizeDateKey(dateStr);
   const staffIdentity = typeof identity === "object" && identity ? identity : { login_id: identity };
-  const row = listScheduleRows("", key).filter(function (scheduleRow) {
+  const row = listScheduleRows("", key, attendanceRead).filter(function (scheduleRow) {
     return rowMatchesStaffIdentity(scheduleRow, staffIdentity);
   })[0];
   return row || { ok: false, message: "No schedule found" };
@@ -816,17 +816,19 @@ function attendanceActionLocked(data) {
   };
 }
 
-function resolveAttendanceSchedule(staff, eventType, requestedDate) {
+function resolveAttendanceSchedule(staff, eventType, requestedDate, attendanceRead) {
   const dateKey = normalizeDateKey(requestedDate);
-  const schedule = getScheduleForDate(staff, dateKey);
+  const schedule = getScheduleForDate(staff, dateKey, attendanceRead);
   if (schedule.ok) return { date: dateKey, schedule: schedule };
 
   if (eventType === "CHECK_OUT" || eventType === "BREAK_START" || eventType === "BREAK_END") {
     const previousDate = addDays(dateKey, -1);
-    const previousSchedule = getScheduleForDate(staff, previousDate);
+    const previousSchedule = getScheduleForDate(staff, previousDate, attendanceRead);
     if (previousSchedule.ok) {
-      const state = getAttendanceState(staff, previousDate);
-      if (state.hasCheckIn && !state.hasCheckOut) return { date: previousDate, schedule: previousSchedule };
+      const state = getAttendanceState(staff, previousDate, attendanceRead);
+      if (state.hasCheckIn && !state.hasCheckOut) {
+        return attendanceRead ? { date: previousDate, schedule: previousSchedule, state: state } : { date: previousDate, schedule: previousSchedule };
+      }
     }
   }
 
@@ -880,8 +882,8 @@ function getAttendanceState(identity, dateStr, includeBreakStart) {
 function buildStaffAttendanceDashboard(staff, ip) {
   const timezone = getTeamTimezone(staff.team);
   const today = todayDateForTimezone(timezone);
-  const resolved = resolveAttendanceSchedule(staff, "CHECK_OUT", today);
-  const state = getAttendanceState(staff, resolved.date, true);
+  const resolved = resolveAttendanceSchedule(staff, "CHECK_OUT", today, true);
+  const state = resolved.state || getAttendanceState(staff, resolved.date, true);
   if (state.breakStartedAt) state.breakStartedAt += Utilities.formatDate(new Date(), timezone, "Z").replace(/(\d{2})(\d{2})$/, "$1:$2");
   return {
     ok: true,
@@ -904,12 +906,25 @@ function getStaffAttendanceHistory(data) {
   if (ipError) return ipError;
   const staff = getStaffByLogin(clean(data.login_id));
   if (!staff.ok) return staff;
-  const events = listAttendanceRows("", 0).filter(function (row) {
-    return rowMatchesStaffIdentity(row, staff);
-  }).slice(0, 100).map(function (row) {
-    return { event_date: row.event_date, event_time: row.event_time, event_type: row.event_type,
-      break_type: row.break_type, shift_code: row.shift_code };
-  });
+  const values = getValues(SHEETS.EVENTS);
+  const headers = buildHeaderMap(values[0] || []);
+  const login = clean(staff.login_id).toLowerCase();
+  const staffId = clean(staff.staff_id).toLowerCase();
+  const events = [];
+  for (let i = values.length - 1; i > 0 && events.length < 100; i--) {
+    const row = values[i];
+    const read = function (keys) { return valueByHeader(row, headers, keys, null); };
+    const rowLogin = clean(read(["login_id"])).toLowerCase();
+    const rowId = rowLogin ? "" : clean(read(["staff_id"])).toLowerCase();
+    if (rowLogin ? rowLogin !== login : !staffId || rowId !== staffId) continue;
+    events.push({
+      event_date: normalizeDateKey(read(["event_date", "date"])),
+      event_time: normalizeSheetTime(read(["event_time", "time"])),
+      event_type: read(["event_type", "action"]),
+      break_type: read(["break_type"]),
+      shift_code: read(["shift_code", "shift"])
+    });
+  }
   return { ok: true, attendance_events: events };
 }
 
@@ -1323,9 +1338,9 @@ function getNextShiftStaffRows(access, staffIndex) {
   });
 }
 
-function getActiveBreakRows(dateStr, access, staffIndex) {
+function getActiveBreakRows(dateStr, access, staffIndex, events) {
   const targetDate = normalizeDateKey(dateStr || todayDate());
-  const rows = filterRowsForAdmin(listAttendanceRows(targetDate, 0), access, staffIndex);
+  const rows = filterRowsForAdmin(events || listAttendanceRows(targetDate, 0), access, staffIndex);
   const closed = {};
   const active = {};
 
@@ -1852,15 +1867,17 @@ function getAdminDashboardFull(data) {
   const access = getAdminAccess(data);
   if (data.dashboard_mode === "attendance_first") {
     const today = todayDate();
-    const staffIndex = buildStaffAccessIndex();
-    const summary = getTodaySummary(today, access.allowed_team);
+    const staffRows = listStaffRows();
+    const staffIndex = buildStaffAccessIndex(staffRows);
+    const events = listAttendanceRows(today, 0);
+    const summary = getTodaySummary(today, access.allowed_team, { staffRows: staffRows, staffIndex: staffIndex, events: events });
     return {
       ok: true,
       dashboard_mode: "attendance_first",
       generated_at: new Date().toISOString(),
       summary: summary,
       next_shift_staff_all: getNextShiftStaffRows(access, staffIndex),
-      breakBoard: getActiveBreakRows(today, access, staffIndex)
+      breakBoard: getActiveBreakRows(today, access, staffIndex, events)
     };
   }
   const month = resolveScoreMonth(data.month);
@@ -2327,16 +2344,16 @@ function getActiveStaffCount() {
   return listStaffRows().filter(function (row) { return safeUpper(row.status) === "ACTIVE"; }).length;
 }
 
-function getTodaySummary(dateStr, teamFilter) {
+function getTodaySummary(dateStr, teamFilter, snapshot) {
   const targetDate = normalizeDateKey(dateStr);
   const teamKey = clean(teamFilter).toLowerCase();
   const access = teamKey ? { allowed_team: teamKey } : null;
-  const staffIndex = buildStaffAccessIndex();
-  const staffRows = filterRowsForAdmin(listStaffRows(), access, staffIndex);
+  const staffIndex = snapshot ? snapshot.staffIndex : buildStaffAccessIndex();
+  const staffRows = filterRowsForAdmin(snapshot ? snapshot.staffRows : listStaffRows(), access, staffIndex);
   const scheduleRows = listScheduleRows("", targetDate).filter(function (row) {
     return !teamKey || clean(row.team).toLowerCase() === teamKey;
   });
-  const eventRows = listAttendanceRows(targetDate, 0).slice().reverse().filter(function (row) {
+  const eventRows = (snapshot ? snapshot.events : listAttendanceRows(targetDate, 0)).slice().reverse().filter(function (row) {
     return !teamKey || rowMatchesAllowedTeam(row, teamKey, staffIndex);
   });
   const nowMinutes = parseTimeToMinutesSafe(nowTime());
@@ -2551,15 +2568,17 @@ function listStaffRows() {
   return rows;
 }
 
-function listScheduleRows(month, dateStr) {
+function listScheduleRows(month, dateStr, attendanceRead) {
   const targetMonth = normalizeMonthKey(month);
   const values = getValues(SHEETS.SCHEDULE);
   const headerMap = buildHeaderMap(values[0] || []);
   const rows = [];
+  const dateKey = attendanceRead && dateStr ? normalizeDateKey(dateStr) : "";
   for (let i = 1; i < values.length; i++) {
+    if (dateKey && normalizeDateKey(valueByHeader(values[i], headerMap, ["schedule_date", "date"], null)) !== dateKey) continue;
     const row = mapScheduleRow(values[i], headerMap);
     if (targetMonth && normalizeMonthKey(row.schedule_month) !== targetMonth) continue;
-    if (dateStr && normalizeDateKey(row.schedule_date) !== normalizeDateKey(dateStr)) continue;
+    if (!dateKey && dateStr && normalizeDateKey(row.schedule_date) !== normalizeDateKey(dateStr)) continue;
     rows.push(row);
   }
   return rows;

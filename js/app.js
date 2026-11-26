@@ -144,6 +144,26 @@
   let healthPromise = null;
   let ipPromise = null;
 
+  const traceIp = async () => {
+    const timeout = withTimeout(5000);
+    try {
+      const response = await fetch("https://www.cloudflare.com/cdn-cgi/trace", {
+        cache: "no-store",
+        credentials: "omit",
+        signal: timeout.controller.signal
+      });
+      if (!response.ok) return "";
+      const line = (await response.text()).split("\n").find(item => item.startsWith("ip="));
+      const ip = line ? line.slice(3).trim() : "";
+      if (ip) localStorage.setItem(CLIENT_IP_KEY, ip);
+      return ip;
+    } catch (error) {
+      return "";
+    } finally {
+      clearTimeout(timeout.timer);
+    }
+  };
+
   const api = {
     base: API_BASE,
     async health(force = false) {
@@ -210,8 +230,10 @@
             const data = await safeJson(response);
             clearTimeout(timeout.timer);
             if (response.status === 401 || response.status === 403) {
-              Portal.clearSession();
-              throw new Error(data.message || "Session expired");
+              if (!options.keepSessionOnDenied) Portal.clearSession();
+              const error = new Error(data.message || "Session expired");
+              error.status = response.status;
+              throw error;
             }
             if (response.ok) {
               if (options.updateStatus !== false) setStatus(true, "Live");
@@ -232,11 +254,15 @@
       if (options.statusOnFailure) setStatus(false, "API offline");
       throw lastError || new Error("API request failed");
     },
-    async detectIp(forceRefresh = false) {
+    async detectIp(forceRefresh = false, preferTrace = false) {
       const cached = localStorage.getItem(CLIENT_IP_KEY);
       if (!forceRefresh && cached) return cached;
       if (!forceRefresh && ipPromise) return ipPromise;
       ipPromise = (async () => {
+        if (preferTrace) {
+          const ip = await traceIp();
+          if (ip) return ip;
+        }
         const actions = ["clientIp", "getClientIp", "ipStatus", "checkIp", "getIp"];
         for (const action of actions) {
           try {
@@ -251,23 +277,7 @@
             if (!/invalid action/i.test(String(error.message))) break;
           }
         }
-        try {
-          const timeout = withTimeout(5000);
-          const response = await fetch("https://www.cloudflare.com/cdn-cgi/trace", {
-            cache: "no-store",
-            credentials: "omit",
-            signal: timeout.controller.signal
-          });
-          clearTimeout(timeout.timer);
-          if (!response.ok) return "";
-          const trace = await response.text();
-          const line = trace.split("\n").find((item) => item.startsWith("ip="));
-          const ip = line ? line.slice(3).trim() : "";
-          if (ip) localStorage.setItem(CLIENT_IP_KEY, ip);
-          return ip;
-        } catch (error) {
-          return "";
-        }
+        return preferTrace ? "" : traceIp();
       })();
       try {
         return await ipPromise;
@@ -332,7 +342,7 @@
         ? ["get_admin_dashboard_full", "get_admin_dashboard"]
         : ["get_staff_dashboard"];
       const session = Portal.getSession(false);
-      const ipPromise = this.detectIp();
+      const ipPromise = this.detectIp(false, role === "staff");
       const payload = {
         role,
         ip: await ipPromise,
@@ -368,16 +378,28 @@
     },
     async staffAttendanceHistory() {
       const session = getSession(false);
+      if (session?.role !== "staff" || !(session.loginId || session.staffId)) {
+        const error = new Error("Staff session required");
+        error.status = 401;
+        throw error;
+      }
       const data = await this.call("get_staff_attendance_history", {
-        login_id: session?.loginId || session?.staffId || "",
-        ip: await this.detectIp()
-      }, { retryRead: true, updateStatus: false });
-      if (data?.ok !== true || !Array.isArray(data.attendance_events)) throw new Error(data?.message || "Unable to load attendance history.");
-      return data.attendance_events;
+        login_id: session.loginId || session.staffId,
+        ip: await this.detectIp(false, true)
+      }, { retryRead: true, updateStatus: false, keepSessionOnDenied: true });
+      const root = data?.data || data;
+      if (!(root?.ok === true || data?.ok === true) || root?.ok === false || data?.ok === false ||
+          !Array.isArray(root?.attendance_events) || root.attendance_events.some(row => !row || typeof row !== "object" || Array.isArray(row))) {
+        const error = new Error("Attendance history response unavailable");
+        const message = String(root?.message || data?.message || data?.error || "");
+        if (/ip not allowed|staff not found|staff inactive|missing login/i.test(message)) error.status = 403;
+        throw error;
+      }
+      return root.attendance_events;
     },
-    async action(action, payload = {}) {
+    async action(action, payload = {}, { updateStatus = true } = {}) {
       const attendance = action === "attendance_action";
-      return this.call(action, payload, { endpoints: [API_BASE], timeoutMs: 20000, retryRead: false, deadlineThroughBody: attendance, updateStatus: !attendance });
+      return this.call(action, payload, { endpoints: [API_BASE], timeoutMs: 20000, retryRead: false, deadlineThroughBody: attendance, updateStatus: !attendance && updateStatus });
     }
   };
 
@@ -421,7 +443,8 @@
       const age = Date.now() - Date.parse(data.generated_at);
       if (session.role !== "staff" || handoff.createdAt !== session.createdAt || data.staff.login_id !== session.loginId ||
         !session.ip || data.ip.address !== session.ip || data.ip.address !== localStorage.getItem(CLIENT_IP_KEY) ||
-        age < 0 || age > 10000 || data.today !== staffDate(data.timezone)) return null;
+        // Allow small client/server clock skew without extending the stale-age limit.
+        age < -2000 || age > 10000 || data.today !== staffDate(data.timezone)) return null;
       return data;
     } catch (error) { return null; }
   };
@@ -511,7 +534,7 @@
       try {
         const identity = document.getElementById("identity").value.trim();
         const password = document.getElementById("password").value;
-        attemptedIp = await api.detectIp(true);
+        attemptedIp = await api.detectIp(true, role === "staff");
         const data = await api.login(role, identity, password, attemptedIp);
         const ok = data.ok !== false && data.success !== false && !data.error;
         if (!ok) {

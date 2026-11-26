@@ -7,6 +7,7 @@ const baseline = 'a57ce4cc3ba4264f9a2260b4c8546293daa10afa';
 const source = fs.readFileSync('backend/Code.gs', 'utf8').replace(/\r\n/g, '\n');
 const original = cp.execFileSync('git', ['show', `${baseline}:backend/Code.gs`], { encoding: 'utf8' }).replace(/\r\n/g, '\n');
 const production = cp.execFileSync('git', ['show', 'c5b7bf0d6c1bf5b8b277b07f37abeac43750b7e9:backend/Code.gs'], { encoding: 'utf8' }).replace(/\r\n/g, '\n');
+const phaseOne = cp.execFileSync('git', ['show', 'ea513ae283caaf365b2ac023d26f9ca105fa9e17:backend/Code.gs'], { encoding: 'utf8' }).replace(/\r\n/g, '\n');
 const staff = { ok: true, login_id: 'TEST001', team: 'CSP', status: 'ACTIVE' };
 function backend(code) {
   const ctx = vm.createContext({ console });
@@ -52,9 +53,10 @@ for (const name of ['getStaffDashboard', 'getAdminDashboardFull']) {
 }
 test('protected production backend functions remain byte-identical', () => {
   const functions = s => new Map([...s.matchAll(/^function (\w+)\(/gm)].map(m => [m[1], s.slice(m.index, s.indexOf('\n}', m.index) + 2)]));
-  const old = functions(production), next = functions(source);
-  const changed = ['doPost', 'staffLogin', 'getAttendanceState', 'getStaffDashboard', 'getAdminDashboardFull'];
-  assert.deepEqual([...next.keys()].filter(name => !old.has(name)), ['buildStaffAttendanceDashboard', 'getStaffAttendanceHistory']);
+  const old = functions(phaseOne), next = functions(source);
+  const changed = ['getScheduleForDate', 'resolveAttendanceSchedule', 'buildStaffAttendanceDashboard', 'getStaffAttendanceHistory',
+    'getActiveBreakRows', 'getAdminDashboardFull', 'getTodaySummary', 'listScheduleRows'];
+  assert.deepEqual([...next.keys()], [...old.keys()]);
   for (const [name, body] of old) if (!changed.includes(name)) assert.equal(next.get(name), body, name);
 });
 test('attendance-first responses skip unrelated work and preserve legacy operations mode', t => {
@@ -102,11 +104,77 @@ test('overnight attendance-first uses the existing previous-day active-session f
 
 test('attendance history is IP-gated, staff-scoped and excludes raw event metadata', () => {
   const { ctx } = backend(source);
-  ctx.rowMatchesStaffIdentity = (row, user) => row.login_id === user.login_id;
-  ctx.listAttendanceRows = () => [{ login_id: staff.login_id, event_type: 'CHECK_IN', ip: 'private' }, { login_id: 'OTHER' }];
+  ctx.getStaffByLogin = key => key === 'TEST001' ? { ...staff, staff_id: 'TEST-ID', full_name: 'Shared Name' } : { ok: false };
+  let reads = 0;
+  ctx.getValues = () => {
+    reads++;
+    return [
+      ['login_id', 'staff_id', 'full_name', 'event_date', 'event_time', 'event_type', 'ip'],
+      ['OTHER', 'TEST-ID', 'Shared Name', '2026-11-16', '08:00', 'CHECK_OUT', 'private'],
+      ['', '', 'Shared Name', '2026-11-16', '08:00', 'CHECK_OUT', 'private'],
+      ['', 'TEST-ID', 'Shared Name', '2026-11-16', '08:00', 'CHECK_IN', 'private'],
+      [' test001 ', 'OLD-ID', 'Other casing', '2026-11-16', '09:00', 'BREAK_START', 'private']
+    ];
+  };
   assert.equal(ctx.getStaffAttendanceHistory({ ip: 'denied' }).ok, false);
-  const result = ctx.getStaffAttendanceHistory({ ip: 'allowed' });
-  assert.equal(result.attendance_events.length, 1);
-  assert.equal(result.attendance_events[0].event_type, 'CHECK_IN');
+  assert.equal(ctx.getStaffAttendanceHistory({ ip: 'allowed', login_id: 'UNKNOWN' }).ok, false);
+  assert.equal(reads, 0);
+  const result = ctx.getStaffAttendanceHistory({ ip: 'allowed', login_id: 'TEST001' });
+  assert.equal(reads, 1);
+  assert.equal(result.attendance_events.length, 2);
+  assert.equal(result.attendance_events[0].event_type, 'BREAK_START');
+  assert.equal(result.attendance_events[1].event_type, 'CHECK_IN');
   assert.equal('ip' in result.attendance_events[0], false);
+});
+
+test('attendance-first schedule prefilter returns the same date rows with less mapping', t => {
+  const fixture = [['schedule_date', 'shift_code'], ...Array.from({ length: 1000 }, (_, i) =>
+    [i === 600 ? '2026-11-16' : '2026-11-15', 'AM'])];
+  const counts = [];
+  const results = [];
+  for (const [code, fast] of [[phaseOne, false], [source, true]]) {
+    const ctx = vm.createContext({ console });
+    vm.runInContext(code, ctx);
+    let mapped = 0;
+    const map = ctx.mapScheduleRow;
+    ctx.getValues = () => fixture;
+    ctx.mapScheduleRow = (...args) => { mapped++; return map(...args); };
+    const started = performance.now();
+    results.push(JSON.stringify(ctx.listScheduleRows('', '2026-11-16', fast)));
+    counts.push(mapped);
+    t.diagnostic(JSON.stringify({ version: fast ? 'phase-2' : 'baseline', mapped, mockedMs: +(performance.now() - started).toFixed(2) }));
+  }
+  assert.equal(results[0], results[1]);
+  assert.deepEqual(counts, [1000, 1]);
+});
+
+test('admin attendance-first shares the event parse without changing scoped summary or break rows', t => {
+  const snapshots = [];
+  const parsing = [];
+  for (const code of [phaseOne, source]) {
+    const ctx = vm.createContext({ console });
+    vm.runInContext(code, ctx);
+    let parses = 0;
+    let staffBuilds = 0;
+    const people = [{ full_name: 'CSP Person', login_id: 'CSP1', team: 'CSP', status: 'ACTIVE' },
+      { full_name: 'Affiliate Person', login_id: 'AFF1', team: 'Affiliate', status: 'ACTIVE' }];
+    Object.assign(ctx, {
+      requireAllowedIp: () => null, getAdminAccess: () => ({ allowed_team: 'CSP' }),
+      todayDate: () => '2026-11-16', nowTime: () => '12:00:00',
+      listStaffRows: () => { staffBuilds++; return people; },
+      listScheduleRows: () => [], getNextShiftStaffRows: () => [],
+      listAttendanceRows: () => {
+        parses++;
+        return people.map(row => ({ ...row, event_date: '2026-11-16', event_time: '11:00:00', event_type: 'BREAK_START' }));
+      }
+    });
+    const result = ctx.getAdminDashboardFull({ dashboard_mode: 'attendance_first' });
+    assert.deepEqual(Array.from(result.breakBoard, row => row.login_id), ['CSP1']);
+    const { generated_at, ...snapshot } = result;
+    snapshots.push(JSON.stringify(snapshot));
+    parsing.push([parses, staffBuilds]);
+  }
+  assert.equal(snapshots[0], snapshots[1]);
+  assert.deepEqual(parsing, [[2, 3], [1, 1]]);
+  t.diagnostic('Admin fixture event parses 2 -> 1; staff list builds 3 -> 1. Physical Sheet reads unchanged.');
 });

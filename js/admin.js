@@ -6,6 +6,11 @@
   let dashboard = {};
   let refreshPromise = null;
   let refreshRevision = 0;
+  let stale = false;
+  let lastGeneratedAt = -Infinity;
+  let transientFailures = 0;
+  let nextPollAt = 0;
+  const pollInterval = 15000;
   const empty = (message, span = 8) => `<tr><td colspan="${span}" class="empty-state">${message}</td></tr>`;
   const badge = (text, tone = "") => `<span class="badge ${tone}">${text || "--"}</span>`;
   const previewLimit = 5;
@@ -301,26 +306,49 @@
     renderCharts();
   };
 
+  const showReconnect = () => {
+    const hasStaleData = stale && Boolean(dashboard.stats);
+    Portal.setStatus(hasStaleData ? false : null, hasStaleData ? "Stale data - Reconnecting" : "Reconnecting");
+  };
+
   const load = (silent = false, afterWrite = false) => {
     if (afterWrite && refreshPromise) {
       refreshRevision++;
       return refreshPromise.then(() => load(silent));
     }
     if (refreshPromise) return refreshPromise;
-    if (silent && (document.hidden || navigator.onLine === false)) return;
-    if (!silent && !dashboard.stats) Portal.setStatus(null, "Loading");
+    if (silent && (document.hidden || navigator.onLine === false || performance.now() < nextPollAt)) return;
+    if ((stale && dashboard.stats) || transientFailures) showReconnect();
+    else Portal.setStatus(null, dashboard.stats ? "Refreshing" : "Loading");
     const revision = refreshRevision;
     refreshPromise = (async () => {
       try {
-        const data = await Portal.api.dashboard("admin", { dashboard_mode: "attendance_first" });
+        const data = await Portal.api.dashboard("admin", { dashboard_mode: "attendance_first" }, {
+          canRetry: () => revision === refreshRevision && !document.hidden && navigator.onLine !== false,
+          onRetry: showReconnect
+        });
         if (revision !== refreshRevision) return;
+        const root = data.data || data.dashboard || data;
+        const generatedAt = Date.parse(root.generated_at);
+        if (generatedAt <= lastGeneratedAt) throw new Error("Dashboard response did not contain newer data.");
         dashboard = normalizeDashboard(data);
         renderAll();
-        const root = data.data || data.dashboard || data;
-        Portal.setText("lastDashboardUpdate", "Updated " + new Date(root.generated_at).toLocaleTimeString());
+        lastGeneratedAt = generatedAt;
+        stale = false;
+        transientFailures = 0;
+        nextPollAt = 0;
+        Portal.setText("lastDashboardUpdate", "Updated " + new Date(generatedAt).toLocaleTimeString());
         Portal.dashboardReady();
       } catch (error) {
         if (revision !== refreshRevision) return;
+        stale = true;
+        if (Portal.isRetryableReadError(error)) {
+          transientFailures = Math.min(transientFailures + 1, 3);
+          nextPollAt = performance.now() + pollInterval * 2 ** (transientFailures - 1);
+        } else {
+          transientFailures = 0;
+          nextPollAt = 0;
+        }
         Portal.dashboardFailure(Boolean(dashboard.stats), () => load(), error);
       } finally {
         refreshPromise = null;
@@ -729,14 +757,16 @@
     }
   });
   load();
-  const refreshTimer = setInterval(() => load(true), 15000);
+  const refreshTimer = setInterval(() => load(true), pollInterval);
   document.addEventListener("visibilitychange", () => load(true));
   window.addEventListener("online", async () => {
     await refreshPromise;
+    nextPollAt = 0;
     load(true);
   });
   window.addEventListener("offline", () => {
     refreshRevision++;
+    stale = true;
     Portal.dashboardFailure(Boolean(dashboard.stats), () => load(), new Error("Network disconnected"));
   });
   window.addEventListener("resize", renderCharts);

@@ -30,6 +30,11 @@ async function open(width, height = 850) {
   return { context, page, external, errors, requests };
 }
 const cell = (page, id, date) => page.locator('[data-key="' + id + '|' + date + '"]');
+const applyGenerated = async page => {
+  await page.click('#generate');
+  await page.getByRole('heading', { name: 'Review generated candidates' }).waitFor();
+  await page.getByRole('button', { name: 'Apply candidate' }).click();
+};
 
 test('desktop editing, bulk selection, copy/paste, undo/redo, locks and draft restore', async () => {
   const { context, page, external, errors } = await open(1390);
@@ -73,7 +78,7 @@ test('worker generation, preview confirmation, downloads and desktop/mobile scre
   try {
     const { page } = f;
     assert.ok(!f.requests.some(url => url.includes('exceljs')));
-    await page.click('#generate');
+    await applyGenerated(page);
     await page.getByRole('status').getByText(/Generated 18 staff/).waitFor();
     assert.match(await page.locator('#validation-title').textContent(), /0 blocking/);
     assert.equal(await cell(page, 'SYN-003', '2026-12-09').textContent(), 'AL');
@@ -82,7 +87,7 @@ test('worker generation, preview confirmation, downloads and desktop/mobile scre
     assert.equal(await page.locator('button.cell').count(), 0);
     await page.click('#confirm');
     await page.getByText(/Production publishing is unavailable/).waitFor();
-    await page.getByText(/Before uploading this schedule/).waitFor();
+    await page.getByText(/Please check the Future_Leave_Requests tab/).waitFor();
     const accept = page.getByRole('button', { name: 'Save simulated snapshot' });
     assert.equal(await accept.isDisabled(), true);
     await page.getByLabel('I acknowledge the reminder').check();
@@ -103,7 +108,7 @@ test('worker generation, preview confirmation, downloads and desktop/mobile scre
   try {
     const { page } = mobile;
     await page.selectOption('#team', 'CSP');
-    await page.click('#generate');
+    await applyGenerated(page);
     await page.getByRole('status').getByText(/Generated 6 staff/).waitFor();
     assert.match(await page.locator('#legend').textContent(), /22:00 - 07:00 \(\+1\)/);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -120,4 +125,61 @@ test('worker generation, preview confirmation, downloads and desktop/mobile scre
     assert.deepEqual(mobile.external, []);
     assert.deepEqual(mobile.errors, []);
   } finally { await mobile.context.close(); }
+});
+
+test('candidate comparison and cancellation do not change the draft; required leave acknowledgment resets after editing', async () => {
+  const { context, page, external, errors } = await open(1200);
+  try {
+    const first = cell(page, 'SYN-001', '2026-12-01');
+    await page.evaluate(() => {
+      document.getElementById('generate').click();
+      document.getElementById('cancel-generation').click();
+    });
+    assert.match(await page.locator('#notice').textContent(), /cancelled/);
+    assert.equal(await first.textContent(), '-');
+    await page.click('#generate');
+    const dialog = page.locator('#dialog');
+    await dialog.getByRole('heading', { name: 'Review generated candidates' }).waitFor();
+    assert.equal(await first.textContent(), '-');
+    assert.ok(await dialog.getByLabel('Preview').locator('option').count() > 1);
+    await dialog.getByLabel('Preview').selectOption('1');
+    await page.getByRole('button', { name: 'Apply candidate' }).click();
+    await page.click('#preview');
+    await page.click('#confirm');
+    await page.getByLabel('I acknowledge the reminder').check();
+    await page.keyboard.press('Escape');
+    await page.click('#preview');
+    await first.click();
+    await page.click('#lock');
+    await page.click('#preview');
+    await page.click('#confirm');
+    assert.equal(await page.getByLabel('I acknowledge the reminder').isChecked(), false);
+    assert.equal(await page.getByRole('button', { name: 'Save simulated snapshot' }).isDisabled(), true);
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('coverage matrix validates independent configurations and jumps to an under-covered shift', async () => {
+  const { context, page } = await open(390);
+  try {
+    await page.click('#coverage');
+    const dialog = page.locator('#dialog');
+    await dialog.getByLabel('Rule period').selectOption('2026-12-01');
+    await dialog.getByLabel('AM minimum', { exact: true }).fill('2');
+    await dialog.getByRole('button', { name: 'Save coverage' }).click();
+    await dialog.getByText(/require minimum/).waitFor();
+    await dialog.getByLabel('AM target', { exact: true }).fill('3');
+    await dialog.getByLabel('AM maximum', { exact: true }).fill('4');
+    await dialog.getByLabel('AM priority', { exact: true }).selectOption('3');
+    await dialog.getByRole('button', { name: 'Save coverage' }).click();
+    await dialog.getByText('Coverage saved.').waitFor();
+    await page.keyboard.press('Escape');
+    await page.click('#validation-title');
+    await page.getByRole('button', { name: /OLD Brands 2026-12-01 AM: 0\/2 minimum/ }).click();
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.coverage), 'old|2026-12-01|AM');
+    assert.equal(await page.locator('[data-coverage="old|2026-12-01|AM"]').getAttribute('data-shortfall'), 'true');
+    assert.equal(await page.locator('[data-coverage="new|2026-12-01|AM"]').getAttribute('data-shortfall'), 'false');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  } finally { await context.close(); }
 });

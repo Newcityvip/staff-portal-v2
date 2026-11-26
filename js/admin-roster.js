@@ -1,13 +1,15 @@
 import { contextFor, coverage, createHistory, datesFor, draftFor, isLocked, key, previousPattern,
-  restore, save, snapshot, totals, transfer, weekday, weekdays } from "./roster-model.js";
+  restore, save, snapshot, totals, transferMany, weekday, weekdays } from "./roster-model.js";
 import { validate } from "./roster-generator.js";
 import { downloadRoster } from "./roster-export.js";
+import { asCoverage, coverageKey, coverageReport, priorities, validCoverage } from "./roster-policy.js";
 
 const $ = id => document.getElementById(id);
 const initial = restore(localStorage);
 const history = createHistory(initial.model);
 let team = initial.team, month = initial.month, group = "", preview = false;
 let saved = JSON.stringify(initial), current, clipboard = [], selected = new Set(), anchor = "", worker;
+let showReport = false;
 const dirty = () => JSON.stringify({ model: history.current, team, month }) !== saved;
 const notify = text => { $("notice").textContent = text; };
 const make = (tag, text = "", attrs = {}) => {
@@ -90,7 +92,7 @@ function selectCell(k, event) {
   updateSelection();
 }
 
-function renderGrid() {
+function renderGrid(report) {
   const table = $("matrix");
   const scroll = $("scroll"), top = scroll.scrollTop, left = scroll.scrollLeft;
   table.replaceChildren();
@@ -103,13 +105,26 @@ function renderGrid() {
     head.append(cell);
   }
   head.append(make("th", "Work / OFF / Leave", { scope: "col", class: "totals" }));
-  function addCoverage(body, people, prefix) {
+  function addCoverage(body, people, prefix, groupId = "") {
     const counts = coverage(people, current.dates, current.draft.cells);
     for (const shift of workShifts()) {
       const tr = body.insertRow();
       tr.className = "coverage";
       tr.append(make("th", prefix + shift.id, { scope: "row", class: "name" }));
-      counts.forEach(day => { tr.insertCell().textContent = day[shift.id] || 0; });
+      counts.forEach((day, index) => {
+        const td = tr.insertCell();
+        const actual = day[shift.id] || 0;
+        td.textContent = actual;
+        const date = current.dates[index];
+        const stats = report.daily.filter(row => row.date === date && (groupId ? row.group === groupId : true));
+        const rules = stats.flatMap(row => row.shifts.filter(s => s.id === shift.id));
+        const min = rules.reduce((n, s) => n + s.min, 0), target = rules.reduce((n, s) => n + s.target, 0);
+        const max = groupId ? rules[0]?.max : null;
+        td.dataset.shortfall = actual < min || max != null && actual > max;
+        if (groupId) td.dataset.coverage = [groupId, date, shift.id].join("|");
+        td.title = date + " / " + shift.id + ": " + actual + " assigned, " + min + " minimum, " + target + " target, " +
+          stats.reduce((n, s) => n + s.available, 0) + " available" + (max == null ? "" : ", " + max + " maximum");
+      });
       tr.insertCell().textContent = counts.reduce((sum, day) => sum + (day[shift.id] || 0), 0);
     }
   }
@@ -146,7 +161,7 @@ function renderGrid() {
       cell.className = "totals";
       cell.textContent = [count.work, count.off, count.leave].join(" / ");
     }
-    if (people.length) addCoverage(body, people, "Coverage / ");
+    if (people.length || report.daily.some(day => day.group === id && day.shifts.some(s => s.min || s.target))) addCoverage(body, people, "Coverage / ", id);
   }
   addCoverage(table.createTBody(), current.people, "Combined / ");
   scroll.scrollTop = top;
@@ -169,9 +184,12 @@ function render() {
   $("preview").setAttribute("aria-pressed", preview);
   $("confirm").hidden = !preview;
   $("generation").disabled = preview;
+  $("scope").disabled = preview;
+  $("empty-only").disabled = preview;
   $("generate").disabled = preview || Boolean(worker);
   $("group").disabled = preview;
   $("rules").disabled = preview;
+  $("coverage").disabled = preview;
   $("groups").disabled = preview;
   $("undo").disabled = preview || !history.canUndo;
   $("redo").disabled = preview || !history.canRedo;
@@ -181,16 +199,40 @@ function render() {
     item.append(make("b", shift.id), document.createTextNode(" " + timeLabel(shift)));
     return item;
   }));
-  renderGrid();
-  updateSelection();
   const issues = validate(current);
+  const report = coverageReport(current, current.draft.cells);
+  renderGrid(report);
+  updateSelection();
+  if (showReport) renderReport(report, issues);
+  $("preview").disabled = Boolean(!preview && issues.errors.length);
+  $("preview").title = $("preview").disabled ? "Resolve blocking validation issues before preview" : "";
   $("validation-title").textContent = "Validation / " + issues.errors.length + " blocking / " + issues.warnings.length + " warnings";
   $("issues").replaceChildren(...[["Blocking issues", issues.errors, "error"], ["Warnings", issues.warnings, "warning"]].map(([text, list, cls]) => {
     const block = make("section"), items = make("ul", "", { class: cls });
-    items.append(...list.map(item => make("li", item.label)));
+    items.append(...list.map(item => {
+      const li = make("li");
+      if (item.cell || item.coverage) li.append(button(item.label, () => focusIssue(item), { class: "issue-link" }));
+      else li.textContent = item.label;
+      return li;
+    }));
     block.append(make("b", text), list.length ? items : make("p", "None"));
     return block;
   }));
+}
+
+function focusIssue(issue) {
+  const value = issue.cell || issue.coverage.join("|");
+  const selector = "[" + (issue.cell ? "data-key" : "data-coverage") + '="' + CSS.escape(value) + '"]';
+  let target = $("matrix").querySelector(selector);
+  if (!target && group) {
+    group = ""; selected.clear(); render();
+    target = $("matrix").querySelector(selector);
+  }
+  if (target) {
+    target.tabIndex = 0;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: "nearest", inline: "center" });
+  }
 }
 
 function bulk(values) {
@@ -215,10 +257,12 @@ function groupsDialog() {
   const name = input("text", "", { maxlength: 40 });
   groupList.onchange = () => { name.value = current.groups.find(g => g.id === groupList.value)?.name || ""; };
   const feedback = make("p", "", { role: "status" });
-  const person = choose(current.people.map(p => [p.id, p.name + " / " + p.id]), current.people[0]?.id);
-  const target = choose(groupPairs(current), current.people[0]?.group);
-  person.onchange = () => { target.value = current.people.find(p => p.id === person.value)?.group; };
+  const target = choose(groupPairs(current), group || current.people[0]?.group);
   const effective = input("month", month, { min: "2020-01", max: "2099-12" });
+  const duration = choose([["permanent", "From effective month"], ["temporary", "Only this month"]], "permanent");
+  const checklist = make("div", "", { class: "check-grid" });
+  for (const person of current.people) checklist.append(label(person.name + " / " +
+    (current.groups.find(g => g.id === person.group)?.name || "Unassigned"), input("checkbox", person.id)));
   openDialog("Brand groups", [
     row(label("Group", groupList), label("Name", name), button("Save group", () => {
       const value = name.value.trim();
@@ -234,17 +278,139 @@ function groupsDialog() {
       groupsDialog();
       notify("Group saved in the current draft.");
     })),
-    make("h3", "Effective-month assignment"),
-    row(label("Staff", person), label("To group", target), label("Effective month", effective), button("Transfer", () => {
+    make("h3", "Transfer staff"),
+    checklist,
+    row(label("To group", target), label("Effective month", effective), label("Duration", duration), button("Transfer", () => {
+      const ids = [...checklist.querySelectorAll("input:checked")].map(control => control.value);
+      if (!ids.length) { feedback.textContent = "Select at least one staff member."; return; }
       if (!datesFor(effective.value).length || effective.value < "2020-01" || effective.value > "2099-12") {
         feedback.textContent = "Enter a month between 2020 and 2099."; return;
       }
-      history.change(model => transfer(model, person.value, target.value, effective.value));
+      history.change(model => {
+        if (transferMany(model, ids, target.value, effective.value, duration.value === "temporary")) draftFor(model, team, month).revision++;
+      });
       render();
-      feedback.textContent = "Assignment saved. Earlier months and snapshots are unchanged.";
+      groupsDialog();
+      notify(ids.length + " staff transferred. Earlier months and snapshots are unchanged.");
     })),
     feedback
   ]);
+}
+
+function coverageDialog(initialGroup = group, initialPeriod = "*") {
+  const scope = choose(groupPairs(current), initialGroup || current.groups[0]?.id);
+  const period = choose([["*", "Daily defaults"], ...weekdays.map(day => [day, day + " override"]),
+    ...current.dates.map(date => [date, date + " override"])], initialPeriod);
+  const table = make("table"), holder = make("div", "", { class: "dialog-table" });
+  holder.append(table);
+  const heading = table.createTHead().insertRow();
+  ["Shift", "Override", "Auto", "Min", "Target", "Max", "Priority"].forEach(text => heading.append(make("th", text)));
+  const feedback = make("p", "", { role: "status" });
+  const summary = make("p", "", { class: "muted" });
+  const entries = [];
+  const sync = () => {
+    const min = entries.reduce((n, e) => n + Number(e.min.value || 0), 0);
+    const target = entries.reduce((n, e) => n + Number(e.target.value || 0), 0);
+    const people = current.people.filter(person => person.group === scope.value);
+    const available = /^\d/.test(period.value) ? people.filter(p => !current.leave[key(p.id, period.value)]).length : people.length;
+    summary.textContent = "Total minimum " + min + " / target " + target + " / available " + available +
+      (/^\d/.test(period.value) ? " (excluding confirmed leave)" : " before date-specific leave");
+  };
+  const refresh = () => {
+    table.tBodies[0]?.remove();
+    const body = table.createTBody();
+    entries.length = 0;
+    const selectedPeriod = period.value, groupId = scope.value;
+    for (const shift of workShifts()) {
+      const entryKey = coverageKey(groupId, selectedPeriod, shift.id);
+      const exact = current.draft.coverage[entryKey];
+      const weekdayKey = /^\d/.test(selectedPeriod) ? weekdays[weekday(selectedPeriod)] : "";
+      const rule = asCoverage(exact ?? (weekdayKey ? current.draft.coverage[coverageKey(groupId, weekdayKey, shift.id)] : undefined) ??
+        current.draft.coverage[coverageKey(groupId, "*", shift.id)]);
+      const override = input("checkbox", "", { "aria-label": shift.id + " override" });
+      override.checked = selectedPeriod === "*" || exact !== undefined;
+      override.disabled = selectedPeriod === "*";
+      const enabled = input("checkbox", "", { "aria-label": shift.id + " automatic generation" });
+      enabled.checked = rule.enabled;
+      const field = (value, name) => input("number", value ?? "", { min: 0, max: 99, step: 1, "aria-label": shift.id + " " + name });
+      const min = field(rule.min, "minimum"), target = field(rule.target, "target"), max = field(rule.max, "maximum");
+      const priority = choose(priorities.map((name, i) => [String(i), name]), String(rule.priority));
+      priority.setAttribute("aria-label", shift.id + " priority");
+      for (const control of [enabled, min, target, max, priority]) control.oninput = () => { override.checked = true; sync(); };
+      override.onchange = sync;
+      const tr = body.insertRow();
+      tr.append(make("th", shift.id, { scope: "row" }));
+      for (const control of [override, enabled, min, target, max, priority]) tr.insertCell().append(control);
+      entries.push({ entryKey, shift, min, target, max, priority, enabled, override });
+    }
+    sync();
+  };
+  scope.onchange = period.onchange = refresh;
+  refresh();
+  openDialog("Coverage matrix", [row(label("Group", scope), label("Rule period", period)), summary, holder,
+    row(button("Save coverage", () => {
+      const updates = entries.map(e => [e, { min: e.min.value === "" ? NaN : +e.min.value,
+        target: e.target.value === "" ? NaN : +e.target.value, max: e.max.value === "" ? null : +e.max.value,
+        priority: +e.priority.value, enabled: e.enabled.checked }]);
+      const invalid = updates.find(([e, rule]) => e.override.checked && (!validCoverage(rule) || rule.target > 99 || rule.max > 99));
+      if (invalid) { feedback.textContent = invalid[0].shift.id + ": require minimum <= target <= maximum; disabled shifts need zero minimum and target."; return; }
+      editDraft(d => {
+        for (const [e, rule] of updates) {
+          if (e.override.checked) d.coverage[e.entryKey] = rule; else delete d.coverage[e.entryKey];
+        }
+      });
+      feedback.textContent = "Coverage saved.";
+    })), feedback]);
+}
+
+function preferencesDialog() {
+  const person = choose(current.people.map(p => [p.id, p.name]), current.people[0]?.id);
+  const fields = make("div");
+  const feedback = make("p", "", { role: "status" });
+  const refresh = () => {
+    const pref = current.draft.preferences[person.value] || {};
+    const shifts = workShifts().map(s => [s.id, s.id]);
+    const fixed = choose([["", "No fixed shift"], ...shifts], pref.fixed || "");
+    const preferred = choose([["", "No preference"], ...shifts], pref.preferred || "");
+    const rotation = choose([["", "Any eligible shift"], ["rotate", "Rotate weekly"], ["restricted", "One shift for this month"]],
+      pref.restrictRotation ? "restricted" : pref.rotate ? "rotate" : "");
+    const choices = (pairs, values) => {
+      const block = make("div", "", { class: "check-grid" });
+      for (const [value, text] of pairs) {
+        const checkbox = input("checkbox", value);
+        checkbox.checked = values.includes(value);
+        block.append(label(text, checkbox));
+      }
+      return block;
+    };
+    const selectedValues = block => [...block.querySelectorAll("input:checked")].map(c => c.value);
+    const allowed = choices(shifts, pref.allowed || []);
+    const offDays = choices(weekdays.map(day => [day, day]), pref.offDays || []);
+    const consecutive = input("number", pref.preferredOffRun ?? (pref.preferConsecutiveOff ? 2 : 0), { min: 0, max: 7, step: 1 });
+    const fieldsByRule = [["weeklyOff", "Weekly OFF minimum", 0, 7], ["consecutiveOff", "Required OFF streak", 0, 7],
+      ["maxRun", "Max work streak", 1, 14], ["rest", "Rest (hours)", 0, 48]].map(([id, name, min, max]) =>
+      ({ id, name, min, max, control: input("number", pref[id] ?? "", { min, max, step: 1, placeholder: "Default" }) }));
+    const teamGroup = current.groups.find(g => g.id === current.people.find(p => p.id === person.value)?.group)?.name || "Unassigned";
+    fields.replaceChildren(make("p", "Monthly group: " + teamGroup), make("h3", "Mandatory"),
+      row(label("Fixed shift", fixed), label("Shift rotation", rotation)), make("p", "Allowed shifts (none selected means any eligible shift)"), allowed,
+      row(...fieldsByRule.map(item => label(item.name, item.control))), make("h3", "Preferences"),
+      row(label("Preferred shift", preferred), label("Preferred OFF streak", consecutive)), make("p", "Preferred OFF weekdays"), offDays,
+      row(button("Save preferences", () => {
+        const allowedValues = selectedValues(allowed);
+        if (!range(consecutive.value, 0, 7) || fieldsByRule.some(item => item.control.value !== "" && !range(item.control.value, item.min, item.max)) ||
+          fixed.value && allowedValues.length && !allowedValues.includes(fixed.value)) {
+          feedback.textContent = "Check rule ranges and ensure the fixed shift is allowed."; return;
+        }
+        const numeric = Object.fromEntries(fieldsByRule.filter(item => item.control.value !== "").map(item => [item.id, +item.control.value]));
+        editDraft(d => { d.preferences[person.value] = { ...numeric, fixed: fixed.value, preferred: preferred.value,
+          allowed: allowedValues, offDays: selectedValues(offDays), preferredOffRun: +consecutive.value,
+          rotate: rotation.value === "rotate", restrictRotation: rotation.value === "restricted" }; });
+        feedback.textContent = "Preferences saved.";
+      }), button("Monthly group assignments", groupsDialog)));
+  };
+  person.onchange = refresh;
+  refresh();
+  openDialog("Staff scheduling preferences", [row(label("Staff", person)), fields, feedback]);
 }
 
 function rulesDialog() {
@@ -252,22 +418,6 @@ function rulesDialog() {
   const numeric = (value, min, max) => input("number", value, { min, max, step: 1 });
   const off = numeric(rules.weeklyOff, 0, 7), run = numeric(rules.maxRun, 1, 14), rest = numeric(rules.rest, 0, 48), fair = input("checkbox", "");
   fair.checked = rules.fair;
-  const scope = choose(groupPairs(current), group || current.groups[0]?.id);
-  const day = choose([["*", "All dates (default)"], ...current.dates.map(d => [d, d])], "*");
-  const shift = choose(workShifts().map(s => [s.id, s.id]), workShifts()[0]?.id);
-  const minimum = numeric(0, 0, current.people.length);
-  const coverageKey = () => [scope.value, day.value, shift.value].join("|");
-  const showMin = () => { minimum.value = current.draft.coverage[coverageKey()] ?? ""; };
-  for (const control of [scope, day, shift]) control.onchange = showMin;
-  showMin();
-  const person = choose(current.people.map(p => [p.id, p.name]), current.people[0]?.id);
-  const pref = choose([["", "Any shift"], ["rotate", "Rotate weekly"], ...workShifts().map(s => [s.id, "Fixed " + s.id])], "");
-  const showPref = () => {
-    const saved = current.draft.preferences[person.value];
-    pref.value = saved?.fixed || (saved?.rotate ? "rotate" : "");
-  };
-  person.onchange = showPref;
-  showPref();
   const catalogEntry = choose([["", "New shift"], ...current.catalog.map(s => [s.id, s.id])], "");
   const id = input("text", "", { maxlength: 8 }), start = input("time", ""), end = input("time", "");
   const kind = choose([["work", "Working"], ["off", "OFF"], ["leave", "Leave"]], "work");
@@ -290,17 +440,7 @@ function rulesDialog() {
         editDraft(d => { d.rules = { weeklyOff: +off.value, maxRun: +run.value, rest: +rest.value, fair: fair.checked }; });
         feedback.textContent = "Rules saved.";
       })),
-    make("h3", "Minimum coverage"),
-    row(label("Group", scope), label("Date", day), label("Shift", shift), label("Minimum", minimum), button("Save minimum", () => {
-      if (minimum.value !== "" && !range(minimum.value, 0, current.people.length)) { feedback.textContent = "Enter a valid coverage minimum."; return; }
-      editDraft(d => { if (minimum.value === "") delete d.coverage[coverageKey()]; else d.coverage[coverageKey()] = +minimum.value; });
-      feedback.textContent = "Coverage saved.";
-    })),
-    make("h3", "Staff preference"),
-    row(label("Staff", person), label("Pattern", pref), button("Save preference", () => {
-      editDraft(d => { d.preferences[person.value] = { fixed: pref.value === "rotate" ? "" : pref.value, rotate: pref.value === "rotate" }; });
-      feedback.textContent = "Preference saved.";
-    })),
+    row(button("Coverage matrix", () => coverageDialog()), button("Staff preferences", preferencesDialog)),
     make("h3", "Team shift catalog"),
     row(label("Edit", catalogEntry), label("Code", id), label("Type", kind), label("Start", start), label("End", end), label("Color", color),
       button("Save shift", () => {
@@ -326,9 +466,10 @@ function rulesDialog() {
 
 function confirmDialog() {
   const issues = validate(current);
+  const revision = history.current;
   const acknowledgement = input("checkbox", "");
   const accept = button("Save simulated snapshot", () => {
-    if (!acknowledgement.checked || issues.errors.length) return;
+    if (!acknowledgement.checked || issues.errors.length || revision !== history.current) return;
     const record = snapshot(current);
     history.change(model => { model.snapshots.push(record); });
     $("dialog").close();
@@ -338,50 +479,134 @@ function confirmDialog() {
   acknowledgement.onchange = () => { accept.disabled = !acknowledgement.checked || Boolean(issues.errors.length); };
   openDialog("Simulated final confirmation", [
     make("p", "Production publishing is unavailable in prototype mode."),
-    make("p", "Before uploading this schedule, please make sure you have checked the Future_Leave_Requests tab for any confirmed leave requests within the selected roster month."),
+    make("p", "Please check the Future_Leave_Requests tab and confirm that all approved leave requests for the selected roster month have been included before proceeding."),
     row(label("I acknowledge the reminder", acknowledgement)),
     make("p", issues.errors.length ? issues.errors.length + " blocking issues must be resolved first." : "This saves a synthetic snapshot only."),
     accept
   ]);
 }
 
+function reportTable(headers, values) {
+  const table = make("table"), wrapper = make("div", "", { class: "dialog-table report-table" });
+  const head = table.createTHead().insertRow();
+  headers.forEach(name => head.append(make("th", name, { scope: "col" })));
+  const body = table.createTBody();
+  for (const valuesRow of values) {
+    const tr = body.insertRow();
+    for (const value of valuesRow) tr.insertCell().textContent = String(value);
+  }
+  wrapper.append(table);
+  return wrapper;
+}
+const countPass = day => day.shifts.every(s => s.count >= s.min && (s.max === null || s.count <= s.max));
+const targetRatio = day => day.shifts.reduce((sum, s) => sum + Math.min(s.count, s.target), 0) + "/" +
+  day.shifts.reduce((sum, s) => sum + s.target, 0);
+function renderReport(report, issues) {
+  $("results").hidden = false;
+  const groupNames = new Map(groupPairs(current));
+  const combined = current.dates.map(date => {
+    const days = report.daily.filter(d => d.date === date);
+    return { date, name: "Combined", available: days.reduce((n, d) => n + d.available, 0),
+      shifts: days.flatMap(d => d.shifts) };
+  });
+  $("result-report").replaceChildren(
+    make("p", report.staff.filter(p => p.work || p.off || p.leave).length + " staff / " + report.dates +
+      " dates scheduled / " + report.working + " working shifts / " + report.missing + " unassigned"),
+    make("p", issues.errors.length + " blocking / " + issues.warnings.length + " warnings / " +
+      issues.errors.filter(e => e.type === "leave").length + " leave conflicts / " +
+      issues.errors.filter(e => e.type === "lock").length + " lock conflicts"),
+    make("p", "PM coverage: " + report.pmPercent.toFixed(1) + "% (" + report.pm + "/" + report.working +
+      " working assignments). Preferences matched: " + report.preferenceHits + "/" + report.preferenceTotal + "."),
+    make("p", Object.entries(report.distribution).map(([code, n]) => code + " " + n).join(" / ")),
+    reportTable(["Staff", "Group", "Work", "OFF", "Leave", "Preferences"], report.staff.map(p =>
+      [p.name, groupNames.get(p.group), p.work, p.off, p.leave, p.preferred + "/" + p.opportunities])),
+    make("h3", "Daily coverage"),
+    reportTable(["Group", "Date", "Available", "Minimum", "Limits", "Target met"], [...combined, ...report.daily].map(day =>
+      [day.name, day.date, day.available, day.shifts.reduce((sum, s) => sum + s.min, 0),
+        countPass(day) ? "Met" : "Outside limits", targetRatio(day)]))
+  );
+}
+function reviewCandidates(candidates, guard) {
+  const pick = choose(candidates.map((_, i) => [String(i), "Candidate " + (i + 1)]), "0");
+  const selectedPreview = make("div");
+  const compare = reportTable(["Candidate", "Working", "PM", "PM share", "Target (weighted)", "Preferences"], candidates.map((c, i) =>
+    [i + 1, c.report.working, c.report.pm, c.report.pmPercent.toFixed(1) + "%", c.target, c.report.preferenceHits]));
+  const renderPreview = () => {
+    const candidate = candidates[Number(pick.value)];
+    selectedPreview.replaceChildren(make("p", candidate.warnings.length + " validation warnings in generation scope."), reportTable(
+      ["Staff", ...current.dates.map(date => date.slice(-2))], current.people.map(p =>
+        [p.name, ...current.dates.map(date => candidate.cells[key(p.id, date)] || "-")])));
+  };
+  pick.onchange = renderPreview;
+  renderPreview();
+  openDialog("Review generated candidates", [compare, row(label("Preview", pick)), selectedPreview,
+    row(button("Apply candidate", () => {
+      if (!guard()) { $("dialog").close(); notify("Draft changed. Generate candidates again."); return; }
+      const result = candidates[Number(pick.value)];
+      $("dialog").close();
+      showReport = true;
+      editDraft(d => { d.cells = result.cells; });
+      $("results").open = true;
+      notify("Generated " + result.selectedCount + " staff assignments; review " + result.warnings.length + " warnings.");
+    }, { class: "primary" }), button("Discard candidates", () => { $("dialog").close(); notify("Draft unchanged."); }))]);
+}
+
 function run() {
-  const mode = $("generation").value;
-  if (mode === "previous") {
+  const strategy = $("generation").value, scope = $("scope").value;
+  if (strategy === "copy") {
     if (!Object.keys(current.previous).length) return notify("No previous-month draft or snapshot.");
-    const cells = previousPattern(current);
+    const ids = scope === "staff" ? new Set([...selected].map(k => k.split("|")[0])) : null;
+    if (scope === "group" && !group) return notify("Select a group first.");
+    if (ids && !ids.size) return notify("Select a cell for each staff member to include.");
+    const cells = previousPattern({ ...current, people: current.people.filter(person => (!ids || ids.has(person.id)) &&
+      (scope !== "group" || person.group === group)) }, $("empty-only").checked);
     editDraft(d => { d.cells = cells; });
     return notify("Previous pattern copied. Review validation before continuing.");
   }
-  if (mode === "group" && !group) return notify("Select a group first.");
+  if (scope === "group" && !group) return notify("Select a group first.");
+  const ids = scope === "staff" ? [...new Set([...selected].map(k => k.split("|")[0]))] : undefined;
+  if (ids && !ids.length) return notify("Select a cell for each staff member to include.");
   const before = history.current, beforeTeam = team, beforeMonth = month;
-  worker = new Worker(new URL("./roster-generator.js", import.meta.url), { type: "module" });
+  const unchanged = () => history.current === before && team === beforeTeam && month === beforeMonth && !preview;
+  const job = new Worker(new URL("./roster-generator.js", import.meta.url), { type: "module" });
+  worker = job;
   $("generate").disabled = true;
-  notify("Generating draft...");
+  $("cancel-generation").hidden = false;
+  notify("Generating candidates...");
   const done = result => {
-    worker.terminate();
+    if (worker !== job) return;
+    job.terminate();
     worker = null;
-    if (history.current !== before || team !== beforeTeam || month !== beforeMonth || preview) {
-      render(); notify("Roster changed during generation. Run it again to apply the result."); return;
-    }
+    $("cancel-generation").hidden = true;
+    render();
+    if (!unchanged()) return notify("Roster changed during generation. Run it again.");
     if (result.status === "feasible") {
-      editDraft(d => { d.cells = result.cells; });
-      notify("Generated " + result.selectedCount + " staff assignments; review " + result.warnings.length + " warnings.");
+      notify(result.candidates.length + " candidate(s) ready to review. Draft unchanged.");
+      reviewCandidates(result.candidates, unchanged);
     } else {
-      render();
-      notify(({ timeout: "Search limit reached (feasibility unknown): ", infeasible: "No feasible draft: ", error: "Generator failed: " })[result.status] + result.reason);
+      notify(({ timeout: "Search limit reached (feasibility unknown): ", infeasible: "No feasible draft: ",
+        "missing-boundary": "Previous-month data unavailable: ", error: "Generator failed: ", cancelled: "" })[result.status] + result.reason);
     }
   };
-  worker.onmessage = event => done(event.data);
+  $("cancel-generation").onclick = () => done({ status: "cancelled", reason: "Generation cancelled. Draft unchanged." });
+  worker.onmessage = ({ data }) => {
+    if (worker !== job) return;
+    if (data.progress) notify("Searching candidate " + data.progress.variant + " of 3" + (data.progress.date ? " / " + data.progress.date : ""));
+    else done(data);
+  };
   worker.onerror = () => done({ status: "error", reason: "Worker unavailable." });
-  worker.postMessage({ context: current, options: { group: mode === "group" || mode === "unlocked" ? group : "" } });
+  worker.postMessage({ context: current, options: { strategy, people: ids, group: scope === "group" ? group : "",
+    keepAssigned: $("empty-only").checked } });
 }
 
-$("team").onchange = () => { team = $("team").value; group = ""; selected.clear(); anchor = ""; preview = false; render(); };
+$("team").onchange = () => {
+  team = $("team").value; group = ""; selected.clear(); anchor = ""; preview = false; showReport = false;
+  $("results").hidden = true; $("generation").value = team === "Affiliate" ? "pm" : "balanced"; render();
+};
 $("month").onchange = () => {
   const value = $("month").value;
   if (!$("month").checkValidity() || !datesFor(value).length) { $("month").value = month; return; }
-  month = value; selected.clear(); anchor = ""; preview = false; render();
+  month = value; selected.clear(); anchor = ""; preview = false; showReport = false; $("results").hidden = true; render();
 };
 $("group").onchange = () => { group = $("group").value; selected.clear(); anchor = ""; render(); };
 $("apply").onclick = () => bulk([$("assignment").value]);
@@ -406,6 +631,7 @@ $("preview").onclick = () => { preview = !preview; selected.clear(); anchor = ""
 $("confirm").onclick = confirmDialog;
 $("groups").onclick = groupsDialog;
 $("rules").onclick = rulesDialog;
+$("coverage").onclick = () => coverageDialog();
 $("generate").onclick = run;
 $("source").onchange = updateExportGroups;
 for (const format of ["csv", "xlsx"]) $(format).onclick = async () => {
@@ -414,4 +640,5 @@ for (const format of ["csv", "xlsx"]) $(format).onclick = async () => {
   finally { $(format).disabled = false; }
 };
 window.addEventListener("beforeunload", event => { if (dirty()) { event.preventDefault(); event.returnValue = ""; } });
+$("generation").value = team === "Affiliate" ? "pm" : "balanced";
 render();

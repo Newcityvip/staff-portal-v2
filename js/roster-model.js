@@ -57,15 +57,22 @@ export function draftFor(model, team, month) {
   return model.drafts[id];
 }
 export function groupMatches(model, id, month) {
-  const sorted = model.memberships.filter(m => m.id === id && m.from <= month).sort((a, b) => b.from.localeCompare(a.from));
+  const overrides = model.memberships.filter(m => m.id === id && m.temporary && m.from === month);
+  if (overrides.length) return overrides;
+  const sorted = model.memberships.filter(m => m.id === id && !m.temporary && m.from <= month).sort((a, b) => b.from.localeCompare(a.from));
   return sorted.filter(m => m.from === sorted[0]?.from);
 }
 export const groupOf = (model, id, month) => groupMatches(model, id, month)[0]?.group || "unassigned";
-export function transfer(model, id, group, from) {
-  const person = model.people.find(p => p.id === id);
-  if (!person || !datesFor(from).length || (group !== "unassigned" && !model.groups.some(g => g.id === group && g.team === person.team))) return false;
-  model.memberships = model.memberships.filter(m => m.id !== id || m.from !== from);
-  model.memberships.push({ id, group, from });
+export function transfer(model, id, group, from, temporary = false) {
+  return transferMany(model, [id], group, from, temporary);
+}
+export function transferMany(model, ids, group, from, temporary = false) {
+  const unique = new Set(ids);
+  const people = model.people.filter(p => unique.has(p.id));
+  if (!unique.size || people.length !== unique.size || new Set(people.map(p => p.team)).size !== 1 || !datesFor(from).length ||
+    (group !== "unassigned" && !model.groups.some(g => g.id === group && g.team === people[0].team))) return false;
+  model.memberships = model.memberships.filter(m => !unique.has(m.id) || m.from !== from || (temporary && !m.temporary));
+  model.memberships.push(...people.map(p => ({ id: p.id, group, from, temporary })));
   return true;
 }
 export function contextFor(model, team, month) {
@@ -103,12 +110,12 @@ export function coverage(people, dates, cells) {
     return counts;
   });
 }
-export function previousPattern(context) {
+export function previousPattern(context, keepAssigned = false) {
   const cells = { ...context.draft.cells };
   const previousDates = datesFor(previousMonth(context.month));
   for (const person of context.people) {
     context.dates.forEach((date, index) => {
-      if (isLocked(context, person.id, date)) return;
+      if (isLocked(context, person.id, date) || keepAssigned && cells[key(person.id, date)]) return;
       const source = previousDates[index];
       const value = source && context.previous[key(person.id, source)];
       if (value && context.catalog.some(s => s.id === value && s.kind !== "leave")) cells[key(person.id, date)] = value;

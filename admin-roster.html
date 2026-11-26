@@ -21,6 +21,7 @@
       <label>Group <select id="group"></select></label>
       <div class="spacer"></div>
       <button id="groups" type="button">Brand groups</button>
+      <button id="coverage" type="button">Coverage matrix</button>
       <button id="rules" type="button">Shift rules</button>
       <button id="save" type="button">Save draft</button>
       <button id="preview" type="button" class="primary" aria-pressed="false">Preview</button>
@@ -29,12 +30,19 @@
       <div class="board-heading">
         <div><h2 id="period"></h2><p id="summary"></p></div>
         <div class="actions">
-          <label class="sr-only" for="generation">Generation action</label>
+          <label class="sr-only" for="generation">Generation strategy</label>
           <select id="generation">
-            <option value="all">Generate all groups</option><option value="group">Generate selected group</option>
-            <option value="unlocked">Regenerate unlocked cells</option><option value="previous">Copy previous month pattern</option>
+            <option value="pm">PM priority</option><option value="balanced">Balanced</option>
+            <option value="custom">Custom coverage</option><option value="previous">Previous month pattern</option>
+            <option value="copy">Copy previous month (manual)</option>
           </select>
+          <label class="sr-only" for="scope">Generation scope</label>
+          <select id="scope">
+            <option value="all">Entire team</option><option value="group">Selected group</option><option value="staff">Selected staff</option>
+          </select>
+          <label class="toggle" title="When off, regenerate unlocked assignments"><input id="empty-only" type="checkbox"> Fill empty cells only</label>
           <button id="generate" type="button" class="primary">Run</button>
+          <button id="cancel-generation" type="button" hidden>Cancel</button>
         </div>
       </div>
       <div class="toolbar" aria-label="Assignments">
@@ -57,6 +65,7 @@
     </section>
     <section class="bottom" aria-label="Validation and export">
       <details id="validation"><summary id="validation-title">Validation</summary><div id="issues"></div></details>
+      <details id="results" hidden><summary>Generation report</summary><div id="result-report"></div></details>
       <div class="actions">
         <label class="sr-only" for="source">Export source</label><select id="source"></select>
         <label class="sr-only" for="export-group">Export group</label><select id="export-group"></select>

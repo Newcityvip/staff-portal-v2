@@ -67,6 +67,18 @@ summary { cursor: pointer; font-weight: 600; padding: 7px 0; }
 #issues ul { padding-left: 21px; }
 .error { color: #ffb9ad; }
 .warning { color: #f5cc8c; }
+.coverage td[data-shortfall=true] { background: #512e37; color: #ffd0c7; font-weight: 700; }
+.issue-link { color: inherit; background: none; border: none; text-align: left; padding: 2px 0; min-height: 26px; }
+.issue-link:hover { text-decoration: underline; }
+.dialog-table { overflow: auto; max-height: 45vh; border: 1px solid var(--line); }
+.dialog-table table { width: 100%; }
+.dialog-table th, .dialog-table td { padding: 5px; text-align: left; }
+.dialog-table th { min-width: 60px; }
+.dialog-table input[type=number] { width: 66px; }
+.check-grid { display: flex; flex-wrap: wrap; gap: 5px 10px; }
+.check-grid label { white-space: nowrap; }
+.report-table { max-width: min(86vw, 650px); }
+dialog { max-height: 88vh; overflow: auto; }
 #notice { min-height: 22px; margin-bottom: 18px; }
 dialog { color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; width: min(640px, 100% - 24px); padding: 16px; }
 dialog::backdrop { background: #030811bb; }

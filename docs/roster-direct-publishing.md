@@ -44,10 +44,15 @@ role, property or browser checkbox in this commit overrides the denial.
 
 ## Deployment sequence after a separately approved write window
 
-1. Verify the exact active Apps Script and Worker source against the reviewed
-   baselines; verify edge/IP trust and signed roster authorization using the
-   Phase 2A runbook. Confirm that the existing Apps Script URL and Worker
-   target stay the same.
+1. Read-only owner checks: in Apps Script, use **Deploy > Manage deployments**
+   to identify the active production version, then compare that version's
+   source (not the editor's current draft) with the reviewed baseline. In
+   Cloudflare **Workers & Pages**, inspect the active `staff-portal-api-v2`
+   deployment and compare its source and upstream target. Confirm that the
+   existing Apps Script URL is the target. Keep secrets out of logs and
+   exports for review. A public GET/OPTIONS smoke test is not source or
+   authenticated compatibility evidence. Verify edge/IP trust and signed
+   roster authorization using the Phase 2A runbook.
 2. On an isolated staging copy using the existing Apps Script connection
    pattern, add both new Apps Script files and apply the roster dispatch
    diff to the verified Code.gs. Keep the Worker and Apps Script publish
@@ -59,19 +64,44 @@ role, property or browser checkbox in this commit overrides the denial.
    the exact planning configuration fields (groups, memberships, rules,
    coverage, demand, preferences and transitions). Keep policy within Script
    Properties limits; no browser-written configuration is accepted.
-4. Establish a verifiable window: demonstrate leave pause and drained status,
-   fence and drain the legacy Staff Portal writers, and prevent all direct or
-   external writes and row moves. The approved verifier must fail closed if
-   any proof is missing or expired. No production enablement is possible
-   from this commit alone. Validate staging formatting, cache refresh,
-   authorization, partial failures and timeouts using that verifier.
-5. Stop for owner approval before any production release. Once an approved
-   verifier exists, deploy the compatible Apps Script and Worker first
-   with publishing still off, verify original reads and legacy behavior,
-   then enable the reviewed roster UI only for the approved window.
+4. Rehearse the shortest existing-controls window with a designated Super
+   Admin. In Leave Management, use its existing **Pause** control, wait for
+   the drain check, and refresh until the writer reports safe/idle and
+   there are no unresolved in-flight writes. Queued jobs may remain; do not
+   resume them during the window. This step needs no Leave Portal code,
+   spreadsheet, or configuration changes.
+5. Before any write window, verify an enforceable fence for **both** Staff
+   Portal schedule actions at Apps Script ingress, including the direct
+   web-app route, and drain requests admitted before the fence. Neither
+   legacy route is fenced by this commit. Inventory editors, owner-run
+   scripts/triggers, other deployments, and service accounts that can write
+   or move rows. Exclude or stop them for the entire window. A sheet
+   protection rule, screenshot, or instruction to stop editing is not
+   proof that owner-executed scripts cannot write. Keep attendance and
+   other routes available. The verifier must deny if any of this proof is
+   missing or expired. If the owner cannot prove these conditions using
+   existing controls, no live write window is available.
+6. Stop for owner approval before a production release. The shortest
+   independently releasable step is read-only: update the reviewed Apps
+   Script files on the **same** deployment URL, then the matching Worker
+   targeting that URL, with publishing disabled. Verify existing reads,
+   legacy behavior, authorized roster reads and rejected cross-team reads.
+   Then release the reviewed Pages frontend and verify **Admin Dashboard >
+   Monthly Roster Builder**. The dashboard session exposes only the link;
+   the roster sign-in and server checks enforce Super Admin and CSP roles.
+7. Publish enablement is a separate release after a verifier and legacy
+   ingress fence are approved. In isolated staging, validate formatting,
+   cache refresh, authorization, read-back, partial failures and timeouts,
+   and prove that the window fails closed. Deploy with publishing off;
+   enable only within a verified window after explicit approval. Verify
+   the receipt before reopening legacy writers, restoring direct editing,
+   and resuming the leave queue. No production enablement is possible from
+   this commit alone.
 
-For rollback, keep schedule writers fenced if a commit is uncertain,
-reconcile read-back and retain the journal, then disable publishing and
-restore the previous frontend, Worker revision and Apps Script version on
-the same deployment. Reverting code does not undo rows. Restore touched
+For rollback, withdraw publish access from the UI and keep schedule writers
+fenced if a commit is uncertain. Retain the receipt and reconcile the
+original operation before trying another mutation or disabling the recovery
+endpoint. Restore the previous Pages release, Worker revision, and Apps
+Script version on the same deployment URL, then smoke-test legacy routes
+before resuming writers. Reverting code does not undo rows. Restore touched
 cells only after matching their recorded after-images and obtaining approval.

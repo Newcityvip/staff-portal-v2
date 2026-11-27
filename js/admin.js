@@ -2,6 +2,8 @@
   const session = Portal.getSession();
   if (!session) return;
   if (session.role !== "admin") { location.href = "staff.html"; return; }
+  const monthlyRosterLink = document.getElementById("monthlyRosterLink");
+  if (monthlyRosterLink) monthlyRosterLink.hidden = false;
 
   let dashboard = {};
   let refreshPromise = null;

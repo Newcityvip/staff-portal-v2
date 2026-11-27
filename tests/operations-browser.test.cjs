@@ -139,6 +139,25 @@ for (const role of ['staff', 'admin']) {
     } finally { await f.context.close(); }
   });
 }
+
+test('admin dashboard links to the independently authenticated Monthly Roster Builder under the repository path', async () => {
+  const admin = await fixture('admin', { repoPath: true });
+  const staff = await fixture('staff', { repoPath: true });
+  try {
+    const roster = admin.page.getByRole('link', { name: 'Monthly Roster Builder' });
+    await roster.waitFor();
+    assert.equal(await roster.evaluate(link => link.href), 'https://portal.test/staff-portal-v2/admin-roster-source.html?source=live');
+    await roster.click();
+    await admin.page.getByText('Live roster access is disabled.', { exact: true }).waitFor();
+    assert.equal(admin.requests.filter(r => r.action === 'admin_login' || r.action === 'roster_v1').length, 0);
+    await staff.page.goto('https://portal.test/staff-portal-v2/admin.html');
+    await staff.page.waitForURL('**/staff.html');
+    assert.equal(await staff.page.getByRole('link', { name: 'Monthly Roster Builder' }).count(), 0);
+  } finally {
+    await admin.context.close();
+    await staff.context.close();
+  }
+});
 for (const code of ['OFF', 'AL', 'UL']) {
   test(`staff ${code}: valid schedule, attendance remains blocked`, async () => {
     const f = await fixture('staff', { response: payload('staff', code) });

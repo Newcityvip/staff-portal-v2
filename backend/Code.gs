@@ -3770,11 +3770,15 @@ function rosterReadV1(envelope) {
     if (!Number.isSafeInteger(envelope.time) || Math.abs(now - envelope.time) > 30000 ||
       typeof envelope.nonce !== "string" || !/^[a-f0-9-]{36}$/i.test(envelope.nonce) ||
       typeof envelope.ip !== "string" || !/^[0-9a-f:.]{3,64}$/i.test(envelope.ip) ||
-      typeof envelope.payload !== "string" || envelope.payload.length > 4096 ||
+      typeof envelope.payload !== "string" || envelope.payload.length >
+        (props.getProperty("ROSTER_PUBLISH_ENABLED") === "1" ? 262144 : 4096) ||
+      typeof envelope.signature !== "string" || !/^[a-f0-9]{64}$/.test(envelope.signature) ||
       !rosterEqual(envelope.signature, rosterMac(bridge, ["roster-v1", envelope.time, envelope.nonce,
         envelope.ip, envelope.payload].join("\n")))) return rosterReply(403);
     const payload = JSON.parse(envelope.payload);
-    if (!payload || (payload.operation !== "snapshot" && payload.operation !== "login")) return rosterReply(403);
+    if (!payload || !["snapshot", "login", "publish"].includes(payload.operation) ||
+      (payload.operation !== "publish" && envelope.payload.length > 4096)) return rosterReply(403);
+    if (payload.operation === "publish" && !["preview", "commit", "status", "recover"].includes(payload.action)) return rosterReply(403);
     if (!rosterSheetValues(SHEETS.IP).slice(1).some(function (row) {
       return clean(row[1]) === envelope.ip && safeUpper(row[3]) === "ACTIVE";
     })) return rosterReply(403);
@@ -3800,6 +3804,7 @@ function rosterReadV1(envelope) {
     if (!admin || !rosterEqual(session.credential, rosterCredential(sessionKey, admin))) return rosterReply(401);
     if (typeof payload.team !== "string" || !admin.teams.includes(payload.team)) return rosterReply(403);
     if (typeof payload.month !== "string" || !/^20\d\d-(0[1-9]|1[0-2])$/.test(payload.month)) return rosterReply(400);
+    if (payload.operation === "publish") return rosterPublishRequest(props, admin, sessionKey, payload);
     const snapshot = rosterSnapshot(props, payload.team, payload.month);
     return rosterReply(200, Object.assign(snapshot, {
       principal: rosterMac(sessionKey, "roster-draft-id\n" + admin.id), teams: admin.teams

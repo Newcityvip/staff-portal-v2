@@ -40,6 +40,7 @@ if ((fixtureMode || liveMode) && (!fixture || fixture.model?.leaveOrigin !== "pu
 }
 const initial = fixture || restore(localStorage);
 const publishFixture = loopback && fixtureMode && fixture?.publishFixture && document.body.dataset.rosterPublishFixture === "enabled";
+const publishLive = liveMode && fixture?.livePublishing === true && location.protocol === "https:";
 const loaded = structuredClone(initial.model);
 const history = createHistory(initial.model);
 let team = initial.team, month = initial.month, group = "", preview = false;
@@ -47,7 +48,7 @@ let saved = JSON.stringify(initial), current, clipboard = [], selected = new Set
 let showReport = false;
 if (fixture) {
   $("roster-mode").textContent = publishFixture ? "Fixture source / Simulated publishing enabled" :
-    (liveMode ? "Live read-only" : "Fixture source") + " / Publishing disabled";
+    publishLive ? "Live source / Reviewed publishing" : (liveMode ? "Live read-only" : "Fixture source") + " / Publishing disabled";
   $("team").disabled = $("month").disabled = true;
   $("roster-mode").append(document.createTextNode(" / "));
   const back = document.createElement("a");
@@ -764,9 +765,11 @@ function confirmDialog() {
   }, { disabled: "" });
   acknowledgement.onchange = () => { accept.disabled = !acknowledgement.checked || Boolean(issues.errors.length); };
   openDialog("Simulated final confirmation", [
-    make("p", publishFixture ? "This can publish to the local fixture only. No production writes." : "Production publishing is unavailable in prototype mode."),
+    make("p", publishFixture ? "This can publish to the local fixture only. No production writes." :
+      publishLive ? "Review the exact schedule changes before publishing." : "Production publishing is unavailable in prototype mode."),
     make("p", "Please check the Future_Leave_Requests tab in the Staff Schedule & Leave Management spreadsheet and ensure all approved leave requests for the selected month are included in the roster."),
-    ...(publishFixture ? [row(button("Review simulated publish", () => publishFixtureDialog(revision), { class: "primary" }))] : []),
+    ...(publishFixture || publishLive ? [row(button(publishFixture ? "Review simulated publish" : "Review schedule changes",
+      () => publishRosterDialog(revision), { class: "primary" }))] : []),
     row(label("I acknowledge the reminder", acknowledgement)),
     ...(issues.warnings.some(issue => issue.type === "boundary")
       ? [make("p", "Month-boundary data is incomplete. This synthetic snapshot is provisional.", { class: "warning" })] : []),
@@ -779,11 +782,22 @@ function confirmDialog() {
   ]);
 }
 
-async function publishFixtureDialog(revision) {
-  if (!publishFixture || revision !== history.current) return;
+async function publishRosterDialog(revision) {
+  if (!(publishFixture || publishLive) || revision !== history.current) return;
   const scope = { team, month };
   const status = make("p", "Validating fixture draft...", { role: "status" });
   const request = async body => {
+    if (publishLive) return new Promise((resolve, reject) => {
+      const channel = new MessageChannel();
+      const finish = (error, data) => {
+        clearTimeout(deadline);
+        channel.port1.close();
+        if (error) reject(error); else resolve(data);
+      };
+      const deadline = setTimeout(() => finish(Error("Publishing response unavailable.")), 14000);
+      channel.port1.onmessage = ({ data }) => finish(data?.networkError ? Error("Publishing response unavailable.") : null, data);
+      window.parent.postMessage({ type: "roster-editor-publish", body: { ...scope, ...body } }, location.origin, [channel.port2]);
+    });
     const response = await fetch("./roster-fixture/publish", {
       method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
       signal: AbortSignal.timeout(8000), body: JSON.stringify({ ...scope, ...body })
@@ -791,13 +805,13 @@ async function publishFixtureDialog(revision) {
     return response.json();
   };
   const stillOpen = () => status.isConnected && $("dialog").open && revision === history.current && team === scope.team && month === scope.month;
-  openDialog("Review simulated publish", [status]);
+  openDialog(publishFixture ? "Review simulated publish" : "Review schedule changes", [status]);
   const records = current.people.flatMap(person => current.dates.map(date => ({
     staffId: person.id, date, shift: current.draft.cells[key(person.id, date)]
   })));
   try {
-    const result = await request({ action: "preview", records, sourceRevision: fixture.revision,
-      configuration: fixtureTools.publicationConfiguration(current) });
+    const reviewed = { records, sourceRevision: fixture.revision, configuration: fixtureTools.publicationConfiguration(current) };
+    const result = await request({ action: "preview", ...reviewed });
     if (!stillOpen()) return;
     if (!result.ok) {
       status.textContent = result.message;
@@ -807,11 +821,11 @@ async function publishFixtureDialog(revision) {
     const acknowledgement = input("checkbox", "");
     const counts = result.counts;
     status.textContent = counts.new + " new / " + counts.updated + " updated / " + counts.unchanged + " unchanged / " +
-      counts.conflicting + " conflicting. No production writes.";
+      counts.conflicting + " conflicting." + (publishFixture ? " No production writes." : "");
     const receipt = make("p", "", { role: "status" });
     const guidance = make("p", "", { class: "muted" });
     const show = response => {
-      receipt.textContent = response.state === "verified" ? "Simulated schedule write verified." :
+      receipt.textContent = response.state === "verified" ? (publishFixture ? "Simulated schedule write verified." : "Schedule write verified.") :
         response.state === "not-written" ? "Reconciled: no rows were written." :
         response.state === "uncertain" ? "Write outcome is uncertain." :
         response.message || "Write not verified. Check operation status before trying again.";
@@ -841,8 +855,8 @@ async function publishFixtureDialog(revision) {
       if (!stillOpen() || !acknowledgement.checked || confirm.disabled) return;
       confirm.disabled = acknowledgement.disabled = true;
       check.hidden = false;
-      await inspect({ action: "commit", acknowledged: true },
-        "Write outcome unknown. Check operation status; do not resubmit.", "Publishing to the local fixture...");
+      await inspect({ action: "commit", acknowledged: true, ...(publishLive ? { ...reviewed, ticket: result.ticket } : {}) },
+        "Write outcome unknown. Check operation status; do not resubmit.", publishFixture ? "Publishing to the local fixture..." : "Publishing reviewed schedule...");
     }, { disabled: "", class: "primary" });
     check.hidden = recovery.hidden = true;
     acknowledgement.onchange = () => { confirm.disabled = !acknowledgement.checked; };
@@ -850,7 +864,8 @@ async function publishFixtureDialog(revision) {
     changes.append(make("summary", "Show changed rows"), reportTable(["Staff ID", "Date", "Before", "After"],
       result.changes.map(({ before, after }) => [after.staff_id, after.schedule_date, before?.code || "-", after.shift_code])));
     status.after(make("p", "Manually verify Future_Leave_Requests for this roster before publishing."),
-      row(label("I verified the leave requests", acknowledgement), confirm), row(check, recovery), receipt, guidance, changes);
+      row(label("I verified the leave requests", acknowledgement), confirm), row(check, recovery), receipt, guidance,
+      ...(publishLive ? [make("p", "Operation ID: " + result.id, { class: "muted" })] : []), changes);
   } catch {
     if (stillOpen()) status.textContent = "Fixture publish preview unavailable.";
   }

@@ -7,7 +7,7 @@ const legacyCors = {
 const secretPattern = /^[a-f0-9]{64}$/i;
 const trustedIp = /^[0-9a-f:.]{3,64}$/i;
 const token = /^[A-Za-z0-9_-]{1,1024}\.[a-f0-9]{64}$/;
-const actions = new Map([["/roster/v1/login", "login"], ["/roster/v1/snapshot", "snapshot"]]);
+const actions = new Map([["/roster/v1/login", "login"], ["/roster/v1/snapshot", "snapshot"], ["/roster/v1/publish", "publish"]]);
 const encoder = new TextEncoder();
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
@@ -25,7 +25,7 @@ function rosterResponse(body, status, origin = "") {
   } });
 }
 
-async function boundedJson(request) {
+async function boundedJson(request, limit = 2048) {
   const reader = request.body?.getReader();
   if (!reader) throw new Error("Missing body");
   const parts = [];
@@ -35,7 +35,7 @@ async function boundedJson(request) {
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > 2048) { await reader.cancel(); throw new Error("Body too large"); }
+      if (total > limit) { await reader.cancel(); throw new Error("Body too large"); }
       parts.push(utf8.decode(value, { stream: true }));
     }
     parts.push(utf8.decode());
@@ -61,21 +61,29 @@ async function roster(request, env, url, io) {
   if (request.method !== "POST") return error(405);
   if (env.ROSTER_ENABLED !== "1" || !secretPattern.test(env.ROSTER_BRIDGE_KEY || "") ||
     !/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(env.GAS_URL || "")) return error(503);
+  if (operation === "publish" && env.ROSTER_PUBLISH_ENABLED !== "1") return error(503);
   const ip = request.headers.get("CF-Connecting-IP") || "";
   if (!io.trustedEdge(request) || request.headers.has("CF-Worker") ||
     ip.toLowerCase() === "2a06:98c0:3600::103" || !trustedIp.test(ip)) return error(403);
   if (!/^application\/json(?:\s*;|$)/i.test(request.headers.get("Content-Type") || "")) return error(415);
   let body;
-  try { body = await boundedJson(request); } catch { return error(400); }
+  try { body = await boundedJson(request, operation === "publish" ? 240000 : 2048); } catch { return error(400); }
   if (!body || typeof body !== "object" || Array.isArray(body)) return error(400);
   const allowed = operation === "login" ? ["login_id", "password"] : ["team", "month"];
-  if (Object.keys(body).length !== 2 || !allowed.every(k => typeof body[k] === "string")) return error(400);
+  if (!allowed.every(k => typeof body[k] === "string")) return error(400);
+  if (operation === "publish") {
+    const fields = { preview: ["records", "sourceRevision", "configuration"], commit: ["records", "sourceRevision", "configuration", "id", "ticket", "acknowledged"],
+      status: ["id"], recover: ["id"] };
+    if (!Object.hasOwn(fields, body.action) ||
+      Object.keys(body).length !== 3 + fields[body.action].length ||
+      !fields[body.action].every(k => Object.hasOwn(body, k))) return error(400);
+  } else if (Object.keys(body).length !== 2) return error(400);
   if (operation === "login" && (!body.login_id.trim() || body.login_id.length > 128 ||
     !body.password || body.password.length > 256)) return error(400);
   const session = request.headers.get("Authorization")?.match(/^Bearer ([^ ]+)$/)?.[1] || "";
-  if (operation === "snapshot" && !token.test(session)) return error(401);
+  if (operation !== "login" && !token.test(session)) return error(401);
   const payload = JSON.stringify(operation === "login" ? { operation, login_id: body.login_id, password: body.password } :
-    { operation, team: body.team, month: body.month, session });
+    { ...body, operation, session });
   try {
     const time = io.now(), nonce = crypto.randomUUID();
     const signature = await rosterSignature(env.ROSTER_BRIDGE_KEY, time, nonce, ip, payload);
@@ -86,6 +94,12 @@ async function roster(request, env, url, io) {
     });
     if (!response.ok) return error(502);
     const result = await response.json();
+    if (operation === "publish" && [400, 401, 403, 404, 409, 429, 503].includes(result.status) && result.body?.ok === false) {
+      return rosterResponse({ ok: false, ...(typeof result.body.message === "string" ? { message: result.body.message } : {}),
+        ...(Array.isArray(result.body.conflicts) ? { conflicts: result.body.conflicts } : {}),
+        ...(result.body.state === "uncertain" ? { state: "uncertain", canRecover: result.body.canRecover === true } : {})
+      }, result.status, origin);
+    }
     if (![200, 400, 401, 403, 429, 503].includes(result.status)) return error(502);
     if (result.status !== 200) return error(result.status);
     if (result.body?.ok !== true) return error(502);

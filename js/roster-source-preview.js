@@ -1,18 +1,19 @@
 import { datesFor, draftFor } from "./roster-model.js";
 import { createSourceReader, draftComparison, fixtureDraftKey, fixtureHandoffKey, liveDraftKey, sourceDraft } from "./roster-source.js";
-import { rosterLiveEnabled, rosterWorker } from "./roster-live-config.js";
+import * as liveConfig from "./roster-live-config.js";
 
 const $ = id => document.getElementById(id);
 const loopback = location.protocol === "http:" && location.hostname === "127.0.0.1";
 const filters = new URLSearchParams(location.search);
 const live = filters.get("source") === "live";
 const publishFixture = loopback && !live && document.body.dataset.rosterPublishFixture === "enabled";
-const enabled = live && rosterLiveEnabled && (location.protocol === "https:" || loopback);
+const enabled = live && liveConfig.rosterLiveEnabled && (location.protocol === "https:" || loopback);
+const livePublishing = enabled && location.protocol === "https:" && liveConfig.rosterPublishEnabled === true;
 const draftKey = live ? liveDraftKey : fixtureDraftKey;
 let session, expiry, editor, handoff, reader;
-const post = (operation, data, signal) => fetch(rosterWorker + "/roster/v1/" + operation, {
+const post = (operation, data, signal) => fetch(liveConfig.rosterWorker + "/roster/v1/" + operation, {
   method: "POST", credentials: "omit", cache: "no-store", redirect: "error", signal,
-  headers: { "Content-Type": "application/json", ...(session && operation === "snapshot" ? { Authorization: "Bearer " + session.token } : {}) },
+  headers: { "Content-Type": "application/json", ...(session && operation !== "login" ? { Authorization: "Bearer " + session.token } : {}) },
   body: JSON.stringify(data)
 });
 const makeReader = () => createSourceReader({ request: (team, month, signal) => {
@@ -111,7 +112,7 @@ function prepare(mode) {
     if (live) {
       if (!session || source?.revision !== revision || source?.team !== team || source?.month !== month) return;
       if (editor && !confirm("Replace the open editor? Unsaved changes will be lost.")) return;
-      handoff = { model, team, month, revision, principal };
+      handoff = { model, team, month, revision, principal, livePublishing };
       editor = element("iframe", "");
       editor.title = "Local roster editor"; editor.width = "100%"; editor.height = "960";
       editor.src = "admin-roster.html?source=live";
@@ -154,6 +155,18 @@ window.addEventListener("message", event => {
   if (!session || !editor || event.origin !== location.origin || event.source !== editor.contentWindow) return;
   if (event.data?.type === "roster-editor-ready") event.source.postMessage({ type: "roster-editor-model", handoff }, location.origin);
   if (event.data?.type === "roster-editor-back") showEditor(false);
+  if (event.data?.type === "roster-editor-publish" && event.ports[0]) {
+    const port = event.ports[0], data = event.data.body;
+    if (!livePublishing || data?.team !== handoff.team || data.month !== handoff.month ||
+      !["preview", "commit", "status", "recover"].includes(data.action)) {
+      port.postMessage({ ok: false, message: "Publishing is disabled or outside the approved scope." });
+      port.close();
+      return;
+    }
+    post("publish", data, AbortSignal.timeout(12000)).then(response => response.json()).then(result => {
+      port.postMessage(result);
+    }).catch(() => port.postMessage({ networkError: true })).finally(() => port.close());
+  }
 });
 $("resume-editor").onclick = () => showEditor(true);
 $("roster-logout").onclick = () => endSession("Signed out.");

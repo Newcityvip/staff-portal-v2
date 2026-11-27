@@ -60,8 +60,10 @@ export function createRosterPublisher({ readSource, readConfiguration, windowVer
     }
     return { ...plan(source, model, records), revision: source.revision, fingerprint: digest([actor.id, payload, model, records, configuration]) };
   }
-  function publicOperation(operation) {
-    return { id: operation.id, state: operation.state, counts: operation.summary };
+  const canRecover = (actor, operation) => actor.role === "SUPER_ADMIN" &&
+    ["uncertain", "pending", "rollback-pending"].includes(operation?.state);
+  function publicOperation(operation, actor) {
+    return { id: operation.id, state: operation.state, counts: operation.summary, canRecover: canRecover(actor, operation) };
   }
   return async function publish(actor, request) {
     if (!request || !allowed(actor, request.team)) return deny(403, "Publishing is not authorized for this team.");
@@ -69,7 +71,7 @@ export function createRosterPublisher({ readSource, readConfiguration, windowVer
     const { action, team, month } = request;
     const known = request.id && await journal.get(request.id);
     if (known && (known.actor !== actor.id || known.team !== team || known.month !== month)) return deny(403, "Operation is outside this scope.");
-    if (action === "status") return known ? reply(200, publicOperation(known)) : deny(404, "Operation not found.");
+    if (action === "status") return known ? reply(200, publicOperation(known, actor)) : deny(404, "Operation not found.");
     if (action === "preview") {
       if (!Array.isArray(request.records) || !request.records.length || request.records.length > 6200) return deny(400, "Invalid roster size.");
       try {
@@ -85,13 +87,13 @@ export function createRosterPublisher({ readSource, readConfiguration, windowVer
       } catch (error) { return reply(409, { message: error.message, counts: { new: 0, updated: 0, unchanged: 0, conflicting: 1 } }); }
     }
     if (!["commit", "recover", "rollback"].includes(action)) return deny(400, "Invalid publishing action.");
-    if (known && action === "commit") return reply(200, publicOperation(known));
+    if (known && action === "commit") return reply(200, publicOperation(known, actor));
     const preview = previews.get(request.id);
     if (action === "commit" && (!preview || preview.until <= now() || preview.actor !== actor.id || preview.month !== month || preview.team !== team)) {
       return deny(409, "Preview expired or changed. Review the roster again.");
     }
     if (action === "commit" && request.acknowledged !== true) return deny(400, "Confirm the manual leave verification first.");
-    if (action === "recover" && (actor.role !== "SUPER_ADMIN" || !known || !["uncertain", "pending", "rollback-pending"].includes(known.state))) {
+    if (action === "recover" && !canRecover(actor, known)) {
       return deny(403, "Recovery is not authorized.");
     }
     if (action === "rollback" && (actor.role !== "SUPER_ADMIN" || known?.state !== "verified" ||
@@ -107,7 +109,7 @@ export function createRosterPublisher({ readSource, readConfiguration, windowVer
         const state = known.state === "rollback-pending" && outcome === "not-written" ? "rolled-back" : outcome;
         await invalidate(team, month);
         await journal.put({ ...known, state });
-        return reply(200, publicOperation({ ...known, state }));
+        return reply(200, publicOperation({ ...known, state }, actor));
       }
       if (await journal.unresolved()) return deny(409, "Resolve the previous uncertain schedule write first.");
       if (action === "rollback") {
@@ -122,7 +124,7 @@ export function createRosterPublisher({ readSource, readConfiguration, windowVer
         }
         await invalidate(team, month);
         await journal.put({ ...operation, state: "rolled-back" });
-        return reply(200, publicOperation({ ...operation, state: "rolled-back" }));
+        return reply(200, publicOperation({ ...operation, state: "rolled-back" }, actor));
       }
       const fresh = await inputs(actor, team, month, preview.records, preview.configuration);
       if (!exact(fresh.fingerprint, preview.fingerprint) || fresh.errors.length) return deny(409, "Schedule or rules changed. Review again.");
@@ -135,11 +137,12 @@ export function createRosterPublisher({ readSource, readConfiguration, windowVer
       await invalidate(team, month);
       await journal.put({ ...operation, state: "verified" });
       previews.delete(preview.id);
-      return reply(200, publicOperation({ ...operation, state: "verified" }));
+      return reply(200, publicOperation({ ...operation, state: "verified" }, actor));
     } catch {
       if (!operation) return deny(409, "Schedule or validation inputs unavailable. Review again.");
       try { await journal.put({ ...operation, state: operation.state === "rollback-pending" ? "rollback-pending" : "uncertain" }); } catch { /* retain pending journal */ }
-      return reply(503, { id: operation.id, state: "uncertain", message: "Write outcome is uncertain. Reconcile before trying again." });
+      return reply(503, { id: operation.id, state: "uncertain", canRecover: canRecover(actor, { state: "uncertain" }),
+        message: "Write outcome is uncertain. Check the operation before trying again." });
     } finally { busy = false; }
   };
 }

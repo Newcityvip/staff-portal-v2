@@ -809,26 +809,40 @@ async function publishFixtureDialog(revision) {
     status.textContent = counts.new + " new / " + counts.updated + " updated / " + counts.unchanged + " unchanged / " +
       counts.conflicting + " conflicting. No production writes.";
     const receipt = make("p", "", { role: "status" });
+    const guidance = make("p", "", { class: "muted" });
     const show = response => {
       receipt.textContent = response.state === "verified" ? "Simulated schedule write verified." :
         response.state === "not-written" ? "Reconciled: no rows were written." :
+        response.state === "uncertain" ? "Write outcome is uncertain." :
         response.message || "Write not verified. Check operation status before trying again.";
+      if (typeof response.canRecover === "boolean") recovery.hidden = !response.canRecover;
+      if (["verified", "not-written", "rolled-back"].includes(response.state)) {
+        recovery.hidden = true;
+        guidance.textContent = "No recovery is required.";
+      } else if (response.canRecover === true) {
+        guidance.textContent = "Reconcile the recorded operation without submitting another write.";
+      } else if (response.state === "uncertain") {
+        guidance.textContent = "Do not resubmit. A Super Admin must review the uncertain operation.";
+      }
     };
-    const check = button("Check Operation Status", async () => {
-      try { show(await request({ action: "status", id: result.id })); }
-      catch { receipt.textContent = "Status unavailable. Do not resubmit."; }
-    });
-    const recovery = button("Reconcile Uncertain Write", async () => {
-      try { show(await request({ action: "recover", id: result.id })); }
-      catch { receipt.textContent = "Reconciliation unavailable. Keep publishing paused."; }
-    });
+    const inspect = async (body, fallback, progress) => {
+      if (check.disabled || !stillOpen()) return;
+      check.disabled = recovery.disabled = true;
+      if (progress) receipt.textContent = progress;
+      try {
+        const response = await request({ ...body, id: result.id });
+        if (stillOpen()) show(response);
+      } catch { if (stillOpen()) receipt.textContent = fallback; }
+      finally { check.disabled = recovery.disabled = false; }
+    };
+    const check = button("Check Operation Status", () => inspect({ action: "status" }, "Status unavailable. Do not resubmit."));
+    const recovery = button("Reconcile Uncertain Write", () => inspect({ action: "recover" }, "Reconciliation unavailable. Keep publishing paused."));
     const confirm = button("Publish Final Schedule", async () => {
       if (!stillOpen() || !acknowledgement.checked || confirm.disabled) return;
       confirm.disabled = acknowledgement.disabled = true;
-      check.hidden = recovery.hidden = false;
-      receipt.textContent = "Publishing to the local fixture...";
-      try { show(await request({ action: "commit", id: result.id, acknowledged: true })); }
-      catch { receipt.textContent = "Write outcome unknown. Check operation status; do not resubmit."; }
+      check.hidden = false;
+      await inspect({ action: "commit", acknowledged: true },
+        "Write outcome unknown. Check operation status; do not resubmit.", "Publishing to the local fixture...");
     }, { disabled: "", class: "primary" });
     check.hidden = recovery.hidden = true;
     acknowledgement.onchange = () => { confirm.disabled = !acknowledgement.checked; };
@@ -836,7 +850,7 @@ async function publishFixtureDialog(revision) {
     changes.append(make("summary", "Show changed rows"), reportTable(["Staff ID", "Date", "Before", "After"],
       result.changes.map(({ before, after }) => [after.staff_id, after.schedule_date, before?.code || "-", after.shift_code])));
     status.after(make("p", "Manually verify Future_Leave_Requests for this roster before publishing."),
-      row(label("I verified the leave requests", acknowledgement), confirm), row(check, recovery), receipt, changes);
+      row(label("I verified the leave requests", acknowledgement), confirm), row(check, recovery), receipt, guidance, changes);
   } catch {
     if (stillOpen()) status.textContent = "Fixture publish preview unavailable.";
   }

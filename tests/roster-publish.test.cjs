@@ -92,10 +92,27 @@ for (const fault of ['interrupt-before', 'interrupt-after', 'mismatch']) {
     const review = await f.request(superAdmin, draft);
     const command = commit(draft, review.body.id);
     assert.equal((await f.request(superAdmin, command)).body.state, 'uncertain');
-    assert.equal((await f.request(superAdmin, command)).body.state, 'uncertain');
+    const retry = await f.request(superAdmin, command);
+    assert.equal(retry.body.state, 'uncertain');
+    assert.equal(retry.body.canRecover, true);
     assert.equal(f.attempts, 1);
     const recovered = await f.request(superAdmin, { ...command, action: 'recover' });
     if (fault === 'mismatch') assert.equal(recovered.status, 409);
-    else assert.equal(recovered.body.state, fault === 'interrupt-before' ? 'not-written' : 'verified');
+    else {
+      assert.equal(recovered.body.state, fault === 'interrupt-before' ? 'not-written' : 'verified');
+      assert.equal((await f.request(superAdmin, { ...command, action: 'status' })).body.canRecover, false);
+      assert.equal((await f.request(superAdmin, { ...command, action: 'recover' })).status, 403);
+    }
+    assert.equal(f.attempts, 1);
   });
 }
+
+test('CSP Admin can see their own uncertain receipt but cannot recover it', async () => {
+  const f = publishFixture(fixtureRows, 'interrupt-after'), draft = await data('CSP');
+  const preview = await f.request(cspAdmin, draft);
+  const command = commit(draft, preview.body.id);
+  assert.equal((await f.request(cspAdmin, command)).body.state, 'uncertain');
+  assert.equal((await f.request(cspAdmin, { ...command, action: 'status' })).body.canRecover, false);
+  assert.equal((await f.request(cspAdmin, { ...command, action: 'recover' })).status, 403);
+  assert.equal(f.attempts, 1);
+});

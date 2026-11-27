@@ -104,6 +104,53 @@ test('December Affiliate Balanced preview exposes confirmation above the fold wi
   assert.deepEqual(errors, []);
 });
 
+test('Chrome recovers a lost post-write response once and hides recovery on the verified receipt', async t => {
+  const { page, base, external, errors } = await setup(t, { publishing: true, fault: 'interrupt-after' }, 1280);
+  const actions = [];
+  let interrupted;
+  await page.route(base + 'roster-fixture/publish', async route => {
+    const action = route.request().postDataJSON().action;
+    actions.push(action);
+    if (action !== 'commit') return route.continue();
+    interrupted = await (await route.fetch()).json();
+    return route.abort('connectionreset');
+  });
+  await page.goto(base + 'admin-roster-source.html?team=Affiliate&month=2026-12');
+  await page.getByRole('button', { name: 'Open Published Copy' }).click();
+  await page.selectOption('#generation', 'balanced');
+  await page.click('#generate');
+  await page.getByRole('button', { name: 'Apply candidate', exact: true }).click();
+  await page.click('#preview');
+  await page.click('#confirm');
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('button', { name: 'Review simulated publish' }).click();
+  await dialog.getByLabel('I verified the leave requests').check();
+  const publish = dialog.getByRole('button', { name: 'Publish Final Schedule' });
+  const status = dialog.getByRole('button', { name: 'Check Operation Status' });
+  const recovery = dialog.getByRole('button', { name: 'Reconcile Uncertain Write' });
+  await publish.click();
+  await dialog.getByText(/Write outcome unknown/).waitFor();
+  assert.equal(interrupted.state, 'uncertain');
+  assert.equal(await publish.isDisabled(), true);
+  assert.equal(await recovery.count(), 0);
+  await status.click();
+  await dialog.getByText('Write outcome is uncertain.', { exact: true }).waitFor();
+  await recovery.click();
+  await dialog.getByText('No recovery is required.', { exact: true }).waitFor();
+  assert.equal(await recovery.count(), 0);
+  const statusReply = page.waitForResponse(r => r.url().endsWith('/publish') && r.request().postDataJSON().action === 'status');
+  await status.click();
+  assert.equal((await (await statusReply).json()).state, 'verified');
+  assert.equal(await recovery.count(), 0);
+  assert.deepEqual(actions, ['preview', 'commit', 'status', 'recover', 'status']);
+  await dialog.getByRole('button', { name: 'Close dialog' }).click();
+  await page.getByRole('link', { name: 'Review source' }).click();
+  await page.getByText(/Last refreshed/).waitFor();
+  assert.equal(await page.locator('#source-schedule tbody tr').count(), 158);
+  assert.deepEqual(external, []);
+  assert.deepEqual(errors, []);
+});
+
 test('desktop fixture source opens a separate editable draft and retains published leave on regeneration', async t => {
   const { page, base, external, errors, reads } = await setup(t, {}, 1360);
   await page.goto(base + 'admin-roster-source.html?publish=fixture');

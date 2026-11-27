@@ -92,3 +92,75 @@ test('mobile fixture CSP denies Affiliate, retries failed reads and reports stal
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);
 });
+
+for (const partial of [false, true]) {
+  test('fixture staffing recovery: ' + (partial ? 'one tested allocation improves but does not unblock confirmation' :
+    'coordinated allocation fully resolves coverage with approval and undo'), async t => {
+    const { page, base, errors, external } = await setup(t, {}, partial ? 390 : 1360);
+    await page.goto(base + 'admin-roster-source.html');
+    await page.getByRole('button', { name: 'Open Published Copy' }).click();
+    await page.getByText(/Fixture source/).waitFor();
+    await page.evaluate(async () => {
+      const { fixtureHandoffKey } = await import('./js/roster-source.js');
+      const { draftFor } = await import('./js/roster-model.js');
+      const handoff = JSON.parse(sessionStorage.getItem(fixtureHandoffKey));
+      draftFor(handoff.model, handoff.team, handoff.month).coverage['old|*|PM'] = 1;
+      sessionStorage.setItem(fixtureHandoffKey, JSON.stringify(handoff));
+    });
+    await page.reload();
+    await page.locator('#period').getByText('December 2026', { exact: true }).waitFor();
+    const dialog = page.locator('#dialog'), initial = await page.locator('#summary').textContent();
+    const cell = (id, date) => page.locator('[data-key="' + id + '|' + date + '"]');
+    await page.click('#generate');
+    await dialog.getByRole('heading', { name: 'Staffing check before generation' }).waitFor();
+    await dialog.getByText(/5 unassigned staff/).waitFor();
+    await dialog.getByRole('cell', { name: 'OLD Brands', exact: true }).waitFor();
+    await dialog.getByRole('button', { name: 'Generate Baseline & Review' }).click();
+    await dialog.getByRole('button', { name: 'Review monthly candidates' }).click();
+    assert.equal(await dialog.getByRole('button', { name: 'Test Staff Allocation' }).isDisabled(), true);
+    assert.doesNotMatch(await dialog.textContent(), /Lowers the required staffing/);
+    if (partial) {
+      await dialog.getByRole('button', { name: 'Open Provisional in Editor' }).click();
+      assert.notEqual(await cell('TEST-A-1', '2026-12-02').textContent(), '-');
+      await cell('TEST-A-4', '2026-12-09').click();
+      assert.equal(await page.locator('#apply').isEnabled(), true);
+      await page.selectOption('#assignment', 'OFF');
+      await page.click('#apply');
+      assert.equal(await cell('TEST-A-4', '2026-12-09').textContent(), 'OFF');
+      await page.click('#undo');
+      await page.click('#undo-recovery');
+      assert.equal(await page.locator('#summary').textContent(), initial);
+      await page.click('#generate');
+      await dialog.getByRole('button', { name: 'Generate Baseline & Review' }).click();
+      await dialog.getByRole('button', { name: 'Review monthly candidates' }).click();
+      await dialog.getByLabel('Roster Fixture 1 (TEST-A-1)', { exact: true }).selectOption('old');
+    } else await dialog.getByRole('button', { name: 'Suggest Coordinated Allocation' }).click();
+    await dialog.getByRole('button', { name: 'Test Staff Allocation' }).click();
+    await dialog.getByText(partial ? /31 before \/ 11 after.*Validated partial/ : /31 before \/ 0 after.*Full resolution/).waitFor();
+    assert.equal(await page.locator('#summary').textContent(), initial);
+    await dialog.getByRole('button', { name: partial ? 'Apply Partial Improvement' : 'Apply Changes & Regenerate' }).click();
+    await dialog.getByRole('heading', { name: partial ? 'Partial improvement applied' : 'Staff allocation applied' }).waitFor();
+    assert.equal(await cell('TEST-A-2', '2026-12-06').textContent(), 'AL');
+    await dialog.getByRole('button', { name: 'Continue Editing' }).click();
+    await page.selectOption('#group', 'old');
+    assert.equal(await page.locator('[data-person]').count(), partial ? 1 : 5);
+    await page.selectOption('#group', '');
+    if (partial) {
+      assert.equal(await page.locator('#preview').isDisabled(), true);
+      assert.equal(await page.locator('#confirm').isVisible(), false);
+    } else {
+      await page.click('#preview');
+      await page.click('#confirm');
+      await dialog.getByLabel('I acknowledge the reminder').check();
+      assert.equal(await dialog.getByRole('button', { name: 'Save simulated snapshot' }).isEnabled(), true);
+      await dialog.getByRole('button', { name: 'Close dialog' }).click();
+      await page.click('#preview');
+    }
+    await page.click('#undo-recovery');
+    assert.equal(await page.locator('#summary').textContent(), initial);
+    await page.selectOption('#group', 'old');
+    assert.equal(await page.locator('[data-person]').count(), 0);
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+  });
+}

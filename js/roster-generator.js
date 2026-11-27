@@ -101,6 +101,56 @@ function generationScope(context, { group = "", people } = {}) {
     .filter(id => !people || context.people.some(person => person.group === id && selected.has(person.id)));
   return { selected, groups };
 }
+export function staffingPreflight(context, options = {}) {
+  const { selected, groups } = generationScope(context, options);
+  const empty = groups.filter(id => id !== "unassigned" && !context.people.some(p => p.group === id))
+    .map(id => {
+      const days = context.dates.map(date => Math.max(pairedPolicy(context) ? demandRule(context, id, date).minWork : 0,
+        context.catalog.filter(s => s.kind === "work").reduce((sum, s) => sum + coverageRule(context, id, date, s.id).min, 0)));
+      return { id, name: context.groups.find(g => g.id === id)?.name, peak: Math.max(0, ...days),
+        slots: days.reduce((sum, n) => sum + n, 0) };
+    }).filter(group => group.slots > 0);
+  const unassigned = context.people.filter(p => p.group === "unassigned" && selected.has(p.id));
+  const moves = [], assigned = new Map();
+  if (!options.group && !options.people) for (const person of unassigned) {
+    if (context.conflicts?.includes(person.id)) continue;
+    const target = [...empty].sort((a, b) => (b.slots / ((assigned.get(b.id) || 0) + 1)) -
+      (a.slots / ((assigned.get(a.id) || 0) + 1))).find(g => context.catalog.some(s => s.kind === "work" &&
+        eligible(staffRules(context, person.id), s) && context.dates.some(date =>
+          !protectedNonWork(context, key(person.id, date)) && coverageRule(context, g.id, date, s.id).enabled &&
+          (coverageRule(context, g.id, date, s.id).min > 0 || (pairedPolicy(context) && demandRule(context, g.id, date).minWork > 0)))));
+    if (!target) continue;
+    moves.push({ person: person.id, group: target.id });
+    assigned.set(target.id, (assigned.get(target.id) || 0) + 1);
+  }
+  return { empty, unassigned, moves };
+}
+
+export function recoveryValidation(context, baseline, trial, candidate) {
+  const coverageIssue = e => ["coverage", "demand"].includes(e.type);
+  const next = validate(trial, candidate.cells);
+  const previous = baseline ? validate(context, baseline.cells) : null;
+  const count = checked => checked?.errors.length ?? null;
+  const scope = new Set(candidate.scopePeople || []);
+  const protectedCells = context.people.every(p => context.dates.every(date => {
+    const k = key(p.id, date);
+    if (context.leave[k] && scope.has(p.id)) return candidate.cells[k] === context.leave[k];
+    if (!scope.has(p.id) || isLocked(context, p.id, date)) return (candidate.cells[k] || "") === (context.draft.cells[k] || "");
+    return true;
+  }));
+  const scoped = validate(trial, candidate.cells, { people: scope, groups: candidate.scopeGroups });
+  const safe = protectedCells && scoped.errors.every(coverageIssue);
+  if (!baseline || !safe) return { safe, before: count(previous), after: count(next), improved: false };
+  const people = context.people.map(p => p.id), groups = [...context.groups.map(g => g.id), "unassigned"];
+  const a = candidateMetrics(context, baseline.cells, people, groups, previous);
+  const b = candidateMetrics(trial, candidate.cells, people, groups, next);
+  const noNewBlockers = next.errors.every(e => coverageIssue(e) ||
+    previous.errors.some(old => old.type === e.type && old.cell === e.cell && old.label === e.label));
+  const improved = noNewBlockers && b.blockers <= a.blockers && b.shortfall <= a.shortfall && b.excess <= a.excess &&
+    b.assigned >= a.assigned && b.leaveMet >= a.leaveMet && b.paired >= a.paired &&
+    (b.blockers < a.blockers || b.shortfall < a.shortfall || b.excess < a.excess);
+  return { safe, before: a.blockers, after: b.blockers, improved };
+}
 function coverageMatching(slots, limits) {
   const matched = [];
   const assign = (shift, seen) => slots.some((slot, i) => {
@@ -368,9 +418,15 @@ const rulesMinimum = (paired, rule) => paired ? rule.minWork : 0;
 
 export function adjustmentTrial(context, options, suggestions) {
   const trial = structuredClone(context), next = { ...options };
+  const allocations = suggestions.flatMap(item => item.moves || []);
+  const people = new Map(trial.people.map(person => [person.id, person]));
+  if (allocations.length && (options.group || options.people || new Set(allocations.map(move => move.person)).size !== allocations.length ||
+    allocations.some(move => people.get(move.person)?.group !== "unassigned" || trial.conflicts?.includes(move.person) ||
+      !trial.groups.some(group => group.id === move.group)))) throw new Error("Invalid allocation trial.");
+  for (const move of allocations) people.get(move.person).group = move.group;
   delete next.witness;
   if (suggestions.length === 1 && suggestions[0].witness) next.witness = suggestions[0].witness;
-  for (const item of suggestions.flatMap(item => item.changes || [item])) {
+  for (const item of suggestions.filter(item => !item.moves).flatMap(item => item.changes || [item])) {
     if (item.id === "refill") next.keepAssigned = false;
     else if (item.field === "offPair" || item.field === "preferred") {
       trial.draft.preferences[item.person] = { ...trial.draft.preferences[item.person], [item.field]: item.value };
@@ -384,7 +440,7 @@ export function adjustmentTrial(context, options, suggestions) {
       trial.draft.coverage[k] = { ...rule, ...(item.rule || { [item.field]: item.value }) };
     }
   }
-  return { context: trial, options: next };
+  return { context: trial, options: next, allocations };
 }
 
 export function candidateMetrics(context, cells, scopePeople, scopeGroups, checked = validate(context, cells, {
@@ -545,6 +601,7 @@ function generateMonthly(context, options, progress, check = diagnose(context, o
     feasibility: feasible ? "Confirmed feasible" : confirmed ? "Disproven under current settings" : "Unknown (no valid plan found)",
     reason: feasible ? "" : "The monthly optimizer found no fully valid plan under the current settings.", candidates, issues, suggestions: [] };
   if (options.trial || feasible || !candidates.length) return result;
+  if (staffingPreflight(context, options).empty.length) return result;
   const best = candidates[0];
   const run = item => {
     const trial = adjustmentTrial(context, { ...options, retry: false, trial: true }, [item]);

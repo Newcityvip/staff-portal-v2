@@ -1,7 +1,7 @@
 import { assignCell, assignmentSource, assignmentsFromGeneration, clearRosterAssignments, contextFor, coverage,
   createHistory, datesFor, draftFor, importedLeave, isManualLock, key, overrideApprovedLeave, previousPattern,
   resetRosterScope, restore, save, snapshot, totals, transferMany, weekday, weekdays } from "./roster-model.js";
-import { adjustmentTrial, validate } from "./roster-generator.js";
+import { adjustmentTrial, recoveryValidation, staffingPreflight, validate } from "./roster-generator.js";
 import { downloadRoster } from "./roster-export.js";
 import { asCoverage, coverageKey, coverageReport, priorities, validCoverage } from "./roster-policy.js";
 import { defaultDemand, demandKey, pairNames, validDemand, workloads } from "./roster-weekly.js";
@@ -824,7 +824,7 @@ function undoRecovery() {
   lastRecovery = null;
   render();
   $("dialog").close();
-  notify("Restored coverage settings and assignments.");
+  notify("Restored the draft before recovery.");
 }
 
 function recommendationPanel(flow, guard) {
@@ -839,6 +839,20 @@ function recommendationPanel(flow, guard) {
     $("dialog").close();
     launchGeneration({ ...options, retry: true }, items, result.suggestions, best?.metrics, null, flow);
   };
+  const staffing = staffingPreflight(current, options);
+  const allocations = staffing.moves.length ? staffing.unassigned.filter(person => !current.conflicts.includes(person.id)).map(person => {
+    const control = choose([["", "Keep unassigned"], ...staffing.empty.map(g => [g.id, g.name])], "");
+    control.setAttribute("aria-label", person.name + " (" + person.id + ")");
+    return { person, control };
+  }) : [];
+  const testAllocation = button("Test Staff Allocation", () => {
+    const moves = allocations.filter(row => row.control.value).map(row => ({ person: row.person.id, group: row.control.value }));
+    if (!moves.length) return;
+    test([{ id: "staff-allocation", title: "Staff allocation for " + month, moves }]);
+  });
+  const updateAllocation = () => { testAllocation.disabled = !allocations.some(row => row.control.value); };
+  allocations.forEach(row => { row.control.onchange = updateAllocation; });
+  updateAllocation();
   const auto = (result.suggestions || []).find(item => item.id === "optimize-caps" && item.impact.outcome !== "No improvement alone") ||
     (result.suggestions || []).find(item => item.id === "flexible-caps" && item.impact.outcome !== "No improvement alone");
   const autoButton = button("Auto Optimize Coverage", () => test([auto]), { class: "primary" });
@@ -888,8 +902,21 @@ function recommendationPanel(flow, guard) {
       return [names.get(i.group), i.date + " to " + i.end, i.current, i.available].join(" / ");
     })())] : []),
     make("h3", "Recommended Adjustments"),
+    ...(staffing.empty.length ? [
+      make("p", "Review staffing before reducing coverage. " + staffing.empty.map(g => g.name + ": 0 staff, " + g.slots + " required slots").join(" / ") +
+        ". " + staffing.unassigned.length + " unassigned staff in this scope."),
+      row(button("Review Brand Groups", groupsDialog), button("Review Coverage Settings", () => coverageDialog(staffing.empty[0].id))),
+      ...(allocations.length ? [
+        ...allocations.map(({ person, control }) => row(label(person.name + " (" + person.id + ")", control))),
+        row(button("Suggest Coordinated Allocation", () => {
+          for (const { person, control } of allocations) control.value = staffing.moves.find(move => move.person === person.id)?.group || "";
+          updateAllocation();
+        }), testAllocation),
+        make("p", "Test one transfer or several together. Nothing changes until approval; transfers apply to this month only.")
+      ] : [])
+    ] : []),
     row(autoButton, testButton, compare, edit),
-    ...(!improved ? [make("p", "No tested change improved this plan. Review staff eligibility, retained assignments and required coverage. Temporary transfers can be reviewed in Brand groups."),
+    ...(!improved && !staffing.empty.length ? [make("p", "No tested change improved this plan. Review staff eligibility, retained assignments and required coverage. Temporary transfers can be reviewed in Brand groups."),
       row(button("Review Brand Groups", groupsDialog), button("Review Staff Eligibility", () => preferencesDialog()))] : []),
     ...(improved && !solved ? [make("p", "Some trials improved coverage, but none cleared all blockers. Review the remaining conflicts before changing requirements.")] : []),
     ...(packageNote ? [packageNote, list, alternatives] : []),
@@ -915,34 +942,60 @@ function reviewCandidates(candidates, guard, trial, detail = {}) {
       people.reduce((n, p) => n + p.compliant, 0) + "/" + people.reduce((n, p) => n + p.weeks, 0),
       percent(c.report.pmPercent), Math.max(...people.map(p => p.work)) - Math.min(...people.map(p => p.work)), 0];
   }));
-  const apply = button(detail.approval ? "Apply Changes & Regenerate" : trial ? "Apply tested changes and candidate" : "Apply candidate", () => {
+  const apply = button("", () => {
     const result = candidates[Number(pick.value)];
-    if (detail.readOnly || result.status !== "feasible") return;
+    const review = recoveryValidation(current, detail.baseline, source, result);
+    const partial = result.status !== "feasible";
+    if (detail.readOnly || !review.safe || partial && (!detail.approval || !review.improved)) return;
     if (!guard()) { $("dialog").close(); notify("Draft changed. Generate candidates again."); return; }
-    $("dialog").close();
     showReport = true;
-    editDraft(d => {
+    history.change(model => {
+      if (trial?.allocations?.length && !trial.allocations.every(move => transferMany(model, [move.person], move.group, month, true))) {
+        throw new Error("Staff allocation no longer valid.");
+      }
+      const d = draftFor(model, team, month);
+      const before = JSON.stringify(d);
       if (trial) {
         d.coverage = trial.context.draft.coverage;
         d.demand = trial.context.draft.demand;
         d.preferences = trial.context.draft.preferences;
       }
       assignmentsFromGeneration(d, result.cells);
+      if (trial?.allocations?.length || JSON.stringify(d) !== before) d.revision++;
     });
+    $("dialog").close();
+    render();
     $("results").open = true;
     notify("Generated " + result.selectedCount + " staff assignments; review " + result.warnings.length + " warnings.");
     if (detail.approval) {
       lastRecovery = history.current;
       $("undo-recovery").hidden = false;
-      openDialog("Coverage changes applied", [
-        make("p", "The regenerated candidate and its tested settings were applied to the draft. Final confirmation still requires the complete roster."),
-        row(button("Undo Applied Changes", undoRecovery))
+      openDialog(partial ? "Partial improvement applied" : trial?.allocations?.length ? "Staff allocation applied" : "Coverage changes applied", [
+        make("p", "Full-month blockers: " + (review.before ?? "not measured") + " before / " + review.after + " after. " +
+          (review.after ? "Final confirmation remains blocked." : "No mandatory conflicts remain.")),
+        row(button("Continue Editing", () => $("dialog").close()), button("Undo Applied Changes", undoRecovery)),
+        ...(review.after ? [validationSummary(validate(current))] : [])
       ]);
     }
   }, { class: "primary" });
+  const openProvisional = button("Open Provisional in Editor", () => {
+    const candidate = candidates[Number(pick.value)];
+    if (!detail.recovery || !guard() || candidate.status !== "provisional" ||
+      !recoveryValidation(current, null, current, candidate).safe) return;
+    $("dialog").close();
+    showReport = true;
+    editDraft(d => assignmentsFromGeneration(d, candidate.cells));
+    lastRecovery = history.current;
+    $("undo-recovery").hidden = false;
+    notify("Provisional roster opened for editing. Coverage conflicts remain; final confirmation is blocked until validation passes.");
+  });
   const renderPreview = () => {
     const candidate = candidates[Number(pick.value)];
-    apply.hidden = detail.readOnly || candidate.status !== "feasible";
+    const review = !detail.readOnly || detail.recovery ? recoveryValidation(current, detail.baseline, source, candidate) : null;
+    apply.textContent = candidate.status !== "feasible" ? "Apply Partial Improvement" : detail.approval ? "Apply Changes & Regenerate" :
+      trial ? "Apply tested changes and candidate" : "Apply candidate";
+    apply.hidden = detail.readOnly || !review?.safe || candidate.status !== "feasible" && (!detail.approval || !review.improved);
+    openProvisional.hidden = !detail.recovery || candidate.status !== "provisional" || !review?.safe;
     const metrics = candidate.metrics;
     const staff = source.people.filter(p => candidate.scopePeople.includes(p.id));
     const grid = reportTable(["Staff", ...source.dates.map(date => date.slice(-2))], staff.map(p =>
@@ -951,6 +1004,10 @@ function reviewCandidates(candidates, guard, trial, detail = {}) {
     if (metrics) {
       nodes.push(make("p", metricLine(metrics) + ". Confirmed leave: " + metrics.leaveMet + "/" + metrics.leaveTotal + "."));
       if (detail.before) nodes.push(make("p", "Before trial: " + metricLine(detail.before) + ". After trial: " + metricLine(metrics) + "."));
+      if (detail.approval && review) nodes.push(make("p", "Full-month blockers: " + (review.before ?? "not measured") + " before / " +
+        review.after + " after. " + (candidate.status === "provisional" ? review.improved ? "Validated partial improvement; not a full resolution." :
+          "This trial did not qualify as a safe partial improvement." : review.after ? "This scope is valid; other monthly conflicts remain." :
+          "Full resolution.")));
       const staffTotals = make("details");
       staffTotals.append(make("summary", "Staff totals"), reportTable(["Staff", "Workdays", "OFF", "Leave", "PM", "Paired weeks"],
         metrics.people.map(p => [p.name, p.work, p.off, p.leave, p.mix.PM || 0, p.compliant + "/" + p.weeks])));
@@ -971,16 +1028,20 @@ function reviewCandidates(candidates, guard, trial, detail = {}) {
   };
   pick.onchange = renderPreview;
   renderPreview();
-  const actions = row(...(detail.readOnly ? [] : [apply]),
+  const actions = row(...(detail.readOnly ? [] : [apply]), ...(detail.recovery ? [openProvisional] : []),
     detail.back ? button(detail.approval ? "Discard changes" : "Back to diagnostics", detail.back) :
       button("Discard candidates", () => { $("dialog").close(); notify("Draft unchanged."); }));
   openDialog(detail.readOnly ? "Best Available Monthly Roster" : "Review generated candidates", [
-    ...(detail.readOnly ? [make("p", "Read-only. Provisional plans cannot be applied, confirmed or published. " + (detail.feasibility || ""))] :
-      trial ? [make("p", "The trial produced a valid candidate for this scope. Review and apply to save the selected changes and assignments together.")] : []),
+    ...(detail.readOnly ? [make("p", "Read-only preview. Provisional plans cannot be applied as final, confirmed or published. " + (detail.feasibility || ""))] :
+      trial ? [make("p", candidates.some(c => c.status === "feasible") ?
+        "The trial produced a valid candidate for this scope. Review before applying the changes to the local draft." :
+        "Review tested changes before approval. Applying updates the local draft only.")] : []),
     ...(detail.recovery ? [make("p", recoveryMetrics(candidates[0].metrics) + "."), ...recommendationPanel(detail.recovery, guard)] : []),
     ...(detail.approval && detail.before ? [make("p", "Before trial: " + recoveryMetrics(detail.before) +
       ". After trial: " + recoveryMetrics(candidates[0].metrics) + "."), actions,
-      ...detail.tested.flatMap(item => item.title ? [make("p", item.title), coverageChangeTable(item)] :
+      ...detail.tested.flatMap(item => item.moves ? [make("p", item.title), reportTable(["Staff", "Previous group", "Proposed group"],
+        item.moves.map(move => [current.people.find(p => p.id === move.person)?.name, "Unassigned", current.groups.find(g => g.id === move.group)?.name]))] :
+        item.changes ? [make("p", item.title), coverageChangeTable(item)] :
         [make("p", [item.group, item.date, item.shift, item.current + " to " + item.proposed].filter(Boolean).join(" / "))])] : []),
     compare, row(label("Preview", pick)),
     ...(detail.approval && detail.before ? [] : [actions]),
@@ -1085,6 +1146,9 @@ function recoveryDialog(result, options, guard, trial = null, before = null) {
       " confirmed before search. Unassigned draft cells are not generation conflicts."),
     ...(result.steps ? [make("p", result.steps + " steps in the reported attempt. Observed branches do not prove the cause of failure.")] : []),
     ...(result.candidates?.length ? [make("p", metricLine(result.candidates[0].metrics) + ".")] : []),
+    ...(result.candidates?.length && staffingPreflight(current, options).empty.length ? [
+      make("p", "Review monthly candidates to test staff allocation or open the provisional roster for editing.")
+    ] : []),
     controls,
     ...(selectedItems.length ? [make("h3", "Smart Adjustments"), make("p", "Select changes to test together before approving them."),
       list, row(apply)] : []),
@@ -1143,7 +1207,17 @@ function run() {
   if (scope === "group" && !group) return notify("Select a group first.");
   const ids = scope === "staff" ? [...new Set([...selected].map(k => k.split("|")[0]))] : undefined;
   if (ids && !ids.length) return notify("Select a cell for each staff member to include.");
-  launchGeneration({ strategy, people: ids, group: scope === "group" ? group : "", keepAssigned: $("empty-only").checked });
+  const options = { strategy, people: ids, group: scope === "group" ? group : "", keepAssigned: $("empty-only").checked };
+  const staffing = staffingPreflight(current, options);
+  if (!staffing.empty.length) return launchGeneration(options);
+  openDialog("Staffing check before generation", [
+    make("p", staffing.unassigned.length + " unassigned staff in this scope. Allocate staff or review group settings before reducing coverage."),
+    reportTable(["Empty brand group", "Peak staff needed per day", "Required slots in month"], staffing.empty.map(g => [g.name, g.peak, g.slots])),
+    row(button("Review Brand Groups", groupsDialog), button("Generate Baseline & Review", () => {
+      $("dialog").close();
+      launchGeneration(options);
+    }))
+  ]);
 }
 
 function launchGeneration(options, proposals = [], availableProposals = [], baseline, replay, flow) {
@@ -1181,14 +1255,15 @@ function launchGeneration(options, proposals = [], availableProposals = [], base
     }
     if (result.status === "feasible") {
       notify(result.candidates.length + " candidate(s) ready to review. Draft unchanged.");
-      reviewCandidates(result.candidates, unchanged, trial, { before: baseline, approval: Boolean(flow), tested: proposals,
+      reviewCandidates(result.candidates, unchanged, trial, { before: baseline, baseline: flow?.result.candidates?.[0], approval: Boolean(flow), tested: proposals,
         back: flow && (() => reviewCandidates(flow.result.candidates, unchanged, null, { readOnly: true,
           recovery: flow, feasibility: flow.result.feasibility })) });
     } else {
       notify("No candidate applied. Draft unchanged.");
       if (flow && result.candidates?.length) {
-        reviewCandidates(result.candidates, unchanged, trial, { readOnly: true, recovery: flow, before: baseline,
-          feasibility: "The tested combination still has blockers. No settings or assignments were changed." });
+        reviewCandidates(result.candidates, unchanged, trial, { approval: true, before: baseline, baseline: flow.result.candidates?.[0],
+          tested: proposals, back: () => reviewCandidates(flow.result.candidates, unchanged, null, {
+            readOnly: true, recovery: flow, feasibility: flow.result.feasibility }) });
         return;
       }
       // Do not offer partial trials computed with settings that were never committed.

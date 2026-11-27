@@ -39,6 +39,8 @@ function doPost(e) {
     let result;
 
     switch (action) {
+      case "roster_v1":
+        return jsonOut(rosterReadV1(body));
       case "staff_login":
         result = staffLogin(body);
         break;
@@ -3734,4 +3736,205 @@ function getTelegramChatIdForStaff(settings, staff) {
   const teamKey = safeUpper(staff && staff.team).replace(/[^A-Z0-9]/g, "_");
   const teamChatId = clean(settings["TG_GROUP_CHAT_ID_" + teamKey]);
   return teamChatId || clean(settings.TG_GROUP_CHAT_ID);
+}
+
+/***** ISOLATED ROSTER READS: NO SCHEDULE OR SHEET MUTATIONS *****/
+
+function rosterHex(bytes) {
+  return bytes.map(function (n) { return ("0" + (n & 255).toString(16)).slice(-2); }).join("");
+}
+
+function rosterMac(secret, input) {
+  return rosterHex(Utilities.computeHmacSha256Signature(input, secret, Utilities.Charset.UTF_8));
+}
+
+function rosterEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return result === 0;
+}
+
+function rosterReply(status, data) {
+  return { status: status, body: status === 200 ? Object.assign({ ok: true }, data) : { ok: false } };
+}
+
+function rosterReadV1(envelope) {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const bridge = props.getProperty("ROSTER_BRIDGE_KEY");
+    const sessionKey = props.getProperty("ROSTER_SESSION_KEY");
+    if (props.getProperty("ROSTER_ENABLED") !== "1" || !/^[a-f0-9]{64}$/i.test(bridge || "") ||
+      !/^[a-f0-9]{64}$/i.test(sessionKey || "") || bridge.toLowerCase() === sessionKey.toLowerCase()) return rosterReply(503);
+    const now = Date.now();
+    if (!Number.isSafeInteger(envelope.time) || Math.abs(now - envelope.time) > 30000 ||
+      typeof envelope.nonce !== "string" || !/^[a-f0-9-]{36}$/i.test(envelope.nonce) ||
+      typeof envelope.ip !== "string" || !/^[0-9a-f:.]{3,64}$/i.test(envelope.ip) ||
+      typeof envelope.payload !== "string" || envelope.payload.length >
+        (props.getProperty("ROSTER_PUBLISH_ENABLED") === "1" ? 262144 : 4096) ||
+      typeof envelope.signature !== "string" || !/^[a-f0-9]{64}$/.test(envelope.signature) ||
+      !rosterEqual(envelope.signature, rosterMac(bridge, ["roster-v1", envelope.time, envelope.nonce,
+        envelope.ip, envelope.payload].join("\n")))) return rosterReply(403);
+    const payload = JSON.parse(envelope.payload);
+    if (!payload || !["snapshot", "login", "publish"].includes(payload.operation) ||
+      (payload.operation !== "publish" && envelope.payload.length > 4096)) return rosterReply(403);
+    if (payload.operation === "publish" && !["preview", "commit", "status", "recover"].includes(payload.action)) return rosterReply(403);
+    if (!rosterSheetValues(SHEETS.IP).slice(1).some(function (row) {
+      return clean(row[1]) === envelope.ip && safeUpper(row[3]) === "ACTIVE";
+    })) return rosterReply(403);
+    const admission = rosterAdmit(props, envelope, now, payload.operation === "login", sessionKey);
+    if (admission !== 200) return rosterReply(admission);
+    if (payload.operation === "login") {
+      if (typeof payload.login_id !== "string" || !clean(payload.login_id) || payload.login_id.length > 128 ||
+        typeof payload.password !== "string" || !payload.password.length || payload.password.length > 256) return rosterReply(400);
+      const verified = rosterAdminRecord("login", clean(payload.login_id));
+      const submitted = rosterMac(sessionKey, "roster-password\n" + clean(payload.password));
+      const expected = rosterMac(sessionKey, "roster-password\n" + (verified ? verified.password : ""));
+      if (!rosterEqual(submitted, expected) || !verified) return rosterReply(401);
+      const encoded = Utilities.base64EncodeWebSafe(JSON.stringify({
+        id: verified.id, ip: envelope.ip, issued: now, expires: now + 600000,
+        credential: rosterCredential(sessionKey, verified)
+      }), Utilities.Charset.UTF_8).replace(/=+$/, "");
+      return rosterReply(200, { token: encoded + "." + rosterMac(sessionKey, "roster-session\n" + encoded),
+        teams: verified.teams, expiresAt: now + 600000 });
+    }
+    const session = rosterVerifySession(payload.session, sessionKey, envelope.ip, now);
+    if (!session) return rosterReply(401);
+    const admin = rosterAdminRecord("id", session.id);
+    if (!admin || !rosterEqual(session.credential, rosterCredential(sessionKey, admin))) return rosterReply(401);
+    if (typeof payload.team !== "string" || !admin.teams.includes(payload.team)) return rosterReply(403);
+    if (typeof payload.month !== "string" || !/^20\d\d-(0[1-9]|1[0-2])$/.test(payload.month)) return rosterReply(400);
+    if (payload.operation === "publish") return rosterPublishRequest(props, admin, sessionKey, payload);
+    const snapshot = rosterSnapshot(props, payload.team, payload.month);
+    return rosterReply(200, Object.assign(snapshot, {
+      principal: rosterMac(sessionKey, "roster-draft-id\n" + admin.id), teams: admin.teams
+    }));
+  } catch (_) {
+    return rosterReply(503);
+  }
+}
+
+function rosterCredential(secret, admin) {
+  return rosterMac(secret, "roster-credential\n" + JSON.stringify([admin.id, admin.login, admin.role, admin.password]));
+}
+
+function rosterVerifySession(token, secret, ip, now) {
+  if (typeof token !== "string" || !/^[A-Za-z0-9_-]{1,1024}\.[a-f0-9]{64}$/.test(token)) return null;
+  const parts = token.split(".");
+  if (!rosterEqual(parts[1], rosterMac(secret, "roster-session\n" + parts[0]))) return null;
+  const padded = parts[0] + "=".repeat((4 - parts[0].length % 4) % 4);
+  const data = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(padded)).getDataAsString("UTF-8"));
+  return data && data.ip === ip && typeof data.id === "string" && data.id &&
+    Number.isSafeInteger(data.issued) && Number.isSafeInteger(data.expires) &&
+    data.issued <= now && data.expires > now && data.expires - data.issued === 600000 ? data : null;
+}
+
+function rosterAdmit(props, envelope, now, login, secret) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(50)) return 503;
+  try {
+    // Four rotating buckets cover the entire signature window without unbounded property growth.
+    const minute = Math.floor(envelope.time / 60000);
+    const nonceKey = "ROSTER_NONCE_" + minute % 4;
+    const stored = JSON.parse(props.getProperty(nonceKey) || "null");
+    const nonces = stored && stored.minute === minute ? stored.nonces : [];
+    if (nonces.includes(envelope.nonce)) return 403;
+    if (nonces.length >= 150) return 429;
+    if (login) {
+      const window = Math.floor(now / 300000);
+      const rate = JSON.parse(props.getProperty("ROSTER_LOGIN_WINDOW") || "null");
+      const attempts = rate && rate.window === window ? rate.attempts : {};
+      const id = rosterMac(secret, "roster-rate\n" + envelope.ip).slice(0, 20);
+      if ((attempts[id] || 0) >= 8 || (!attempts[id] && Object.keys(attempts).length >= 150)) return 429;
+      attempts[id] = (attempts[id] || 0) + 1;
+      props.setProperty("ROSTER_LOGIN_WINDOW", JSON.stringify({ window: window, attempts: attempts }));
+    }
+    nonces.push(envelope.nonce);
+    props.setProperty(nonceKey, JSON.stringify({ minute: minute, nonces: nonces }));
+    return 200;
+  } finally { lock.releaseLock(); }
+}
+
+function rosterSheetValues(name) {
+  return sh(name).getDataRange().getValues();
+}
+
+function rosterAdminRecord(mode, subject) {
+  const rows = rosterSheetValues(SHEETS.ADMIN).slice(1);
+  const matches = rows.filter(function (row) {
+    return mode === "login" ? clean(row[2]).toLowerCase() === subject.toLowerCase() : clean(row[0]) === subject;
+  });
+  if (matches.length !== 1) return null;
+  const row = matches[0], id = clean(row[0]), login = clean(row[2]), password = clean(row[3]), role = safeUpper(row[5]);
+  if (!id || id.length > 128 || !login || !password || safeUpper(row[4]) !== "ACTIVE" ||
+    rows.filter(function (other) { return clean(other[0]) === id; }).length !== 1 ||
+    rows.filter(function (other) { return clean(other[2]).toLowerCase() === login.toLowerCase(); }).length !== 1) return null;
+  const teams = role === "SUPER_ADMIN" ? ["Affiliate", "CSP"] : role === "CSP_ADMIN" ? ["CSP"] : [];
+  return teams.length ? { id: id, login: login, password: password, role: role, teams: teams } : null;
+}
+
+function rosterColumns(rows, names) {
+  const headers = (rows[0] || []).map(function (name) { return clean(name).toLowerCase(); });
+  const map = {};
+  names.forEach(function (name) {
+    if (headers.filter(function (header) { return header === name; }).length !== 1) throw new Error("Unsupported roster schema");
+    map[name] = headers.indexOf(name);
+  });
+  return map;
+}
+
+function rosterSnapshot(props, team, month) {
+  const catalog = JSON.parse(props.getProperty("ROSTER_TEAM_SHIFT_CODES") || "null");
+  const exclusions = JSON.parse(props.getProperty("ROSTER_EXCLUDED_STAFF_IDS") || "[]");
+  if (!catalog || !Array.isArray(catalog[team]) || !catalog[team].length ||
+    catalog[team].some(function (code) { return !/^[A-Z][A-Z0-9]{0,7}$/.test(code); }) || !Array.isArray(exclusions) ||
+    exclusions.some(function (id) { return typeof id !== "string"; })) throw new Error("Unverified roster configuration");
+  const staffRows = rosterSheetValues(SHEETS.STAFF);
+  const staffFields = ["staff_id", "full_name", "login_id", "team", "status", "joining_date", "role"];
+  const directory = rosterColumns(staffRows, staffFields);
+  const staff = [], directoryTeams = Object.create(null);
+  staffRows.slice(1).forEach(function (row) {
+    const id = clean(row[directory.staff_id]), key = safeUpper(id), rowTeam = safeUpper(row[directory.team]);
+    if (id) (directoryTeams[key] || (directoryTeams[key] = new Set())).add(rowTeam);
+    if (rowTeam !== safeUpper(team)) return;
+    staff.push({ staff_id: id, full_name: clean(row[directory.full_name]), login_id: clean(row[directory.login_id]),
+      team: team, status: safeUpper(row[directory.status]), joining_date: normalizeDateKey(row[directory.joining_date]) ||
+        clean(row[directory.joining_date]) });
+    if (safeUpper(row[directory.role]).indexOf("ADMIN") !== -1) exclusions.push(id);
+  });
+  const shiftRows = rosterSheetValues(SHEETS.SHIFT);
+  const shifts = shiftRows.slice(1).filter(function (row) {
+    return catalog[team].includes(safeUpper(row[0]));
+  }).map(function (row) {
+    return { team: team, shift_code: safeUpper(row[0]), start_time: normalizeSheetTime(row[1]),
+      end_time: normalizeSheetTime(row[2]), active: safeUpper(row[11]) };
+  });
+  if (catalog[team].some(function (code) {
+    return !shifts.some(function (shift) { return shift.shift_code === code && ["ACTIVE", "YES", "TRUE"].includes(shift.active); });
+  })) throw new Error("Unverified active shift");
+  const schedules = rosterSheetValues(SHEETS.SCHEDULE);
+  const columns = rosterColumns(schedules, ["staff_id", "team", "schedule_date", "schedule_month", "shift_code", "start_time",
+    "end_time", "status"]);
+  const y = +month.slice(0, 4), m = +month.slice(5);
+  const adjacent = [-1, 0, 1].map(function (delta) {
+    return new Date(Date.UTC(y, m - 1 + delta, 1)).toISOString().slice(0, 7);
+  });
+  let conflicts = 0;
+  const schedule = [];
+  schedules.slice(1).forEach(function (row) {
+    if (safeUpper(row[columns.team]) !== safeUpper(team)) return;
+    const date = normalizeDateKey(row[columns.schedule_date]), period = normalizeMonthKey(row[columns.schedule_month]);
+    if (!adjacent.includes(date.slice(0, 7)) && !adjacent.includes(period)) return;
+    const id = clean(row[columns.staff_id]), linked = directoryTeams[safeUpper(id)];
+    if (linked && (linked.size !== 1 || !linked.has(safeUpper(team)))) { conflicts++; return; }
+    schedule.push({ team: team, staff_id: id, schedule_month: period, schedule_date: date,
+      shift_code: safeUpper(row[columns.shift_code]), start_time: normalizeSheetTime(row[columns.start_time]),
+      end_time: normalizeSheetTime(row[columns.end_time]), status: safeUpper(row[columns.status]) });
+  });
+  const staffIds = new Set(staff.map(function (person) { return safeUpper(person.staff_id); }));
+  const data = { team: team, month: month, timeZone: getTeamTimezone(team), staff: staff, shifts: shifts, schedule: schedule,
+    excludedStaffIds: Array.from(new Set(exclusions.map(safeUpper).filter(function (id) { return staffIds.has(id); }))),
+    suppressedTeamConflicts: conflicts };
+  data.revision = rosterHex(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, JSON.stringify(data), Utilities.Charset.UTF_8));
+  return data;
 }

@@ -2,6 +2,8 @@
   const session = Portal.getSession();
   if (!session) return;
   if (session.role !== "admin") { location.href = "staff.html"; return; }
+  const monthlyRosterLink = document.getElementById("monthlyRosterLink");
+  if (monthlyRosterLink) monthlyRosterLink.hidden = false;
 
   let dashboard = {};
   let refreshPromise = null;
@@ -640,7 +642,11 @@
 
   document.getElementById("staffSearch").addEventListener("input", () => { if (dashboard.stats) renderAll(); });
   document.querySelectorAll("[data-export]").forEach((button) => button.addEventListener("click", () => exportTable(button.dataset.export)));
+  const scheduleLeaveAcknowledged = document.getElementById("scheduleLeaveAcknowledged");
+  const clearLeaveAcknowledgment = () => { if (scheduleLeaveAcknowledged) scheduleLeaveAcknowledged.checked = false; };
+  document.getElementById("scheduleFile")?.addEventListener("change", clearLeaveAcknowledgment);
   document.getElementById("clearScheduleUpload")?.addEventListener("click", () => {
+    clearLeaveAcknowledgment();
     const input = document.getElementById("scheduleFile");
     const state = document.getElementById("scheduleUploadState");
     if (input) input.value = "";
@@ -649,6 +655,12 @@
   document.getElementById("scheduleUploadForm")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const state = document.getElementById("scheduleUploadState");
+    if (!scheduleLeaveAcknowledged?.checked) {
+      state.hidden = false;
+      state.textContent = "Acknowledge the future-leave reminder before submitting the roster.";
+      return;
+    }
+    clearLeaveAcknowledgment();
     const file = document.getElementById("scheduleFile")?.files?.[0];
     if (!file) {
       state.hidden = false;

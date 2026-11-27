@@ -139,6 +139,25 @@ for (const role of ['staff', 'admin']) {
     } finally { await f.context.close(); }
   });
 }
+
+test('admin dashboard links to the independently authenticated Monthly Roster Builder under the repository path', async () => {
+  const admin = await fixture('admin', { repoPath: true });
+  const staff = await fixture('staff', { repoPath: true });
+  try {
+    const roster = admin.page.getByRole('link', { name: 'Monthly Roster Builder' });
+    await roster.waitFor();
+    assert.equal(await roster.evaluate(link => link.href), 'https://portal.test/staff-portal-v2/admin-roster-source.html?source=live');
+    await roster.click();
+    await admin.page.getByText('Live roster access is disabled.', { exact: true }).waitFor();
+    assert.equal(admin.requests.filter(r => r.action === 'admin_login' || r.action === 'roster_v1').length, 0);
+    await staff.page.goto('https://portal.test/staff-portal-v2/admin.html');
+    await staff.page.waitForURL('**/staff.html');
+    assert.equal(await staff.page.getByRole('link', { name: 'Monthly Roster Builder' }).count(), 0);
+  } finally {
+    await admin.context.close();
+    await staff.context.close();
+  }
+});
 for (const code of ['OFF', 'AL', 'UL']) {
   test(`staff ${code}: valid schedule, attendance remains blocked`, async () => {
     const f = await fixture('staff', { response: payload('staff', code) });
@@ -583,4 +602,27 @@ test('mock browser measurement: baseline versus operations bootstrap', async t =
       } finally { await f.context.close(); }
     }
   }
+});
+
+test('schedule CSV acknowledgment is mandatory and resets with a new file and submission', async () => {
+  const f = await fixture('admin');
+  try {
+    const file = { name: 'fixture.csv', mimeType: 'text/csv', buffer: Buffer.from(
+      'schedule_month,schedule_date,login_id,full_name,team,shift_code,start_time,end_time,status\n' +
+      '2026-12,2026-12-03,FIXTURE001,Fixture Staff,CSP,AM,06:30:00,15:30:00,WORKING\n') };
+    const ack = f.page.locator('#scheduleLeaveAcknowledged');
+    const uploads = () => f.requests.filter(r => r.action === 'upload_schedule_csv');
+    await f.page.locator('#scheduleFile').setInputFiles(file);
+    await f.page.locator('#scheduleUploadForm button[type=submit]').click();
+    assert.equal(uploads().length, 0);
+    await ack.check();
+    await f.page.locator('#scheduleFile').setInputFiles({ ...file, name: 'fixture-2.csv' });
+    assert.equal(await ack.isChecked(), false);
+    await ack.check();
+    await f.page.locator('#scheduleUploadForm button[type=submit]').click();
+    await f.page.getByText(/Schedule uploaded[.]/).waitFor();
+    assert.equal(uploads().length, 1);
+    assert.equal(uploads()[0].rows[0].login_id, 'FIXTURE001');
+    assert.equal(await ack.isChecked(), false);
+  } finally { await f.context.close(); }
 });

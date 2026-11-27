@@ -1,0 +1,314 @@
+# Monthly Roster Builder: Phases 1, 1B and 1C
+
+This isolated prototype contains fictional identities, a synthetic leave
+fixture and no production connectivity. No login, permission, dashboard or
+attendance code is loaded by this page. Conversely, existing portal pages
+have no roster entry point, assets or requests. The prototype uses a restrictive
+Content Security Policy to block API connections as well.
+
+## Local preview
+
+From the repository root run `node scripts/roster-preview.cjs`
+and open `http://127.0.0.1:8765/admin-roster.html`. The module worker needs HTTP;
+opening the HTML as a file will not work. No sign-in is required for the
+fictional prototype. Do not deploy this page as an authorized tool.
+
+An optional mobile preview binds only the private IPv4 address you specify:
+`node scripts/roster-preview.cjs --lan <PC-Wi-Fi-IPv4> 8766`. Visit the URL
+printed by the server on a phone on the same trusted Wi-Fi. Use
+`Get-NetIPAddress -AddressFamily IPv4` on Windows to find the Wi-Fi address;
+the CLI rejects an address not assigned to this PC or outside private ranges.
+Stop with Ctrl+C; LAN mode expires after 30 minutes. No firewall rule or tunnel
+is added. If local firewall policy or Wi-Fi client isolation blocks access,
+use the screenshots and mobile browser fixtures; do not open a public port.
+
+1. Run **PM priority / Entire team** on Affiliate / December 2026, compare the
+   candidates, and explicitly **Apply candidate**. Examine separate
+   OLD/NEW sections, the combined totals, and the protected AL/SL cells.
+2. Select one cell, or use Multi-select or Shift-click for a range. Assign a
+   shift, copy/paste in selection order, clear, or lock. Locked cells cannot
+   be reassigned by editing, pasting, copying a prior pattern, or generation.
+3. Under **Brand groups**, create/edit a group or select one or more staff for
+   a temporary or onward effective-month transfer. A temporary transfer takes
+   precedence for that month only. An onward transfer replaces a transfer at
+   the same month and respects any later explicit effective-month entries.
+   Earlier months and snapshots do not change. Undo reverts draft changes.
+   **Save draft** stores the workspace on this browser/origin only.
+   Preview shows the whole team. Review confirmation requires the leave
+   acknowledgment; with no blocking errors it creates a local snapshot.
+4. Export current draft or snapshot via Excel/CSV. Choose combined or a
+   specific group in the export control. Every export is labeled synthetic.
+   **Do not upload the sample CSV.**
+5. To demonstrate infeasibility, open **Coverage matrix** and set minimum and
+   target AM coverage to 11 for OLD Brands on one date. Run generation. Change the
+   minimum back (or use Undo) before continuing. CSP demonstrates overnight.
+
+## Configuration and results
+
+- **Weekly Demand & OFF Planning** stores workload, maximum/preferred OFF,
+  and minimum working staff by team, group and month. Specific dates inherit
+  their weekday settings until overridden. Capacity is the smaller of the OFF
+  cap and available headcount after confirmed leave and mandatory work/shift
+  minima. The rolling seven-day capacity check compares usable slots to twice
+  group headcount; sufficient aggregate capacity is not proof of feasible pairs.
+- Phase 1C enforces a recurrent seven-day cadence per staff member: two
+  consecutive regular OFF days and five non-OFF dates. The cadence may straddle
+  Sunday/Monday or a month boundary. Leave occupies a non-OFF date without
+  counting as work or regular OFF. The solver explores tentative OFF phases
+  while evaluating shift feasibility; it does not fix OFF independently.
+  A preferred OFF pair is soft. A fixed cadence is a deliberate prototype
+  interpretation; rotating OFF weekdays between weeks would need a separate
+  approved policy. A conflict blocks a result rather than assigning extra OFF.
+- Within a working cycle, use the same shift except for one configured
+  adjacent adjustment on the day immediately before the pair. After two OFF
+  days, the next cycle may use a different shift. Affiliate defaults are
+  AM/AM1, AM1/PM1 and PM1/PM; CSP starts with no pair-eve exceptions.
+  The team transition list is editable. Fixed shift, allowed shifts, rotation
+  restrictions, work streak and elapsed rest remain mandatory.
+- The planner checks available previous and next boundary records and warns
+  when either side is incomplete, including during simulated confirmation.
+  A provisional synthetic snapshot does not certify unknown dates. Existing
+  local drafts retain cells, snapshots and preferences; old minimum-only
+  settings are archived at migration and are not enforced in Phase 1C.
+- Daily reporting adds working, OFF, AL/SL/UL, shift totals, shortfalls and
+  OFF capacity. Staff reporting adds per-code totals, paired-week counts,
+  work streaks and transitions. Candidate comparisons include scoped hard
+  validation, workload alignment (lower penalty is better), transition and
+  workday spread, target coverage, and PM share. XLSX adds a Planning summary
+  tab for new snapshots; existing grid sheets and the flat CSV stay compatible.
+
+- Coverage rows are scoped to team, group, month and shift. A checked date rule
+  supersedes its weekday rule, which supersedes the daily default. Unchecking
+  an override restores inheritance after saving. Phase 1 numeric minimums
+  migrate as a matching target. New defaults are zero minimum/target with no
+  maximum. Disabled automatic shifts require zero minimum and target;
+  existing manual or locked entries may remain within the maximum.
+- PM Priority ranks PM highly after mandatory constraints; Balanced aims for
+  a more even staff shift mix; Custom uses targets and priorities; Previous
+  Month Pattern prefers available same-calendar-day shifts/OFF while still
+  enforcing current constraints. Manual prior-month copy remains a separate
+  editor operation. The scope can be team, selected group or staff touched by
+  selected cells. Fill empty cells only preserves all populated cells.
+- Fixed/allowed shifts, rotation restriction, paired OFF, work streak and
+  rest are mandatory. Preferred shift, weekly rotation and preferred OFF pair
+  are soft ordering preferences.
+  Rotation restriction means one working shift per staff member for this
+  roster month; it does not rewrite the previous month.
+- Up to three distinct valid candidates are displayed with a comparison and
+  a read-only grid. Cancellation and discard leave the draft unchanged.
+  Results report assignment totals, working mix, individual workload,
+  preferences, and group and combined daily coverage. **PM coverage** means
+  PM working assignments divided by all working assignments. Preference
+  satisfaction counts work assignments matching a preferred shift and
+  preferred OFF weekdays honored; it does not score every soft preference.
+- Validation links jump to the relevant cell or coverage count. Blocking
+  issues prevent the final roster preview and simulated confirmation.
+  Candidate review can still show a partial-scope result; unrelated
+  incomplete cells must be resolved before final preview. The new
+  Future_Leave_Requests acknowledgment is fresh each time confirmation opens.
+- Historical Phase 1B benchmark against Phase 1 commit `07f72fa`: with one AM
+  per group per day and two NEW PM on Dec 4, the same staff, leave and remaining
+  mandatory inputs produced 88/401 PM assignments (21.95%) in Phase 1 and
+  340/402 (84.58%) in the selected Phase 1B candidate. Both passed the current
+  hard-rule validator. This is a synthetic comparison, not a production
+  staffing target or proof of optimality.
+
+Phase 1C comparison against `dfcd333` uses the same synthetic December people,
+leave, coverage (one AM per Affiliate group daily, one DAY per CSP group),
+rest and streak constraints. The paired policy and shift-cycle rule are the
+intentional differences. Metrics count complete, non-overlapping seven-day
+windows inside the displayed month. A window spanning an OFF pair split at
+its ends counts if it matches a valid repeating weekly pattern.
+
+| Team | Paired windows | Excess OFF | Group-days covered | PM / working | In-cycle changes |
+| --- | --- | --- | --- | --- | --- |
+| Affiliate | 8/72 to 72/72 | 17 to 0 | 62 to 62 | 339/401 to 335/400 | 24 to 0 |
+| CSP | 3/24 to 24/24 | 5 to 0 | 31 to 31 | 0/135 to 0/131 | 61 to 0 |
+
+The benchmark test logs elapsed local candidate generation per run. Results
+are synthetic; the bounded search is not a proof of mathematical optimality.
+
+## Behavior and limits
+
+- The worker uses deterministic candidate ordering and bounded backtracking
+  (up to three searches, each capped at 60,000 steps or about 1.15 seconds).
+  Candidate variants use different tie-breaks and OFF phases. A budget result
+  does not prove infeasibility and does not replace the current draft.
+  Fairness and weekly shift rotation are ordering preferences, not claims
+  of global optimality. Configured coverage, fixed shifts, known-rest
+  boundaries, work streaks, leave, locks, maximums and weekly OFF are hard rules.
+- Leave does not count as OFF. Missing adjacent-month records are explicit
+  warnings, not evidence of cross-month rest or OFF compliance.
+  Prior-month copy aligns by calendar day, skips leave and
+  preserves locks; shorter previous months leave the extra dates untouched.
+- Draft storage is browser-only and is not designed for shared multi-user
+  editing. The UI intentionally has no live write, deploy or upload path.
+  The existing CSV upload reminder is not changed.
+- Formatted export uses the MIT-licensed, vendored ExcelJS 4.4.0 browser
+  distribution, loaded from the same origin only when Excel is requested.
+  Bundle SHA-256: `7e49da68588e250dbb8bba190d2caa8ab3787cc0284bda1d8b2f805c4df742c9`.
+  It was extracted without modification from the integrity-verified npm
+  tarball. Tests reopen generated workbooks and parse CSV with the existing
+  flat importer without calling its write path.
+
+## Phase 2 release gates
+
+Before live integration, obtain read-only evidence of exact live directory,
+schedule and shift headers/types and duplicate counts; private confirmation
+of real brand-to-ID mapping; authoritative leave headers, date and timezone
+semantics, statuses/transitions and redacted examples; deployed Apps Script
+version and redacted Worker authentication/forwarding configuration; and a
+complete list of writers or integrations with schedule/leave write access.
+No tokens, passwords or real staff IDs should be included in the PR.
+
+Proposed authorization: a separate, short-lived, server-verified roster
+session bound to an active admin. Derive permissions and team scope from
+server records on every request, retain existing IP checks, and verify that
+the Apps Script path cannot bypass the gate. Never trust localStorage role,
+client-supplied scope or the legacy default-admin fallback. Pilot reads in
+staging before any publisher is considered. Publishing also requires stale
+preview, writer coordination, audit and partial recovery controls.
+
+No production rollout or rollback is needed for Phase 1. Keep the PR draft.
+## Phase 1D: Diagnostics and recovery
+
+Run generation as usual. Preflight checks the selected scope using effective brand
+membership, daily and weekday overrides, retained cells, leave, eligibility,
+working minimums, regular OFF capacity, and known adjacent-month assignments.
+Blank optional caps are unlimited; a numeric zero remains a real limit. Legacy
+blank strings are normalized without changing assignments, locks or history.
+
+The diagnostics distinguish confirmed contradictions, optional preferences,
+unknown month boundaries, and branches pruned during search. Several dates can
+share one diagnosis. Use the setting or cell link to inspect the first affected
+date. Unassigned cells still block complete-month confirmation but are counted
+separately from generation conflicts.
+
+Retry runs up to three bounded worker attempts with wider budgets and, for
+Balanced and PM priority, an alternate ordering. Cancel remains available.
+Smart Adjustments show the old and proposed values. Selected proposals are
+tested in a copy. A validated candidate can be reviewed and explicitly applied;
+Undo restores both the settings and the assignments. Failed or cancelled
+trials leave the draft alone. Mandatory limits and rules remain enforced for
+each trial; only explicitly selected changes to optional settings are considered.
+
+When a search reaches a usable partial state, Best Possible Draft shows the
+furthest completed prefix found in the bounded attempts. It is diagnostic only,
+not a proven optimum, and cannot be applied, exported from that preview, or
+confirmed. Completing search is not guaranteed; aggregate OFF capacity does
+not prove that compatible pairs or shift coverage exist.
+
+The original browser draft was not available. With the reported December 2026
+OLD Brands workloads, zero working minimums, blank caps, and a synthetic AM
+minimum of five to reproduce 34-35 aggregate OFF slots, the selected-group
+Balanced run generates 10 staff with zero scoped blockers. A second fixture
+retains a locked PM on December 7 and adds an explicit PM cap of zero: Phase 1C
+exhausts its search and reports a branch-level symptom; Phase 1D identifies the
+cap conflict before search. A temporary exact-date cap of one yields a valid
+10-staff candidate without changing the locked shift. Neither fixture proves
+which settings were present in the original browser draft.
+
+## Phase 1E: Whole-month optimization
+
+Normal paired-OFF generation now starts with a graph of legal whole-month
+patterns for each staff member. It selects patterns against each group's
+effective minimums, caps and demand, then tries alternate initial orders and
+bounded two-person repair. Compare Best Balanced, PM Priority and Demand Priority
+when their assignments differ. The original bounded search remains available for
+previous-month pattern mode and as an unchanged-budget validation fallback when
+the monthly optimizer cannot find a fully valid plan. This is not an exact
+group optimizer: a failed search alone cannot disprove feasibility.
+
+Coverage compromises are visible only as provisional alternatives. The review
+shows completion, actual versus required coverage, paired OFF and leave
+compliance, caps, staff totals, PM mix and outstanding blockers. Any unresolved
+minimum, cap or staff constraint prevents applying a candidate. One-click
+alternatives are evaluated separately; selected proposals are then tested
+together on a temporary copy. A feasible result can be approved or rejected
+after inspection. Undo restores settings and cells together. A lower minimum
+may improve coverage percentage without adding a worker, so the actual and
+required counts are both shown.
+
+To reproduce a browser-only failure, open the same preview origin and browser
+profile that already holds the draft. Set the original group, strategy, scope
+and Fill empty cells option. Use **Diagnostic bundle > Export anonymized
+diagnostic bundle**. The JSON replaces staff identities with stable aliases
+and excludes account IDs and unrelated months. It retains assignments, group
+labels, approved leave codes, date overrides, nearby boundaries and rules; review
+those details before sharing. **Replay imported bundle** works locally and cannot
+update the saved draft. The original browser draft has not yet been supplied.
+
+The fixed synthetic OLD Brands benchmark uses date-specific limits derived from
+a valid 10-person roster. Phase 1D reaches 60,001 steps and retains 100 of 310
+assignments; Phase 1E finds 310 of 310 with 100% minimum coverage, 40/40 paired
+weeks, confirmed leave intact, and zero blockers. The test logs elapsed times.
+This fixture proves a search limitation, not the cause of an unseen draft.
+
+## Phase 1F: Coverage recovery
+
+Preflight compares the exact working-day requirement in every seven-day window
+with the sum of daily capacity bounds. It uses eligible staff, retained cells,
+confirmed leave, and the effective maximum of each shift. For example, ten staff
+with two regular OFF days need 50 working slots before leave; six capped slots
+per day only permit 42. This is a proof of a contradiction, not a report of the
+last search branch. Passing the aggregate bound does not prove feasibility.
+
+In the coverage matrix, a blank maximum is unlimited; zero remains an explicit
+cap. Convert selected caps to targets in the form, then review and save. Existing
+saved caps are not changed by loading a draft.
+
+The Best Available Monthly Roster shows Recommended Adjustments before the
+roster grid. Auto Optimize Coverage first tests the affected caps as flexible
+targets, then uses a valid monthly pattern to determine which date-specific caps
+and targets to raise. Both variants retain minimums. Choose one coordinated
+plan, or select individual recommendations and test them together. The trial
+reports actual versus required coverage, blockers, paired OFF, confirmed leave,
+and PM staffing. Exact edits are expandable before approval. Apply Changes &
+Regenerate commits the verified settings and roster in one draft change; Undo
+Applied Changes restores both. Failed or discarded trials change nothing.
+
+An adjustment that does not help is not presented as a solution. The recovery
+screen points to coverage, staff eligibility, and Brand groups for manual
+review; transfers are not proposed automatically. Confirmed leave, locks,
+eligibility, and staff-level rules remain in force during trials. Full-month
+confirmation remains blocked until mandatory requirements are satisfied.
+
+The reported 10-staff OLD Brands totals are not an exact replay: no diagnostic
+bundle was supplied. Use the original browser's Diagnostic bundle export to
+verify its effective caps, locks, leave, and generation scope.
+
+## Phase 1G: Leave editing and scoped roster controls
+
+Cameron Flint's December 9 AL is seeded approved leave, not a cell or row
+lock. The roster identifies generated assignments, manual leave, approved
+leave, overrides, and manual locks separately. Assign or clear normal cells
+individually or in bulk. Manual leave remains editable by an admin, but the
+generator and the non-destructive clear modes preserve it.
+
+To override imported approved leave, select the cell and a replacement
+(including Unassigned), choose **Override Approved Leave**, and add a reason.
+For manually locked cells or rows, unlock them first; doing so does not remove
+the original leave protection. A confirmed override protects the replacement
+from generation, and a deliberate blank stays unassigned until the admin
+changes it. A roster with an intentional blank cannot be finally confirmed.
+The audit records the imported code, previous assignment, replacement,
+reason, and timestamp. Undo and Redo restore assignments and audit together.
+
+**Clear / Reset Roster** scopes all changes to the selected staff, brand, or
+current team/month. Clear Generated only removes known generated assignments.
+Clear Unlocked also removes ordinary manual and legacy assignments, but both
+keep protected leave and manual locks. Clear All explicitly confirms removing
+manual leave and locks and requires a reason for removing imported leave.
+Reset restores the roster as it was when the page loaded. Staff reset restores
+staff draft entries; group reset also restores group settings; whole-team reset
+restores that month's draft rules. None of these changes brand memberships or
+other teams/months. Legacy records with no known origin remain intact on migration.
+
+The schedule CSV keeps its existing columns and exports effective assignments.
+Excel includes a **Leave audit** sheet and **Leave Audit CSV** exports the same
+history separately, including overrides to blank. Diagnostic bundles retain
+the override states for anonymized replay but omit reasons and timestamps.
+
+Phase 2 must reconcile the original approved leave requests, entitlement
+balances and Schedule_Master before allowing any override to be published
+live. Phase 1G never changes those systems or values.

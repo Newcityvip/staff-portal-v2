@@ -27,6 +27,9 @@
       <button id="diagnostic-bundle" type="button">Diagnostic bundle</button>
       <button id="save" type="button">Save draft</button>
       <button id="preview" type="button" class="primary" aria-pressed="false">Preview</button>
+      <button id="confirm" type="button" class="primary" hidden>Review confirmation</button>
+      <button id="confirmation-blockers" type="button" hidden>View blocking reasons</button>
+      <p id="confirmation-status" class="muted" role="status" hidden></p>
     </section>
     <section class="board" aria-label="Monthly roster">
       <div class="board-heading">
@@ -77,7 +80,6 @@
         <label class="sr-only" for="export-group">Export group</label><select id="export-group"></select>
         <button id="csv" type="button">CSV</button><button id="xlsx" type="button">Excel</button>
         <button id="audit-csv" type="button">Leave Audit CSV</button>
-        <button id="confirm" type="button" hidden>Review confirmation</button>
       </div>
     </section>
     <p id="notice" role="status" class="muted"></p>

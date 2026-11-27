@@ -56,6 +56,54 @@ test('fixture browser generates, reviews, acknowledges and verifies a simulated 
   assert.deepEqual(errors, []);
 });
 
+test('December Affiliate Balanced preview exposes confirmation above the fold with 15 non-blocking warnings', async t => {
+  const { page, base, external, errors } = await setup(t, { publishing: true }, 1280);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto(base + 'admin-roster-source.html?team=Affiliate&month=2026-12');
+  await page.getByRole('button', { name: 'Open Published Copy' }).click();
+  const dialog = page.getByRole('dialog');
+  await page.getByRole('button', { name: 'View blocking reasons' }).click();
+  await dialog.getByRole('heading', { name: 'Confirmation blocked' }).waitFor();
+  await dialog.getByText(/Roster Fixture 1.*2026-12-02/).first().waitFor();
+  assert.equal(await dialog.getByRole('button', { name: /publish/i }).count(), 0);
+  await dialog.getByRole('button', { name: 'Close dialog' }).click();
+
+  await page.getByLabel('Generation strategy').selectOption({ label: 'Balanced' });
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Apply candidate', exact: true }).click();
+  assert.match(await page.locator('#validation-title').textContent(), /0 blocking \/ 0 unassigned \/ 15 warnings/);
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  const review = page.getByRole('button', { name: 'Review confirmation', exact: true });
+  const withinViewport = control => control.evaluate(element => {
+    const box = element.getBoundingClientRect();
+    return box.width > 0 && box.height > 0 && box.top >= 0 && box.bottom <= innerHeight;
+  });
+  assert.equal(await withinViewport(review), true, 'review must be visible without scrolling');
+  assert.equal(await review.isEnabled(), true);
+  if (artifacts) await page.screenshot({ path: path.join(artifacts, 'review-confirmation.png') });
+  await review.click();
+  await dialog.getByText('Review 15 non-blocking warnings', { exact: true }).click();
+  await dialog.getByText('Other warnings (5)', { exact: true }).click();
+  await dialog.getByText('Roster Fixture 1 is unassigned', { exact: true }).waitFor();
+  await dialog.getByRole('button', { name: 'Review simulated publish' }).click();
+  const publish = dialog.getByRole('button', { name: 'Publish Final Schedule' });
+  await publish.waitFor();
+  assert.equal(await withinViewport(publish), true, 'publish must be visible without scrolling the dialog');
+  assert.equal(await publish.isDisabled(), true, 'manual leave acknowledgment is still mandatory');
+  await dialog.getByLabel('I verified the leave requests').check();
+  if (artifacts) await page.screenshot({ path: path.join(artifacts, 'publish-final-schedule.png') });
+  await publish.click();
+  await dialog.getByText('Simulated schedule write verified.', { exact: true }).waitFor();
+  await dialog.getByRole('button', { name: 'Close dialog' }).click();
+  await page.getByRole('link', { name: 'Review source' }).click();
+  await page.getByText(/Last refreshed/).waitFor();
+  const rows = page.locator('#source-schedule tbody tr');
+  assert.equal(await rows.count(), 158, 'read-back includes the full eligible month and untouched rows');
+  await rows.filter({ hasText: /TEST-A-2.*2026-12-06.*AL \(published leave\)/ }).waitFor();
+  assert.deepEqual(external, []);
+  assert.deepEqual(errors, []);
+});
+
 test('desktop fixture source opens a separate editable draft and retains published leave on regeneration', async t => {
   const { page, base, external, errors, reads } = await setup(t, {}, 1360);
   await page.goto(base + 'admin-roster-source.html?publish=fixture');

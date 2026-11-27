@@ -250,6 +250,7 @@ function render() {
   $("save").textContent = dirty() ? "Save draft" : "Saved";
   $("preview").textContent = preview ? "Back to editor" : "Preview";
   $("preview").setAttribute("aria-pressed", preview);
+  $("preview").classList.toggle("primary", !preview);
   $("confirm").hidden = !preview;
   $("generation").disabled = preview;
   $("scope").disabled = preview;
@@ -277,13 +278,18 @@ function render() {
   if (showReport) renderReport(report, issues);
   $("preview").disabled = Boolean(!preview && issues.errors.length);
   $("preview").title = $("preview").disabled ? "Resolve blocking validation issues before preview" : "";
+  $("confirmation-blockers").hidden = preview || !issues.errors.length;
+  const confirmationStatus = $("confirmation-status");
+  confirmationStatus.hidden = !preview && !issues.errors.length;
+  confirmationStatus.textContent = issues.errors.length ? "Confirmation blocked: " + issues.errors.length + " validation issues." :
+    issues.warnings.length ? issues.warnings.length + " warnings to review. No blocking issues." : "No blocking issues.";
   const blanks = issues.errors.filter(item => item.type === "missing").length;
   $("validation-title").textContent = "Monthly validation / " + (issues.errors.length - blanks) + " blocking / " +
     blanks + " unassigned / " + issues.warnings.length + " warnings";
   $("issues").replaceChildren(validationSummary(issues));
 }
 
-function validationSummary({ errors, warnings }) {
+function validationSummary({ errors, warnings }, groupRepeated = true) {
   const root = make("div");
   const config = item => item.type === "group" || /: invalid (coverage|workload)/.test(item.label);
   const coverage = item => !config(item) && ["coverage", "demand"].includes(item.type);
@@ -299,8 +305,8 @@ function validationSummary({ errors, warnings }) {
     details.open = title === "Coverage shortfalls and limits";
     details.append(make("summary", title + " (" + list.length + ")"));
     for (const item of list) {
-      const signature = item.type + "|" + (item.coverage ? item.coverage[0] + "|" + item.coverage[2] : "") +
-        "|" + (item.label.includes(":") ? item.label.split(":")[0] : item.type);
+      const signature = groupRepeated ? item.type + "|" + (item.coverage ? item.coverage[0] + "|" + item.coverage[2] : "") +
+        "|" + (item.label.includes(":") ? item.label.split(":")[0] : item.type) : item;
       const batch = grouped.get(signature) || [];
       batch.push(item); grouped.set(signature, batch);
     }
@@ -737,6 +743,15 @@ function rulesDialog() {
 
 function confirmDialog() {
   const issues = validate(current);
+  if (issues.errors.length) {
+    const reasons = make("ul", "", { class: "diagnostic-list" });
+    reasons.append(...issues.errors.map(issue => make("li", issue.label)));
+    openDialog("Confirmation blocked", [
+      make("p", "Resolve these mandatory issues before confirming or publishing."),
+      reasons
+    ]);
+    return;
+  }
   const revision = history.current;
   const acknowledgement = input("checkbox", "");
   const accept = button("Save simulated snapshot", () => {
@@ -749,14 +764,18 @@ function confirmDialog() {
   }, { disabled: "" });
   acknowledgement.onchange = () => { accept.disabled = !acknowledgement.checked || Boolean(issues.errors.length); };
   openDialog("Simulated final confirmation", [
-    make("p", "Production publishing is unavailable in prototype mode."),
+    make("p", publishFixture ? "This can publish to the local fixture only. No production writes." : "Production publishing is unavailable in prototype mode."),
     make("p", "Please check the Future_Leave_Requests tab in the Staff Schedule & Leave Management spreadsheet and ensure all approved leave requests for the selected month are included in the roster."),
+    ...(publishFixture ? [row(button("Review simulated publish", () => publishFixtureDialog(revision), { class: "primary" }))] : []),
     row(label("I acknowledge the reminder", acknowledgement)),
     ...(issues.warnings.some(issue => issue.type === "boundary")
       ? [make("p", "Month-boundary data is incomplete. This synthetic snapshot is provisional.", { class: "warning" })] : []),
-    make("p", issues.errors.length ? issues.errors.length + " blocking issues must be resolved first." : "This saves a synthetic snapshot only."),
-    row(accept, ...(publishFixture && !issues.errors.length ?
-      [button("Review simulated publish", () => publishFixtureDialog(revision))] : []))
+    row(accept),
+    ...(issues.warnings.length ? [(() => {
+      const warnings = make("details", "", { class: "diagnostic-list" });
+      warnings.append(make("summary", "Review " + issues.warnings.length + " non-blocking warnings"), validationSummary(issues, false));
+      return warnings;
+    })()] : [])
   ]);
 }
 
@@ -810,14 +829,14 @@ async function publishFixtureDialog(revision) {
       receipt.textContent = "Publishing to the local fixture...";
       try { show(await request({ action: "commit", id: result.id, acknowledged: true })); }
       catch { receipt.textContent = "Write outcome unknown. Check operation status; do not resubmit."; }
-    }, { disabled: "" });
+    }, { disabled: "", class: "primary" });
     check.hidden = recovery.hidden = true;
     acknowledgement.onchange = () => { confirm.disabled = !acknowledgement.checked; };
     const changes = make("details");
     changes.append(make("summary", "Show changed rows"), reportTable(["Staff ID", "Date", "Before", "After"],
       result.changes.map(({ before, after }) => [after.staff_id, after.schedule_date, before?.code || "-", after.shift_code])));
-    status.after(changes, make("p", "Manually verify Future_Leave_Requests for this roster before publishing."),
-      row(label("I verified the leave requests", acknowledgement), confirm), row(check, recovery), receipt);
+    status.after(make("p", "Manually verify Future_Leave_Requests for this roster before publishing."),
+      row(label("I verified the leave requests", acknowledgement), confirm), row(check, recovery), receipt, changes);
   } catch {
     if (stillOpen()) status.textContent = "Fixture publish preview unavailable.";
   }
@@ -1401,6 +1420,7 @@ $("save").onclick = () => {
 };
 $("preview").onclick = () => { preview = !preview; selected.clear(); anchor = ""; render(); };
 $("confirm").onclick = confirmDialog;
+$("confirmation-blockers").onclick = confirmDialog;
 $("groups").onclick = groupsDialog;
 $("rules").onclick = rulesDialog;
 $("coverage").onclick = () => coverageDialog();

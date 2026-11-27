@@ -24,8 +24,9 @@ function startPreview(port = 8765, host = '127.0.0.1', options = {}) {
       if (fixture && file === 'roster-fixture/publish') return await fixture.publish(req, res);
       if (req.method !== 'GET' || !(assets.has(file) || fixture && fixtureAssets.has(file))) return res.writeHead(404).end();
       let body = await fs.readFile(path.join(root, file));
-      if (fixture && options.publishing && file === 'admin-roster.html') {
-        body = body.toString('utf8').replace("connect-src 'none'", "connect-src 'self'");
+      if (fixture && options.publishing && ['admin-roster.html', 'admin-roster-source.html'].includes(file)) {
+        body = body.toString('utf8').replace('<body>', '<body data-roster-publish-fixture="enabled">');
+        if (file === 'admin-roster.html') body = body.replace("connect-src 'none'", "connect-src 'self'");
       }
       if (fixture && file === 'admin-roster-source.html') await fixture.issue(req, res);
       res.writeHead(200, { 'Content-Type': types[path.extname(file)], 'Cache-Control': 'no-store' });

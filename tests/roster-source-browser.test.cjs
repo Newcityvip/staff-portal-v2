@@ -31,8 +31,11 @@ async function setup(t, options, width) {
 
 test('fixture browser generates, reviews, acknowledges and verifies a simulated monthly publish', async t => {
   const { page, base, external, errors } = await setup(t, { publishing: true }, 1280);
-  await page.goto(base + 'admin-roster-source.html?publish=fixture');
+  await page.goto(base + 'admin-roster-source.html');
+  await page.getByText('Simulated publishing / No live writes', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Open Published Copy' }).click();
+  await page.getByText(/Fixture source \/ Simulated publishing enabled/).waitFor();
+  assert.match(page.url(), /source=fixture&publish=fixture$/);
   await page.click('#generate');
   await page.getByRole('button', { name: 'Apply candidate', exact: true }).click();
   await page.click('#preview');
@@ -47,6 +50,7 @@ test('fixture browser generates, reviews, acknowledges and verifies a simulated 
   await page.getByRole('button', { name: 'Close dialog' }).click();
   await page.getByRole('link', { name: 'Review source' }).click();
   await page.getByText(/Last refreshed/).waitFor();
+  await page.getByText('Simulated publishing / No live writes', { exact: true }).waitFor();
   assert.ok(await page.locator('#source-schedule tbody tr').count() > 8);
   assert.deepEqual(external, []);
   assert.deepEqual(errors, []);
@@ -54,7 +58,7 @@ test('fixture browser generates, reviews, acknowledges and verifies a simulated 
 
 test('desktop fixture source opens a separate editable draft and retains published leave on regeneration', async t => {
   const { page, base, external, errors, reads } = await setup(t, {}, 1360);
-  await page.goto(base + 'admin-roster-source.html');
+  await page.goto(base + 'admin-roster-source.html?publish=fixture');
   await page.getByText(/Last refreshed/).waitFor();
   assert.equal(reads.length, 1);
   assert.match(await page.locator('#source-schedule').textContent(), /GY15:00:0002:00:00/);
@@ -72,6 +76,11 @@ test('desktop fixture source opens a separate editable draft and retains publish
   await page.click('#generate');
   await page.getByRole('heading', { name: 'Review generated candidates' }).waitFor();
   await page.getByRole('button', { name: 'Apply candidate', exact: true }).click();
+  await page.click('#preview');
+  await page.click('#confirm');
+  assert.equal(await page.getByRole('button', { name: 'Review simulated publish' }).count(), 0);
+  await page.getByRole('button', { name: 'Close dialog' }).click();
+  await page.click('#preview');
   assert.equal(await leave.textContent(), 'AL');
   assert.equal(await page.locator('[data-key="TEST-A-4|2026-12-09"]').textContent(), 'SL');
   await page.click('#save');

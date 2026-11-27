@@ -39,18 +39,20 @@ if ((fixtureMode || liveMode) && (!fixture || fixture.model?.leaveOrigin !== "pu
   await new Promise(() => {});
 }
 const initial = fixture || restore(localStorage);
+const publishFixture = loopback && fixtureMode && fixture?.publishFixture && document.body.dataset.rosterPublishFixture === "enabled";
 const loaded = structuredClone(initial.model);
 const history = createHistory(initial.model);
 let team = initial.team, month = initial.month, group = "", preview = false;
 let saved = JSON.stringify(initial), current, clipboard = [], selected = new Set(), anchor = "", worker;
 let showReport = false;
 if (fixture) {
-  $("roster-mode").textContent = (liveMode ? "Live read-only" : "Fixture source") + " / Publishing disabled";
+  $("roster-mode").textContent = publishFixture ? "Fixture source / Simulated publishing enabled" :
+    (liveMode ? "Live read-only" : "Fixture source") + " / Publishing disabled";
   $("team").disabled = $("month").disabled = true;
   $("roster-mode").append(document.createTextNode(" / "));
   const back = document.createElement("a");
   back.href = "admin-roster-source.html?" + new URLSearchParams({ team, month });
-  if (fixtureMode && fixture.publishFixture) back.href += "&publish=fixture";
+  if (publishFixture) back.href += "&publish=fixture";
   back.textContent = "Review source";
   if (liveMode) back.onclick = event => {
     event.preventDefault();
@@ -753,13 +755,13 @@ function confirmDialog() {
     ...(issues.warnings.some(issue => issue.type === "boundary")
       ? [make("p", "Month-boundary data is incomplete. This synthetic snapshot is provisional.", { class: "warning" })] : []),
     make("p", issues.errors.length ? issues.errors.length + " blocking issues must be resolved first." : "This saves a synthetic snapshot only."),
-    row(accept, ...(fixtureMode && fixture?.publishFixture && !issues.errors.length ?
+    row(accept, ...(publishFixture && !issues.errors.length ?
       [button("Review simulated publish", () => publishFixtureDialog(revision))] : []))
   ]);
 }
 
 async function publishFixtureDialog(revision) {
-  if (!loopback || !fixtureMode || !fixture?.publishFixture || revision !== history.current) return;
+  if (!publishFixture || revision !== history.current) return;
   const scope = { team, month };
   const status = make("p", "Validating fixture draft...", { role: "status" });
   const request = async body => {

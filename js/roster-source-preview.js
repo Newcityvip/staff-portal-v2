@@ -6,6 +6,7 @@ const $ = id => document.getElementById(id);
 const loopback = location.protocol === "http:" && location.hostname === "127.0.0.1";
 const filters = new URLSearchParams(location.search);
 const live = filters.get("source") === "live";
+const publishFixture = loopback && !live && document.body.dataset.rosterPublishFixture === "enabled";
 const enabled = live && rosterLiveEnabled && (location.protocol === "https:" || loopback);
 const draftKey = live ? liveDraftKey : fixtureDraftKey;
 let session, expiry, editor, handoff, reader;
@@ -119,8 +120,8 @@ function prepare(mode) {
       return;
     }
     sessionStorage.setItem(fixtureHandoffKey, JSON.stringify({ model, team, month, revision, principal,
-      ...(filters.get("publish") === "fixture" ? { publishFixture: true } : {}) }));
-    location.href = "admin-roster.html?source=fixture";
+      ...(publishFixture ? { publishFixture: true } : {}) }));
+    location.href = "admin-roster.html?source=fixture" + (publishFixture ? "&publish=fixture" : "");
   };
   if (!local || mode === "resume") return open();
   const dialog = $("source-dialog"), baseline = source;
@@ -199,6 +200,7 @@ if (live) {
   $("source-month").value = parts.find(p => p.type === "year").value + "-" + parts.find(p => p.type === "month").value;
   endSession(enabled ? "Sign in to review roster source data. Save draft changes locally before your session expires." : "Live roster access is disabled.");
 } else if (loopback) {
+  if (publishFixture) $("source-mode").textContent = "Simulated publishing / No live writes";
   if (["Affiliate", "CSP"].includes(filters.get("team"))) $("source-team").value = filters.get("team");
   if (/^20\d\d-(0[1-9]|1[0-2])$/.test(filters.get("month") || "")) $("source-month").value = filters.get("month");
   refresh();

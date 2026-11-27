@@ -33,8 +33,13 @@ function fixtureRows(team, month) {
     revision: createHash('sha256').update(JSON.stringify([staff, shifts, schedule])).digest('hex').slice(0, 16) };
 }
 
-function fixtureHandler({ role = 'SUPER_ADMIN', now = Date.now, readSource = fixtureRows } = {}) {
+function fixtureHandler({ role = 'SUPER_ADMIN', now = Date.now, readSource = fixtureRows, publishing = false, fault = '' } = {}) {
+  const publish = publishing ? require('./roster-publish-fixture.cjs').publishFixture(readSource, fault) : null;
   const sessions = new Map();
+  const sessionFor = req => {
+    const token = (req.headers.cookie || '').split(/;\s*/).find(entry => entry.startsWith(cookieName + '='))?.slice(cookieName.length + 1);
+    return sessions.get(token);
+  };
   const contract = import('../backend/roster-read-contract.mjs').then(({ rosterReadContract, rosterSessionMaxAge }) => ({
     ttl: rosterSessionMaxAge,
     read: rosterReadContract({
@@ -42,7 +47,7 @@ function fixtureHandler({ role = 'SUPER_ADMIN', now = Date.now, readSource = fix
       resolveSession: key => sessions.get(key),
       resolveAdmin: subject => subject === 'fixture-user' ? { role, active: true, draftNamespace: 'preview-' + role.toLowerCase() } : null,
       allowedIp: ip => ip === '127.0.0.1',
-      readSource, now
+      readSource: publish ? publish.read : readSource, now
     })
   }));
   return {
@@ -62,6 +67,29 @@ function fixtureHandler({ role = 'SUPER_ADMIN', now = Date.now, readSource = fix
         sessionId, team: url.searchParams.get('team'), month: url.searchParams.get('month'), [boundary]: req.socket.remoteAddress === '127.0.0.1' });
       res.writeHead(result.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       res.end(JSON.stringify(result.body));
+    },
+    async publish(req, res) {
+      const send = (status, body) => {
+        res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        return res.end(JSON.stringify(body));
+      };
+      if (!publish) return send(404, { ok: false, message: 'Fixture publishing is disabled.' });
+      const session = sessionFor(req);
+      if (req.method !== 'POST' || req.socket.remoteAddress !== '127.0.0.1' ||
+        req.headers.origin !== 'http://' + req.headers.host ||
+        !/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '') ||
+        !session || session.expiresAt <= now()) return send(403, { ok: false, message: 'Fixture session or request not authorized.' });
+      let size = 0;
+      const chunks = [];
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > 524288) return send(413, { ok: false, message: 'Roster is too large.' });
+        chunks.push(chunk);
+      }
+      let body;
+      try { body = JSON.parse(Buffer.concat(chunks)); } catch { return send(400, { ok: false, message: 'Invalid roster payload.' }); }
+      const result = await publish.request({ active: true, role, id: 'fixture-' + role }, body);
+      return send(result.status, result.body);
     }
   };
 }

@@ -50,6 +50,7 @@ if (fixture) {
   $("roster-mode").append(document.createTextNode(" / "));
   const back = document.createElement("a");
   back.href = "admin-roster-source.html?" + new URLSearchParams({ team, month });
+  if (fixtureMode && fixture.publishFixture) back.href += "&publish=fixture";
   back.textContent = "Review source";
   if (liveMode) back.onclick = event => {
     event.preventDefault();
@@ -752,8 +753,72 @@ function confirmDialog() {
     ...(issues.warnings.some(issue => issue.type === "boundary")
       ? [make("p", "Month-boundary data is incomplete. This synthetic snapshot is provisional.", { class: "warning" })] : []),
     make("p", issues.errors.length ? issues.errors.length + " blocking issues must be resolved first." : "This saves a synthetic snapshot only."),
-    accept
+    row(accept, ...(fixtureMode && fixture?.publishFixture && !issues.errors.length ?
+      [button("Review simulated publish", () => publishFixtureDialog(revision))] : []))
   ]);
+}
+
+async function publishFixtureDialog(revision) {
+  if (!loopback || !fixtureMode || !fixture?.publishFixture || revision !== history.current) return;
+  const scope = { team, month };
+  const status = make("p", "Validating fixture draft...", { role: "status" });
+  const request = async body => {
+    const response = await fetch("./roster-fixture/publish", {
+      method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
+      signal: AbortSignal.timeout(8000), body: JSON.stringify({ ...scope, ...body })
+    });
+    return response.json();
+  };
+  const stillOpen = () => status.isConnected && $("dialog").open && revision === history.current && team === scope.team && month === scope.month;
+  openDialog("Review simulated publish", [status]);
+  const records = current.people.flatMap(person => current.dates.map(date => ({
+    staffId: person.id, date, shift: current.draft.cells[key(person.id, date)]
+  })));
+  try {
+    const result = await request({ action: "preview", records, sourceRevision: fixture.revision,
+      configuration: fixtureTools.publicationConfiguration(current) });
+    if (!stillOpen()) return;
+    if (!result.ok) {
+      status.textContent = result.message;
+      status.after(...(result.conflicts || []).map(conflict => make("p", conflict)));
+      return;
+    }
+    const acknowledgement = input("checkbox", "");
+    const counts = result.counts;
+    status.textContent = counts.new + " new / " + counts.updated + " updated / " + counts.unchanged + " unchanged / " +
+      counts.conflicting + " conflicting. No production writes.";
+    const receipt = make("p", "", { role: "status" });
+    const show = response => {
+      receipt.textContent = response.state === "verified" ? "Simulated schedule write verified." :
+        response.state === "not-written" ? "Reconciled: no rows were written." :
+        response.message || "Write not verified. Check operation status before trying again.";
+    };
+    const check = button("Check Operation Status", async () => {
+      try { show(await request({ action: "status", id: result.id })); }
+      catch { receipt.textContent = "Status unavailable. Do not resubmit."; }
+    });
+    const recovery = button("Reconcile Uncertain Write", async () => {
+      try { show(await request({ action: "recover", id: result.id })); }
+      catch { receipt.textContent = "Reconciliation unavailable. Keep publishing paused."; }
+    });
+    const confirm = button("Publish Final Schedule", async () => {
+      if (!stillOpen() || !acknowledgement.checked || confirm.disabled) return;
+      confirm.disabled = acknowledgement.disabled = true;
+      check.hidden = recovery.hidden = false;
+      receipt.textContent = "Publishing to the local fixture...";
+      try { show(await request({ action: "commit", id: result.id, acknowledged: true })); }
+      catch { receipt.textContent = "Write outcome unknown. Check operation status; do not resubmit."; }
+    }, { disabled: "" });
+    check.hidden = recovery.hidden = true;
+    acknowledgement.onchange = () => { confirm.disabled = !acknowledgement.checked; };
+    const changes = make("details");
+    changes.append(make("summary", "Show changed rows"), reportTable(["Staff ID", "Date", "Before", "After"],
+      result.changes.map(({ before, after }) => [after.staff_id, after.schedule_date, before?.code || "-", after.shift_code])));
+    status.after(changes, make("p", "Manually verify Future_Leave_Requests for this roster before publishing."),
+      row(label("I verified the leave requests", acknowledgement), confirm), row(check, recovery), receipt);
+  } catch {
+    if (stillOpen()) status.textContent = "Fixture publish preview unavailable.";
+  }
 }
 
 function reportTable(headers, values) {

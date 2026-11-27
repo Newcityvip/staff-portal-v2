@@ -21,8 +21,12 @@ function startPreview(port = 8765, host = '127.0.0.1', options = {}) {
       const url = new URL(req.url, 'http://localhost');
       const file = url.pathname.replace(/^\/(?:staff-portal-v2\/)?/, '');
       if (fixture && file === 'roster-fixture/snapshot') return await fixture.read(req, res, url);
+      if (fixture && file === 'roster-fixture/publish') return await fixture.publish(req, res);
       if (req.method !== 'GET' || !(assets.has(file) || fixture && fixtureAssets.has(file))) return res.writeHead(404).end();
-      const body = await fs.readFile(path.join(root, file));
+      let body = await fs.readFile(path.join(root, file));
+      if (fixture && options.publishing && file === 'admin-roster.html') {
+        body = body.toString('utf8').replace("connect-src 'none'", "connect-src 'self'");
+      }
       if (fixture && file === 'admin-roster-source.html') await fixture.issue(req, res);
       res.writeHead(200, { 'Content-Type': types[path.extname(file)], 'Cache-Control': 'no-store' });
       res.end(body);
@@ -48,10 +52,13 @@ function previewOptions(args, interfaces = networkInterfaces()) {
 
 if (require.main === module) {
   Promise.resolve().then(async () => {
-    if (process.argv[2] === '--fixture') {
+    if (['--fixture','--publish-fixture'].includes(process.argv[2])) {
       const { port } = previewOptions([process.argv[3] || '8770']);
-      const server = await startPreview(port, '127.0.0.1', { fixture: true });
-      console.log('http://127.0.0.1:' + server.address().port + '/admin-roster-source.html (sanitized fixtures only)');
+      const publishing = process.argv[2] === '--publish-fixture', fault = process.argv[4] || '';
+      if (!['','closed','interrupt-before','interrupt-after','mismatch'].includes(fault)) throw Error('Unsupported fixture scenario');
+      const server = await startPreview(port, '127.0.0.1', { fixture: true, publishing, fault });
+      console.log('http://127.0.0.1:' + server.address().port + '/admin-roster-source.html' +
+        (publishing ? '?publish=fixture' : '') + ' (sanitized fixtures only)');
       return;
     }
     const { lan, host, port } = previewOptions(process.argv.slice(2));

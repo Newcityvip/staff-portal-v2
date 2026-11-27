@@ -118,7 +118,8 @@ function prepare(mode) {
       showEditor(true);
       return;
     }
-    sessionStorage.setItem(fixtureHandoffKey, JSON.stringify({ model, team, month, revision, principal }));
+    sessionStorage.setItem(fixtureHandoffKey, JSON.stringify({ model, team, month, revision, principal,
+      ...(filters.get("publish") === "fixture" ? { publishFixture: true } : {}) }));
     location.href = "admin-roster.html?source=fixture";
   };
   if (!local || mode === "resume") return open();

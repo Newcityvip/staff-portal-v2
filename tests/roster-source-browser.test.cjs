@@ -29,6 +29,29 @@ async function setup(t, options, width) {
   return { page, base, external, errors, reads };
 }
 
+test('fixture browser generates, reviews, acknowledges and verifies a simulated monthly publish', async t => {
+  const { page, base, external, errors } = await setup(t, { publishing: true }, 1280);
+  await page.goto(base + 'admin-roster-source.html?publish=fixture');
+  await page.getByRole('button', { name: 'Open Published Copy' }).click();
+  await page.click('#generate');
+  await page.getByRole('button', { name: 'Apply candidate', exact: true }).click();
+  await page.click('#preview');
+  await page.click('#confirm');
+  await page.getByRole('button', { name: 'Review simulated publish' }).click();
+  await page.getByText(/\d+ new \/ \d+ updated \/ \d+ unchanged \/ 0 conflicting/).waitFor();
+  const confirm = page.getByRole('button', { name: 'Publish Final Schedule' });
+  assert.equal(await confirm.isDisabled(), true);
+  await page.getByLabel('I verified the leave requests').check();
+  await confirm.click();
+  await page.getByText('Simulated schedule write verified.', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Close dialog' }).click();
+  await page.getByRole('link', { name: 'Review source' }).click();
+  await page.getByText(/Last refreshed/).waitFor();
+  assert.ok(await page.locator('#source-schedule tbody tr').count() > 8);
+  assert.deepEqual(external, []);
+  assert.deepEqual(errors, []);
+});
+
 test('desktop fixture source opens a separate editable draft and retains published leave on regeneration', async t => {
   const { page, base, external, errors, reads } = await setup(t, {}, 1360);
   await page.goto(base + 'admin-roster-source.html');

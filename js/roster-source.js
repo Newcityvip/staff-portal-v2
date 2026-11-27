@@ -113,6 +113,12 @@ export function sourceDraft(source, include = [], usePublished = true, generatio
 export const fixtureDraftKey = (...scope) => "spv2.roster.fixture-draft.v1." + scope.join(".");
 export const liveDraftKey = (...scope) => "spv2.roster.live-draft.v1." + scope.join(".");
 export const fixtureHandoffKey = "spv2.roster.fixture-handoff.v1";
+export function publicationConfiguration(context) {
+  const { rules, coverage, demand, preferences } = context.draft;
+  return { rules, coverage, demand, preferences, transitions: context.transitions,
+    groups: context.groups.map(({ id, name }) => ({ id, name })),
+    memberships: context.people.map(({ id, group }) => ({ id, group })).sort((a, b) => a.id.localeCompare(b.id)) };
+}
 export function draftComparison(localCells, sourceCells, teamPeople, dates) {
   let added = 0, removed = 0, changed = 0;
   for (const person of teamPeople) for (const date of dates) {

@@ -34,7 +34,8 @@ export function createDiagnosticBundle(context, options = {}) {
     nextCatalog: context.nextCatalog.map(s => chooseFields(s, shiftFields)),
     previous: cells(context.previous), next: cells(context.next), leave: cells(context.leave), transitions: context.transitions,
     conflicts: (context.conflicts || []).map(id => aliases.get(id)).filter(Boolean),
-    draft: { cells: cells(draft.cells), locks: cells(draft.locks),
+    draft: { cells: cells(draft.cells), locks: cells(draft.locks), sources: cells(draft.sources),
+      leaveOverrides: cells(filtered(draft.leaveOverrides, ["original", "replacement"])),
       staffLocks: Object.fromEntries([...aliases].filter(([id]) => draft.staffLocks[id]).map(([, alias]) => [alias, true])),
       coverage: filtered(draft.coverage, coverageFields), demand: filtered(draft.demand, demandFields), rules: chooseFields(draft.rules, ruleFields),
       preferences: Object.fromEntries([...aliases].filter(([id]) => draft.preferences[id]).map(([id, alias]) =>
@@ -89,6 +90,12 @@ export function readDiagnosticBundle(text) {
     !table(context.leave, (k, v) => cellKey(k, false) && context.catalog.some(s => s.kind === "leave" && s.id === v)) ||
     !table(draft.cells, (k, v) => cellKey(k, true) && (token(v) || list(v, 5, token))) ||
     !table(draft.locks, (k, v) => cellKey(k, true) && typeof v === "boolean") ||
+    !(draft.sources === undefined || table(draft.sources, (k, v) =>
+      cellKey(k, true) && ["manual", "generated"].includes(v))) ||
+    !(draft.leaveOverrides === undefined || table(draft.leaveOverrides, (k, v) =>
+      cellKey(k, true) && byFields(v, ["original", "replacement"], token) && token(v.replacement) &&
+      context.catalog.some(s => s.kind === "leave" && s.id === v.original) &&
+      (draft.cells[k] || "") === v.replacement && !context.leave[k])) ||
     !table(draft.staffLocks, (k, v) => peopleSet.has(k) && typeof v === "boolean") ||
     !table(draft.coverage, (k, v) => settingKey(k, true) && (typeof v === "number" && scalar(v) || byFields(v, coverageFields))) ||
     !table(draft.demand, (k, v) => settingKey(k, false) && byFields(v, demandFields)) ||

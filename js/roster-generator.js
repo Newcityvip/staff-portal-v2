@@ -1,4 +1,5 @@
-import { dateAt, dayIndex, isLocked, key, totals, weekday, weekdays, datesFor, previousMonth } from "./roster-model.js";
+import { blankHoldShift, dateAt, dayIndex, heldBlank, isLocked, key, protectedNonWork, totals,
+  weekday, weekdays, datesFor, previousMonth } from "./roster-model.js";
 import { coverageKey, coverageReport, coverageRule, eligible, staffRules, validCoverage } from "./roster-policy.js";
 import { alignment, boundary, boundaryPhases, demandRule, desiredOff, endingPhase, offCapacity,
   pairedPolicy, pairNames, phaseIndices, phasesFor, validDemand, workloads } from "./roster-weekly.js";
@@ -149,14 +150,14 @@ export function validate(context, cells = context.draft.cells, scope = {}) {
       put(warnings, "boundary", person.name + ": previous boundary incomplete; unknown dates are not assumed working or OFF");
     }
     for (const date of context.dates) {
-      const k = key(person.id, date), value = cells[k], shift = catalog.get(value);
+      const k = key(person.id, date), value = cells[k], shift = catalog.get(value) || (!value && heldBlank(context, k) ? blankHoldShift : null);
       const label = person.name + " on " + date;
       const ref = { cell: k };
       if (Array.isArray(value)) put(errors, "duplicate", "Duplicate assignments: " + label, ref);
       else if (!value) put(errors, "missing", "Missing assignment: " + label, ref);
       else if (!shift) put(errors, "invalid", "Invalid shift: " + label, ref);
       if (context.leave[k] && value !== context.leave[k]) put(errors, "leave", "Confirmed leave conflict: " + label, ref);
-      if (isLocked(context, person.id, date) && context.draft.cells[k] !== value && !context.leave[k]) {
+      if (isLocked(context, person.id, date) && (context.draft.cells[k] || "") !== (value || "") && !context.leave[k]) {
         put(errors, "lock", "Locked assignment changed: " + label, ref);
       }
       if (shift && !eligible(rules, shift)) put(errors, "fixed", "Fixed shift or allowed-shift conflict: " + label, ref);
@@ -228,8 +229,10 @@ export function diagnose(context, options = {}) {
       }
       for (const date of context.dates) {
         const k = key(p.id, date), { saved, locked, retained, leave } = fixed(p, date);
-        const shift = catalog.get(leave || (retained ? saved : ""));
+        const shift = catalog.get(leave || (retained ? saved : "")) || (heldBlank(context, k) ? blankHoldShift : null);
         const ref = { group, date, staff: p.name, cell: k, shift: shift?.id };
+        if (shift === blankHoldShift) add("held-empty", "Approved leave override keeps this cell intentionally unassigned", ref,
+          "Unassigned", "An assignment is required for confirmation", "Use Override Approved Leave to assign a shift or leave on this date.");
         if (leave && saved && saved !== leave || locked && !shift) {
           add(leave ? "leave" : "lock", leave ? "Confirmed leave conflicts with the saved cell" : "Locked cell has no valid shift",
             ref, String(saved || "Blank"), leave || "A valid locked assignment", "Review the original assignment; confirmed leave and locks will not be changed automatically.");
@@ -275,16 +278,17 @@ export function diagnose(context, options = {}) {
       const min = settings.reduce((sum, entry) => sum + entry.min, 0);
       const off = slots.filter(s => s.mandatoryOff).length;
       const ref = { group, date, setting: "demand", coverage: [group, date, "OFF"] };
-      const cap = offCapacity(rule, people.filter(p => !fixed(p, date).leave).length, min);
+      const cap = offCapacity(rule, people.filter(p => !protectedNonWork(context, key(p.id, date))).length, min);
       const valid = settings.every(validCoverage) && (!paired || validDemand(rule));
       const permitted = valid ? coverageMatching(slots, shifts.map((s, i) => ({ id: s.id, limit: settings[i].max ?? available }))) : available;
       const leave = people.filter(p => selected.has(p.id) && (() => {
         const entry = fixed(p, date);
         return entry.leave || entry.retained && catalog.get(entry.saved)?.kind === "leave";
       })()).length;
+      const holds = people.filter(p => selected.has(p.id) && heldBlank(context, key(p.id, date))).length;
       const outsideWork = people.filter(p => !selected.has(p.id) && catalog.get(context.draft.cells[key(p.id, date)])?.kind === "work").length;
       const floor = Math.max(min, rulesMinimum(paired, rule));
-      days.push({ date, cap, permitted, floor, leave, outsideWork, valid });
+      days.push({ date, cap, permitted, floor, leave, holds, outsideWork, valid });
       if (valid && floor > permitted && permitted < available) add("daily-work-capacity",
         "Shift caps and eligibility permit fewer assignments than the daily minimum",
         { group, date, setting: "coverage" }, floor + " required", permitted + " permitted (" + available + " potentially available)",
@@ -345,11 +349,12 @@ export function diagnose(context, options = {}) {
         "Review daily OFF caps, working minimums, leave and shift coverage.");
       if (!week.every(day => day.valid)) continue;
       const sum = field => week.reduce((total, day) => total + day[field], 0);
-      const leave = sum("leave"), outside = sum("outsideWork"), required = selectedCount * 5 - leave + outside;
+      const leave = sum("leave"), holds = sum("holds"), outside = sum("outsideWork"), required = selectedCount * 5 - leave - holds + outside;
       const permitted = sum("permitted"), floor = sum("floor");
       const ref = { group, date: week[0].date, end: week.at(-1).date, setting: "coverage" };
       if (permitted < required) add("weekly-work-capacity", "Weekly shift capacity contradicts paired OFF and required workdays", ref,
-        required + " working slots (" + selectedCount * 5 + " before " + leave + " leave / " + outside + " out-of-scope assignments)",
+        required + " working slots (" + selectedCount * 5 + " before " + leave + " leave / " +
+          (holds ? holds + " unassigned override(s) / " : "") + outside + " out-of-scope assignments)",
         permitted + " permitted at most under caps, eligibility and retained cells",
         "Test a coverage adjustment. Regular OFF days, leave, locks and shift eligibility stay unchanged.");
       if (floor > required) add("weekly-minimum-capacity", "Weekly minimum coverage exceeds the available working assignments", ref,
@@ -610,7 +615,7 @@ export function generate(context, { group = "", people: staffIds, keepAssigned =
     const states = people.map((person, i) => initialState(context, person, edges[i]));
     const demands = context.dates.map((date, i) => {
       const rule = demandRule(context, id, date);
-      const available = people.filter(person => !context.leave[key(person.id, date)]).length;
+      const available = people.filter(person => !protectedNonWork(context, key(person.id, date))).length;
       const cap = offCapacity(rule, available, config[i].reduce((sum, entry) => sum + entry.min, 0));
       return { rule, available, cap };
     });
@@ -619,7 +624,7 @@ export function generate(context, { group = "", people: staffIds, keepAssigned =
       const limits = config[index];
       if (limits.some(rule => !validCoverage(rule))) return { status: "infeasible", code: "coverage",
         reason: name + " has an invalid minimum, target, maximum or priority on " + date };
-      const available = people.filter(person => !context.leave[key(person.id, date)]).length;
+      const available = people.filter(person => !protectedNonWork(context, key(person.id, date))).length;
       if (limits.reduce((n, rule) => n + rule.min, 0) > available) return { status: "infeasible", code: "staffing",
         reason: name + ": minimum coverage exceeds available staff on " + date + ". Review minimums, eligibility or a manual transfer." };
       if (paired && (!validDemand(demands[index].rule) || demands[index].rule.minWork > available)) return {
@@ -629,7 +634,7 @@ export function generate(context, { group = "", people: staffIds, keepAssigned =
         const k = key(person.id, date), value = cells[k];
         if (context.leave[k] && value && context.leave[k] !== value) return { status: "infeasible", code: "leave",
           reason: "Confirmed leave conflicts with " + person.name + "'s assignment on " + date };
-        if (!context.leave[k] && selected.has(person.id) && isLocked(context, person.id, date) && !catalog.has(value)) {
+        if (!context.leave[k] && selected.has(person.id) && isLocked(context, person.id, date) && !catalog.has(value) && !heldBlank(context, k)) {
           return { status: "infeasible", code: "locked", reason: person.name + " has a blank or invalid locked assignment on " + date };
         }
       }
@@ -641,7 +646,7 @@ export function generate(context, { group = "", people: staffIds, keepAssigned =
           const k = key(person.id, date), code = cells[k];
           if (context.leave[k]) states[n].phases &= phasesFor(date, false);
           else if (isLocked(context, person.id, date) || keepAssigned && code) {
-            const shift = catalog.get(code);
+            const shift = catalog.get(code) || (heldBlank(context, k) ? blankHoldShift : null);
             if (shift) states[n].phases &= phasesFor(date, shift.kind === "off");
           }
         }
@@ -696,7 +701,8 @@ export function generate(context, { group = "", people: staffIds, keepAssigned =
         const k = key(person.id, date), saved = context.draft.cells[k], pref = preferences[n];
         const leave = context.leave[k], locked = isLocked(context, person.id, date);
         const outside = !selected.has(person.id);
-        const choices = outside ? [catalog.get(saved)] : leave ? [catalog.get(leave)] : locked || (keepAssigned && saved) ? [catalog.get(saved)] :
+        const choices = outside ? [catalog.get(saved)] : leave ? [catalog.get(leave)] : locked || (keepAssigned && saved) ?
+          [catalog.get(saved) || (heldBlank(context, k) ? blankHoldShift : null)] :
           [off, ...shifts.filter((s, i) => settings[i].enabled && eligible(pref, s))];
         return { n, k, outside, choices: choices.filter(s => outside || s && eligible(pref, s)).map(shift => ({
           shift, ...(outside ? { next: states[n] } : advance(states[n], date, shift, pref))

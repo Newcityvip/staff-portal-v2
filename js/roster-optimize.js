@@ -1,4 +1,4 @@
-import { isLocked, key, weekday, weekdays } from "./roster-model.js";
+import { blankHoldShift, heldBlank, isLocked, key, protectedNonWork, weekday, weekdays } from "./roster-model.js";
 import { coverageRule, eligible } from "./roster-policy.js";
 import { alignment, boundary, demandRule, phasesFor } from "./roster-weekly.js";
 
@@ -20,6 +20,7 @@ export function staffGraph(context, person, options, constraints, shifts, settin
     const k = key(person.id, date), saved = context.draft.cells[k];
     if (context.leave[k] && saved && saved !== context.leave[k]) return [];
     if (context.leave[k]) return [context.leave[k]];
+    if (heldBlank(context, k)) return [blankHoldShift.id];
     if (isLocked(context, person.id, date) || options.keepAssigned && saved) return [saved];
     return null;
   });
@@ -169,14 +170,14 @@ function optimizeGroup(context, group, profile, passCount, salt) {
 
 export function optimizeMonth(context, options, scope, constraints, profiles, progress) {
   const { selected, groups } = scope;
-  const shifts = context.catalog, groupPlans = [], impossible = [];
+  const shifts = [...context.catalog, blankHoldShift], groupPlans = [], impossible = [];
   for (const group of groups) {
     const members = context.people.filter(p => p.group === group);
     if (!members.length) continue;
     const people = members.filter(p => selected.has(p.id));
     const settings = context.dates.map(date => ({
       demand: demandRule(context, group, date), byShift: shifts.map(s => s.kind === "work" ? coverageRule(context, group, date, s.id) : null),
-      available: members.filter(p => !context.leave[key(p.id, date)]).length
+      available: members.filter(p => !protectedNonWork(context, key(p.id, date))).length
     }));
     const graphs = people.map(p => {
       const graph = staffGraph(context, p, options, constraints, shifts, settings);

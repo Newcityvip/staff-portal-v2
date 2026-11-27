@@ -44,6 +44,7 @@ export function seed() {
 }
 export const draftKey = (team, month) => team + "|" + month;
 export const newDraft = () => ({ cells: {}, locks: {}, staffLocks: {}, coverage: {}, demand: {}, preferences: {},
+  sources: {}, leaveOverrides: {}, leaveAudit: [],
   rules: { offPolicy: "paired", weeklyOff: 2, maxRun: 6, rest: 11, fair: true }, revision: 0 });
 export function draftFor(model, team, month) {
   const id = draftKey(team, month);
@@ -83,8 +84,13 @@ export function contextFor(model, team, month) {
   const recorded = [...model.snapshots].reverse().find(s => s.team === team && s.month === previous);
   const following = nextMonth(month);
   const nextRecord = [...model.snapshots].reverse().find(s => s.team === team && s.month === following);
+  const draft = draftFor(model, team, month), leave = { ...model.leave };
+  for (const overrides of [draft.leaveOverrides, recorded?.planning?.leaveOverrides ?? model.drafts[draftKey(team, previous)]?.leaveOverrides,
+    nextRecord?.planning?.leaveOverrides ?? model.drafts[draftKey(team, following)]?.leaveOverrides]) {
+    for (const k of Object.keys(overrides || {})) delete leave[k];
+  }
   return { team, month, dates: datesFor(month), people, groups: model.groups.filter(g => g.team === team),
-    catalog: model.catalogs[team], leave: model.leave, draft: draftFor(model, team, month),
+    catalog: model.catalogs[team], leave, approvedLeave: model.leave, draft,
     previous: recorded?.cells || model.drafts[draftKey(team, previous)]?.cells || {},
     previousCatalog: recorded?.catalog || model.catalogs[team],
     next: nextRecord?.cells || model.drafts[draftKey(team, following)]?.cells || {},
@@ -97,10 +103,85 @@ export function snapshot(context) {
   const leaveForScope = Object.fromEntries(people.flatMap(person => dates.map(date => key(person.id, date)))
     .filter(k => leave[k]).map(k => [k, leave[k]]));
   return structuredClone({ team, month, dates, people, groups, catalog, revision: draft.revision, cells: draft.cells,
-    planning: { coverage: draft.coverage, demand: draft.demand || {}, rules: draft.rules, preferences: draft.preferences, leave: leaveForScope } });
+    planning: { coverage: draft.coverage, demand: draft.demand || {}, rules: draft.rules, preferences: draft.preferences, leave: leaveForScope,
+      sources: draft.sources, leaveOverrides: draft.leaveOverrides, leaveAudit: draft.leaveAudit } });
 }
-export const isLocked = (context, id, date) => Boolean(context.leave[key(id, date)] ||
-  context.draft.staffLocks[id] || context.draft.locks[key(id, date)]);
+export const isManualLock = (context, id, date) => Boolean(context.draft.staffLocks[id] || context.draft.locks[key(id, date)]);
+export const importedLeave = (context, k) => context.approvedLeave?.[k] || context.leave[k] || context.draft.leaveOverrides?.[k]?.original;
+export const isLeaveCell = (context, k) => context.catalog.some(s => s.kind === "leave" && s.id === context.draft.cells?.[k]);
+export const heldBlank = (context, k) => context.draft.leaveOverrides?.[k]?.replacement === "" && !context.draft.cells?.[k];
+export const blankHoldShift = { id: "", kind: "hold" };
+export const protectedNonWork = (context, k) => Boolean(context.leave[k] || isLeaveCell(context, k) || heldBlank(context, k));
+export const isLocked = (context, id, date) => {
+  const k = key(id, date);
+  return Boolean(context.leave[k] || context.draft.leaveOverrides?.[k] || isLeaveCell(context, k) || isManualLock(context, id, date));
+};
+export function assignmentSource(context, k) {
+  if (context.draft.leaveOverrides?.[k]) return "overridden";
+  if (context.leave[k]) return "approved";
+  if (isLeaveCell(context, k)) return "manual-leave";
+  return context.draft.sources?.[k] || (context.draft.cells[k] ? "legacy" : "");
+}
+export function assignCell(draft, k, value, source = "manual") {
+  if (value) { draft.cells[k] = value; draft.sources[k] = source; }
+  else { delete draft.cells[k]; delete draft.sources[k]; }
+}
+export function assignmentsFromGeneration(draft, cells) {
+  for (const k of new Set([...Object.keys(draft.cells), ...Object.keys(cells)])) {
+    if ((draft.cells[k] || "") !== (cells[k] || "")) assignCell(draft, k, cells[k], "generated");
+  }
+}
+export function overrideApprovedLeave(context, draft, changes, reason, at, clearLocks = false) {
+  const note = reason.trim();
+  if (!note || note.length > 500 || !changes.length) return false;
+  if (!changes.every(([k, value]) => {
+    const [id, date] = k.split("|");
+    return importedLeave(context, k) && context.people.some(p => p.id === id) && context.dates.includes(date) &&
+      (clearLocks || !isManualLock(context, id, date)) && (value === "" || context.catalog.some(s => s.id === value));
+  })) return false;
+  for (const [k, value] of changes) {
+    const original = importedLeave(context, k);
+    const entry = { k, original, previous: draft.cells[k] || "", replacement: value, reason: note, at };
+    draft.leaveOverrides[k] = entry;
+    draft.leaveAudit.push(entry);
+    assignCell(draft, k, value);
+  }
+  return true;
+}
+export function resetRosterScope(draft, original, ids, dates, { whole = false, group = "" } = {}) {
+  const staff = new Set(ids), keys = new Set(ids.flatMap(id => dates.map(date => key(id, date))));
+  const restoreKeys = (field, rosterKeys) => {
+    for (const k of rosterKeys) {
+      if (Object.hasOwn(original[field] || {}, k)) draft[field][k] = structuredClone(original[field][k]);
+      else delete draft[field][k];
+    }
+  };
+  for (const field of ["cells", "locks", "sources", "leaveOverrides"]) restoreKeys(field, keys);
+  for (const field of ["staffLocks", "preferences"]) restoreKeys(field, staff);
+  draft.leaveAudit = [...draft.leaveAudit.filter(e => !keys.has(e.k)), ...structuredClone(original.leaveAudit.filter(e => keys.has(e.k)))]
+    .sort((a, b) => a.at.localeCompare(b.at));
+  if (whole) for (const field of ["coverage", "demand", "rules"]) draft[field] = structuredClone(original[field]);
+  else if (group) for (const field of ["coverage", "demand"]) {
+    restoreKeys(field, new Set([...Object.keys(draft[field]), ...Object.keys(original[field])].filter(k => k.startsWith(group + "|"))));
+  }
+}
+export function clearRosterAssignments(context, draft, ids, mode, reason = "", at = "") {
+  const people = context.people.filter(p => ids.includes(p.id));
+  const keys = people.flatMap(p => context.dates.map(date => key(p.id, date)));
+  const approved = keys.filter(k => importedLeave(context, k) && (context.leave[k] || context.draft.cells[k]));
+  if (mode === "all" && approved.length && !overrideApprovedLeave(context, draft, approved.map(k => [k, ""]), reason, at, true)) return false;
+  const protectedKeys = new Set(approved);
+  if (mode === "all") for (const p of people) delete draft.staffLocks[p.id];
+  for (const k of keys) {
+    if (mode === "all") {
+      delete draft.locks[k];
+      if (!protectedKeys.has(k)) assignCell(draft, k, "");
+    } else if (!isLocked(context, ...k.split("|")) && (mode === "unlocked" || draft.sources[k] === "generated")) {
+      assignCell(draft, k, "");
+    }
+  }
+  return true;
+}
 export function totals(catalog, row) {
   const tally = { work: 0, off: 0, leave: 0 };
   for (const value of row) {
@@ -159,6 +240,9 @@ export function migrate(saved) {
   model.transitions ??= seed().transitions;
   for (const draft of Object.values(model.drafts)) {
     draft.demand ??= {};
+    draft.sources ??= {};
+    draft.leaveOverrides ??= {};
+    draft.leaveAudit ??= [];
     for (const rule of Object.values(draft.coverage)) if (rule && typeof rule === "object") rule.max = optionalLimit(rule.max);
     for (const rule of Object.values(draft.demand)) if (rule && typeof rule === "object") {
       rule.maxOff = optionalLimit(rule.maxOff);
@@ -176,10 +260,10 @@ export function migrate(saved) {
 export function restore(storage) {
   try {
     const saved = JSON.parse(storage.getItem(storageKey) || "null");
-    if ([1, 2].includes(saved?.schema) && Array.isArray(saved.model?.people) && saved.model?.catalogs) return migrate(saved);
+    if ([1, 2, 3].includes(saved?.schema) && Array.isArray(saved.model?.people) && saved.model?.catalogs) return migrate(saved);
   } catch {}
   return { model: seed(), team: "Affiliate", month: "2026-12" };
 }
 export function save(storage, model, team, month) {
-  storage.setItem(storageKey, JSON.stringify({ schema: 2, model, team, month }));
+  storage.setItem(storageKey, JSON.stringify({ schema: 3, model, team, month }));
 }

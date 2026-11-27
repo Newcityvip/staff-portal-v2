@@ -1,4 +1,4 @@
-import { coverage, key, optionalLimit, totals, weekday, weekdays } from "./roster-model.js";
+import { coverage, heldBlank, key, optionalLimit, totals, weekday, weekdays } from "./roster-model.js";
 import { alignment, demandRule, offCapacity, phaseIndices, phasesFor } from "./roster-weekly.js";
 
 export const priorities = ["Low", "Normal", "High", "Highest"];
@@ -34,7 +34,10 @@ export function coverageReport(context, cells) {
     const counts = coverage(people, context.dates, cells);
     return context.dates.map((date, i) => {
       const demand = demandRule(context, group.id, date);
-      const available = people.filter(p => !context.leave[key(p.id, date)]).length;
+      const available = people.filter(p => {
+        const k = key(p.id, date);
+        return !context.leave[k] && !heldBlank(context, k) && !context.catalog.some(shift => shift.kind === "leave" && shift.id === cells[k]);
+      }).length;
       const shiftCounts = shifts.map(shift => ({ id: shift.id, count: counts[i][shift.id] || 0,
         ...coverageRule(context, group.id, date, shift.id) }));
       const working = shiftCounts.reduce((sum, shift) => sum + shift.count, 0);

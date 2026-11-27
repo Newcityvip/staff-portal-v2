@@ -16,21 +16,34 @@ export function rosterCsv(snapshot, group = "") {
     "shift_code", "start_time", "end_time", "status", "notes"]];
   for (const person of snapshot.people.filter(p => !group || p.group === group)) {
     for (const date of snapshot.dates) {
-      const shift = snapshot.catalog.find(s => s.id === snapshot.cells[key(person.id, date)]);
+      const k = key(person.id, date), shift = snapshot.catalog.find(s => s.id === snapshot.cells[k]);
       if (!shift) continue;
+      const note = snapshot.planning?.leaveOverrides?.[k] ? " / APPROVED LEAVE OVERRIDE" : "";
       rows.push([snapshot.month, date, person.id, person.login, person.name, snapshot.team, shift.id,
-        shift.start, shift.end, shift.kind === "work" ? "WORKING" : shift.id, "SYNTHETIC PROTOTYPE - DO NOT UPLOAD"]);
+        shift.start, shift.end, shift.kind === "work" ? "WORKING" : shift.id, "SYNTHETIC PROTOTYPE - DO NOT UPLOAD" + note]);
     }
   }
   return rows.map(row => row.map(safeCsv).join(",")).join("\r\n") + "\r\n";
 }
+
+const auditHeader = ["Staff", "Staff ID", "Date", "Original approved leave", "Previous assignment", "Replacement", "Reason", "Recorded at"];
+function auditRows(snapshot, group) {
+  const people = new Map(snapshot.people.filter(p => !group || p.group === group).map(p => [p.id, p]));
+  return (snapshot.planning?.leaveAudit || []).flatMap(entry => {
+    const [id, date] = entry.k.split("|"), person = people.get(id);
+    return person && snapshot.dates.includes(date) ?
+      [[person.name, id, date, entry.original, entry.previous || "Unassigned", entry.replacement || "Unassigned", entry.reason, entry.at]] : [];
+  });
+}
+export const leaveAuditCsv = (snapshot, group = "") => [auditHeader, ...auditRows(snapshot, group)]
+  .map(values => values.map(safeCsv).join(",")).join("\r\n") + "\r\n";
 
 export async function workbookBytes(ExcelJS, snapshot, group = "") {
   const book = new ExcelJS.Workbook();
   book.title = "Synthetic roster prototype";
   book.creator = "Staff Portal V2";
   const fill = argb => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
-  const used = new Set(["legend", "planning summary"]);
+  const used = new Set(["legend", "planning summary", "leave audit"]);
   function sheetName(name) {
     const base = name.replace(/[\\/*?:[\]]/g, " ").replace(/^'+|'+$/g, "").trim().slice(0, 25) || "Roster";
     let title = base, n = 2;
@@ -104,6 +117,14 @@ export async function workbookBytes(ExcelJS, snapshot, group = "") {
       person.off, person.mix.AL || 0, person.mix.SL || 0, person.mix.UL || 0, person.compliant + "/" + person.weeks,
       person.maxStreak, person.transitions, person.preferred + "/" + person.opportunities]);
   }
+  const audit = auditRows(snapshot, group);
+  if (audit.length) {
+    const sheet = book.addWorksheet("Leave audit", { views: [{ state: "frozen", ySplit: 2 }] });
+    sheet.addRow(["SYNTHETIC OVERRIDE HISTORY - DO NOT UPLOAD"]);
+    sheet.addRow(auditHeader);
+    [26, 14, 14, 24, 23, 16, 50, 27].forEach((width, i) => { sheet.getColumn(i + 1).width = width; });
+    audit.forEach(values => sheet.addRow(values));
+  }
   return book.xlsx.writeBuffer();
 }
 
@@ -117,12 +138,14 @@ const loadExcel = () => excel ||= new Promise((resolve, reject) => {
 }).catch(error => { excel = null; throw error; });
 
 export async function downloadRoster(snapshot, format, group = "") {
-  const bytes = format === "csv" ? rosterCsv(snapshot, group) : await workbookBytes(await loadExcel(), snapshot, group);
-  const mime = format === "csv" ? "text/csv;charset=utf-8" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  const bytes = format === "audit-csv" ? leaveAuditCsv(snapshot, group) :
+    format === "csv" ? rosterCsv(snapshot, group) : await workbookBytes(await loadExcel(), snapshot, group);
+  const mime = format !== "xlsx" ? "text/csv;charset=utf-8" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
   const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = exportName(snapshot, format, group);
+  anchor.download = format === "audit-csv" ? exportName(snapshot, "csv", group).replace(/\.csv$/, "-leave-audit.csv") :
+    exportName(snapshot, format, group);
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

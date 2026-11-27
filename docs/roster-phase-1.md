@@ -276,3 +276,39 @@ confirmation remains blocked until mandatory requirements are satisfied.
 The reported 10-staff OLD Brands totals are not an exact replay: no diagnostic
 bundle was supplied. Use the original browser's Diagnostic bundle export to
 verify its effective caps, locks, leave, and generation scope.
+
+## Phase 1G: Leave editing and scoped roster controls
+
+Cameron Flint's December 9 AL is seeded approved leave, not a cell or row
+lock. The roster identifies generated assignments, manual leave, approved
+leave, overrides, and manual locks separately. Assign or clear normal cells
+individually or in bulk. Manual leave remains editable by an admin, but the
+generator and the non-destructive clear modes preserve it.
+
+To override imported approved leave, select the cell and a replacement
+(including Unassigned), choose **Override Approved Leave**, and add a reason.
+For manually locked cells or rows, unlock them first; doing so does not remove
+the original leave protection. A confirmed override protects the replacement
+from generation, and a deliberate blank stays unassigned until the admin
+changes it. A roster with an intentional blank cannot be finally confirmed.
+The audit records the imported code, previous assignment, replacement,
+reason, and timestamp. Undo and Redo restore assignments and audit together.
+
+**Clear / Reset Roster** scopes all changes to the selected staff, brand, or
+current team/month. Clear Generated only removes known generated assignments.
+Clear Unlocked also removes ordinary manual and legacy assignments, but both
+keep protected leave and manual locks. Clear All explicitly confirms removing
+manual leave and locks and requires a reason for removing imported leave.
+Reset restores the roster as it was when the page loaded. Staff reset restores
+staff draft entries; group reset also restores group settings; whole-team reset
+restores that month's draft rules. None of these changes brand memberships or
+other teams/months. Legacy records with no known origin remain intact on migration.
+
+The schedule CSV keeps its existing columns and exports effective assignments.
+Excel includes a **Leave audit** sheet and **Leave Audit CSV** exports the same
+history separately, including overrides to blank. Diagnostic bundles retain
+the override states for anonymized replay but omit reasons and timestamps.
+
+Phase 2 must reconcile the original approved leave requests, entitlement
+balances and Schedule_Master before allowing any override to be published
+live. Phase 1G never changes those systems or values.

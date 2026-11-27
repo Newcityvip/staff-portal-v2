@@ -448,3 +448,136 @@ test('desktop diagnostic export and isolated replay retain settings without over
     assert.deepEqual(errors, []);
   } finally { await context.close(); }
 });
+
+async function overrideLeave(page, value, reason) {
+  await page.selectOption('#assignment', value);
+  await page.click('#override-leave');
+  const dialog = page.locator('#dialog');
+  await dialog.getByRole('heading', { name: 'Override approved leave', exact: true }).waitFor();
+  if (reason !== undefined) {
+    await dialog.getByLabel('Reason for modification').fill(reason);
+    await dialog.getByRole('button', { name: 'Confirm Override' }).click();
+  }
+  return dialog;
+}
+
+test('desktop Cameron AL requires an explicit reason, survives generation, reload and audit CSV', async () => {
+  const { context, page, external, errors } = await open(1440, 920);
+  try {
+    await page.selectOption('#group', 'old');
+    await page.selectOption('#scope', 'group');
+    const c = cell(page, 'SYN-003', '2026-12-09');
+    await c.click();
+    assert.equal(await c.textContent(), 'AL');
+    assert.equal(await c.getAttribute('data-source'), 'approved');
+    assert.equal(await c.getAttribute('data-locked'), 'false');
+    await page.selectOption('#assignment', 'AL');
+    await page.click('#override-leave');
+    assert.equal(await page.locator('#dialog').isVisible(), false);
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-approved-leave-before.png') });
+    let dialog = await overrideLeave(page, 'AM');
+    await dialog.getByText('Cameron Flint', { exact: true }).waitFor();
+    await dialog.getByRole('button', { name: 'Confirm Override' }).click();
+    await dialog.getByText(/Enter a reason/).waitFor();
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    assert.equal(await c.textContent(), 'AL');
+    dialog = await overrideLeave(page, 'AM');
+    await dialog.getByLabel('Reason for modification').fill('Synthetic morning coverage');
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-approved-leave-override-desktop.png') });
+    await dialog.getByRole('button', { name: 'Confirm Override' }).click();
+    assert.equal(await c.textContent(), 'AM');
+    assert.equal(await c.getAttribute('data-source'), 'overridden');
+    await page.click('#undo'); assert.equal(await c.textContent(), 'AL');
+    await page.click('#redo'); assert.equal(await c.textContent(), 'AM');
+    await applyGenerated(page);
+    assert.equal(await c.textContent(), 'AM');
+    if (artifacts) {
+      await c.click();
+      await page.screenshot({ path: path.join(artifacts, 'roster-approved-leave-after.png') });
+    }
+    await page.click('#save');
+    await page.reload();
+    assert.equal(await c.textContent(), 'AM');
+    assert.equal(await c.getAttribute('data-source'), 'overridden');
+    const event = page.waitForEvent('download');
+    await page.click('#audit-csv');
+    const download = await event;
+    assert.match(await fs.readFile(await download.path(), 'utf8'), /"Cameron Flint".*"AL","AL","AM","Synthetic morning coverage"/);
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('mobile bulk manual leave edits and explicit row/cell locks remain independent of approved leave', async () => {
+  const { context, page, external, errors } = await open(390);
+  try {
+    await page.selectOption('#group', 'old');
+    const c = cell(page, 'SYN-003', '2026-12-09');
+    const rowLock = page.getByRole('button', { name: 'Toggle staff lock for Cameron Flint' });
+    await rowLock.click();
+    await c.click();
+    await page.selectOption('#assignment', 'OFF');
+    await page.click('#override-leave');
+    await page.getByRole('status').getByText(/Unlock the manually locked/).waitFor();
+    await rowLock.click();
+    assert.equal(await c.getAttribute('data-source'), 'approved');
+    await page.click('#lock'); assert.equal(await c.getAttribute('data-locked'), 'true');
+    await page.click('#lock'); assert.equal(await c.getAttribute('data-locked'), 'false');
+    const dialog = await overrideLeave(page, 'OFF');
+    await dialog.getByLabel('Reason for modification').fill('Synthetic rest plan');
+    assert.ok(await dialog.evaluate(node => node.getBoundingClientRect().right <= innerWidth));
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-approved-leave-override-mobile.png') });
+    await dialog.getByRole('button', { name: 'Confirm Override' }).click();
+    assert.equal(await c.textContent(), 'OFF');
+    await overrideLeave(page, 'SL', 'Synthetic alternate leave');
+    assert.equal(await c.textContent(), 'SL');
+    const a = cell(page, 'SYN-004', '2026-12-10'), b = cell(page, 'SYN-005', '2026-12-10');
+    await page.check('#multi');
+    await c.click();
+    await a.click(); await b.click();
+    for (const code of ['AL', 'SL', 'UL', 'PM', '']) {
+      await page.selectOption('#assignment', { value: code });
+      await page.click('#apply');
+      assert.equal(await a.textContent(), code || '-');
+      assert.equal(await b.textContent(), code || '-');
+      if (['AL', 'SL', 'UL'].includes(code)) assert.equal(await a.getAttribute('data-source'), 'manual-leave');
+    }
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('clear all and reset require confirmation; scoped undo restores the override and reset audit state', async () => {
+  const { context, page, external, errors } = await open(1360);
+  try {
+    await page.selectOption('#group', 'old');
+    const c = cell(page, 'SYN-003', '2026-12-09');
+    await c.click();
+    const dialog = page.locator('#dialog');
+    const operation = async value => {
+      await page.click('#clear-roster');
+      await dialog.getByLabel('Operation').selectOption(value);
+      await dialog.getByLabel('Roster scope').selectOption('staff');
+      await dialog.getByRole('button', { name: 'Review operation' }).click();
+      await dialog.getByRole('button', { name: 'Confirm roster operation' }).click();
+    };
+    await operation('all');
+    await dialog.getByText('Unassigned', { exact: true }).waitFor();
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    assert.equal(await c.textContent(), 'AL');
+    await operation('all');
+    await dialog.getByLabel('Reason for modification').fill('Synthetic staff reset');
+    await dialog.getByRole('button', { name: 'Confirm Override' }).click();
+    assert.equal(await c.textContent(), '-');
+    assert.equal(await c.getAttribute('data-source'), 'overridden');
+    await operation('reset');
+    assert.equal(await c.textContent(), 'AL');
+    assert.equal(await c.getAttribute('data-source'), 'approved');
+    await page.click('#undo'); assert.equal(await c.textContent(), '-');
+    await page.click('#redo'); assert.equal(await c.textContent(), 'AL');
+    await page.selectOption('#group', 'new');
+    assert.equal(await cell(page, 'SYN-015', '2026-12-17').textContent(), 'SL');
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});

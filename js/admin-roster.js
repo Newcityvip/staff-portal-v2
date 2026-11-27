@@ -1,5 +1,6 @@
-import { contextFor, coverage, createHistory, datesFor, draftFor, isLocked, key, previousPattern,
-  restore, save, snapshot, totals, transferMany, weekday, weekdays } from "./roster-model.js";
+import { assignCell, assignmentSource, assignmentsFromGeneration, clearRosterAssignments, contextFor, coverage,
+  createHistory, datesFor, draftFor, importedLeave, isManualLock, key, overrideApprovedLeave, previousPattern,
+  resetRosterScope, restore, save, snapshot, totals, transferMany, weekday, weekdays } from "./roster-model.js";
 import { adjustmentTrial, validate } from "./roster-generator.js";
 import { downloadRoster } from "./roster-export.js";
 import { asCoverage, coverageKey, coverageReport, priorities, validCoverage } from "./roster-policy.js";
@@ -8,6 +9,7 @@ import { createDiagnosticBundle, diagnosticMaxBytes, readDiagnosticBundle } from
 
 const $ = id => document.getElementById(id);
 const initial = restore(localStorage);
+const loaded = structuredClone(initial.model);
 const history = createHistory(initial.model);
 let team = initial.team, month = initial.month, group = "", preview = false;
 let saved = JSON.stringify(initial), current, clipboard = [], selected = new Set(), anchor = "", worker;
@@ -72,6 +74,7 @@ function updateSelection() {
   $("selection").textContent = selected.size ? selected.size + " selected" : "No selection";
   for (const id of ["apply", "copy", "clear", "lock"]) $(id).disabled = preview || !selected.size;
   $("paste").disabled = preview || !selected.size || !clipboard.length;
+  $("override-leave").disabled = preview || ![...selected].some(k => importedLeave(current, k));
 }
 function selectCell(k, event) {
   if (event.shiftKey && anchor) {
@@ -148,19 +151,24 @@ function renderGrid(report) {
       tr.dataset.person = person.id;
       const nameCell = make("th", "", { scope: "row", class: "name" });
       const locked = Boolean(current.draft.staffLocks[person.id]);
+      tr.dataset.staffLocked = locked;
       if (!preview) nameCell.append(button(locked ? "Locked" : "Lock", () =>
         editDraft(d => { if (d.staffLocks[person.id]) delete d.staffLocks[person.id]; else d.staffLocks[person.id] = true; }),
-      { class: "row-lock", "aria-label": "Toggle staff lock for " + person.name, "aria-pressed": locked }));
+      { class: "row-lock", "aria-label": "Toggle staff lock for " + person.name, "aria-pressed": locked,
+        title: locked ? "Unlock staff row; approved leave stays protected" : "Lock staff row" }));
       nameCell.append(document.createTextNode(person.name), make("small", person.id));
       tr.append(nameCell);
       for (const date of current.dates) {
         const k = key(person.id, date), value = current.draft.cells[k] || "";
         const shift = current.catalog.find(s => s.id === value);
-        const locked = Boolean(isLocked(current, person.id, date));
+        const locked = isManualLock(current, person.id, date), source = assignmentSource(current, k);
+        const origin = { approved: "Imported approved leave", "manual-leave": "Manual leave", overridden: "Overridden approved leave",
+          generated: "Generated assignment", legacy: "Legacy assignment; source unknown", manual: "Manual assignment" }[source];
+        const locks = [current.draft.staffLocks[person.id] && "Staff row locked", current.draft.locks[k] && "Cell locked"].filter(Boolean);
         const text = value || "-";
         const tip = person.name + ", " + date + ": " + (shift ? shift.id + " / " + timeLabel(shift) : value || "Unassigned") +
-          (current.leave[k] ? " (confirmed leave)" : locked ? " (locked)" : "");
-        const attrs = { class: "cell", "data-key": k, "data-code": value, "data-locked": locked, title: tip };
+          [origin, ...locks].filter(Boolean).map(status => " (" + status + ")").join("");
+        const attrs = { class: "cell", "data-key": k, "data-code": value, "data-locked": locked, "data-source": source, title: tip };
         const cell = preview ? make("span", text, attrs) : button(text, event => selectCell(k, event), { ...attrs, "aria-label": tip });
         if (shift) cell.style.setProperty("--shift", shift.color);
         tr.insertCell().append(cell);
@@ -185,7 +193,8 @@ function render() {
   $("month").value = month;
   const assignment = $("assignment").value;
   fill("group", [["", "All groups"], ...groupPairs(current)], group);
-  fill("assignment", current.catalog.map(s => [s.id, s.id + " / " + timeLabel(s)]), assignment);
+  fill("assignment", [...current.catalog.map(s => [s.id, s.id + " / " + timeLabel(s)]), ["", "Unassigned / empty"]],
+    assignment || ($("assignment").options.length ? "" : current.catalog[0]?.id));
   fill("source", [["draft", "Current draft"], ...history.current.snapshots.map((s, i) => [String(i), s.team + " " + s.month + " snapshot r" + s.revision])], $("source").value || "draft");
   updateExportGroups();
   $("period").textContent = new Intl.DateTimeFormat("en", { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(month + "-01T00:00:00Z"));
@@ -206,6 +215,7 @@ function render() {
   $("undo").disabled = preview || !history.canUndo;
   $("undo-recovery").hidden = preview || history.current !== lastRecovery;
   $("redo").disabled = preview || !history.canRedo;
+  $("clear-roster").disabled = preview;
   $("legend").replaceChildren(...current.catalog.map(shift => {
     const item = make("span");
     item.style.setProperty("--shift", shift.color);
@@ -277,14 +287,97 @@ function focusIssue(issue) {
 
 function bulk(values) {
   const keys = [...selected];
-  const editable = keys.filter(k => !isLocked(current, ...k.split("|")));
-  if (!editable.length) return notify("No unlocked cells selected.");
+  const editable = keys.filter(k => !importedLeave(current, k) && !isManualLock(current, ...k.split("|")));
+  const kept = [keys.some(k => importedLeave(current, k)) && "Use Override Approved Leave for imported leave",
+    keys.some(k => isManualLock(current, ...k.split("|"))) && "Unlock locked cells or rows before editing"].filter(Boolean);
+  if (!editable.length) return notify(kept.join(". ") + ".");
+  const allowed = new Set(editable);
   editDraft(draft => keys.forEach((k, index) => {
-    if (isLocked(current, ...k.split("|"))) return;
-    const value = values[index % values.length];
-    if (value) draft.cells[k] = value; else delete draft.cells[k];
+    if (allowed.has(k)) assignCell(draft, k, values[index % values.length]);
   }));
-  notify(editable.length + " updated" + (keys.length !== editable.length ? "; locked cells skipped." : "."));
+  notify(editable.length + " updated." + (kept.length ? " " + kept.join(". ") + "." : ""));
+}
+
+function confirmLeaveOverride(changes, apply) {
+  const guard = current, before = history.current;
+  const names = new Map(current.people.map(p => [p.id, p.name]));
+  const reason = make("textarea", "", { maxlength: 500, rows: 3, required: "" });
+  const reasonLabel = label("Reason for modification", reason);
+  reasonLabel.className = "override-reason";
+  const feedback = make("p", "", { role: "status" });
+  const confirm = button("Confirm Override", () => {
+    if (guard !== current || before !== history.current || preview) {
+      $("dialog").close();
+      return notify("Draft changed. Review the selected assignments again.");
+    }
+    const note = reason.value.trim();
+    if (!note) { feedback.textContent = "Enter a reason before confirming the override."; reason.focus(); return; }
+    $("dialog").close();
+    apply(note, new Date().toISOString());
+  }, { class: "primary" });
+  openDialog("Override approved leave", [
+    make("p", "This changes the synthetic roster only. The original leave record and the reason are kept in the draft audit."),
+    reportTable(["Staff", "Date", "Original leave", "Proposed assignment"], changes.map(([k, value]) => {
+      const [id, date] = k.split("|");
+      return [names.get(id), date, importedLeave(current, k), value || "Unassigned"];
+    })),
+    reasonLabel, feedback,
+    row(button("Cancel", () => $("dialog").close()), confirm)
+  ]);
+}
+
+function editApprovedLeave() {
+  const proposed = $("assignment").value;
+  const protectedKeys = [...selected].filter(k => importedLeave(current, k) && (current.draft.cells[k] || "") !== proposed);
+  if (!protectedKeys.length) return notify("Choose a different assignment before overriding approved leave.");
+  if (protectedKeys.some(k => isManualLock(current, ...k.split("|")))) {
+    return notify("Unlock the manually locked cells or staff rows before overriding approved leave.");
+  }
+  const changes = protectedKeys.map(k => [k, proposed]);
+  const context = current;
+  confirmLeaveOverride(changes, (reason, at) => {
+    editDraft(d => overrideApprovedLeave(context, d, changes, reason, at));
+    notify(changes.length + " approved leave override(s) recorded.");
+  });
+}
+
+function clearRosterDialog() {
+  const operation = choose([["generated", "Clear Generated Assignments"], ["unlocked", "Clear Unlocked Assignments"],
+    ["all", "Clear All Draft Assignments"], ["reset", "Reset to Original Draft"]], "generated");
+  const staffIds = [...new Set([...selected].map(k => k.split("|")[0]))];
+  const scope = choose([["staff", "Selected staff"], ["group", "Selected brand group"], ["team", "Entire selected team/month"]],
+    staffIds.length ? "staff" : group ? "group" : "team");
+  const target = choose(groupPairs(current), group || current.groups[0]?.id);
+  const feedback = make("p", "", { role: "status" });
+  openDialog("Clear / Reset Roster", [
+    row(label("Operation", operation), label("Roster scope", scope), label("Brand group", target)),
+    make("p", "Generated and unlocked clears keep protected leave and locked assignments. Clear All removes manual locks after confirmation and requires a reason for approved leave."),
+    feedback, row(button("Cancel", () => $("dialog").close()), button("Review operation", () => {
+      const action = operation.value, kind = scope.value, targetGroup = target.value, context = current;
+      const ids = context.people.filter(p => kind === "team" || (kind === "group" ? p.group === targetGroup : staffIds.includes(p.id))).map(p => p.id);
+      if (!ids.length) { feedback.textContent = "Select at least one staff member in this scope."; return; }
+      const description = operation.selectedOptions[0].textContent;
+      const commit = (reason = "", at = "") => {
+        if (current !== context || preview) return notify("Roster changed. Review the operation again.");
+        if (action === "reset") {
+          const original = draftFor(loaded, team, month);
+          editDraft(d => resetRosterScope(d, original, ids, context.dates, { whole: kind === "team", group: kind === "group" ? targetGroup : "" }));
+        } else editDraft(d => clearRosterAssignments(context, d, ids, action, reason, at));
+        notify(description + ": " + ids.length + " staff in " + team + " / " + month + ".");
+      };
+      openDialog(description, [make("p", description + " for " + ids.length + " staff in " + team + " / " + month +
+        (kind === "group" ? " / " + new Map(groupPairs(current)).get(targetGroup) : "") + "?"),
+        ...(action === "all" ? [make("p", "This also clears manual leave and removes manual cell and row locks in the selected scope. Imported leave still requires an approved leave override.")] : []),
+        ...(action === "reset" ? [make("p", "Restore the draft values from when this page loaded. Other teams and months stay unchanged.")] : []),
+        row(button("Cancel", () => $("dialog").close()), button("Confirm roster operation", () => {
+          if (current !== context || preview) { $("dialog").close(); return notify("Roster changed. Review the operation again."); }
+          const changes = ids.flatMap(id => context.dates.map(date => key(id, date)))
+            .filter(k => action === "all" && importedLeave(context, k) && (context.leave[k] || context.draft.cells[k])).map(k => [k, ""]);
+          if (changes.length) return confirmLeaveOverride(changes, commit);
+          $("dialog").close(); commit();
+        }, { class: "primary" }))]);
+    }, { class: "primary" }))
+  ]);
 }
 
 function openDialog(title, content) {
@@ -786,7 +879,7 @@ function reviewCandidates(candidates, guard, trial, detail = {}) {
         d.demand = trial.context.draft.demand;
         d.preferences = trial.context.draft.preferences;
       }
-      d.cells = result.cells;
+      assignmentsFromGeneration(d, result.cells);
     });
     $("results").open = true;
     notify("Generated " + result.selectedCount + " staff assignments; review " + result.warnings.length + " warnings.");
@@ -996,7 +1089,7 @@ function run() {
     if (ids && !ids.size) return notify("Select a cell for each staff member to include.");
     const cells = previousPattern({ ...current, people: current.people.filter(person => (!ids || ids.has(person.id)) &&
       (scope !== "group" || person.group === group)) }, $("empty-only").checked);
-    editDraft(d => { d.cells = cells; });
+    editDraft(d => assignmentsFromGeneration(d, cells));
     return notify("Previous pattern copied. Review validation before continuing.");
   }
   if (scope === "group" && !group) return notify("Select a group first.");
@@ -1081,16 +1174,22 @@ $("month").onchange = () => {
 $("group").onchange = () => { group = $("group").value; selected.clear(); anchor = ""; render(); };
 $("apply").onclick = () => bulk([$("assignment").value]);
 $("clear").onclick = () => bulk([""]);
+$("override-leave").onclick = editApprovedLeave;
+$("clear-roster").onclick = clearRosterDialog;
 $("copy").onclick = () => { clipboard = [...selected].map(k => current.draft.cells[k] || ""); updateSelection(); notify(clipboard.length + " copied."); };
 $("paste").onclick = () => {
   if (clipboard.some(value => value && !current.catalog.some(s => s.id === value))) return notify("Clipboard contains a shift outside this team catalog.");
   bulk(clipboard);
 };
-$("lock").onclick = () => editDraft(d => {
-  const keys = [...selected].filter(k => !current.leave[k] && !d.staffLocks[k.split("|")[0]]);
-  const allLocked = keys.every(k => d.locks[k]);
-  for (const k of keys) { if (allLocked) delete d.locks[k]; else d.locks[k] = true; }
-});
+$("lock").onclick = () => {
+  const keys = [...selected].filter(k => !current.draft.staffLocks[k.split("|")[0]]);
+  if (!keys.length) return notify("Unlock the staff row before changing its cell locks.");
+  const allLocked = keys.every(k => current.draft.locks[k]);
+  editDraft(d => {
+    for (const k of keys) { if (allLocked) delete d.locks[k]; else d.locks[k] = true; }
+  });
+  notify(keys.length + (allLocked ? " cell lock(s) removed" : " cell(s) locked") + ". Approved leave protection is unchanged.");
+};
 $("undo").onclick = () => { history.undo(); render(); };
 $("undo-recovery").onclick = undoRecovery;
 $("redo").onclick = () => { history.redo(); render(); };
@@ -1107,7 +1206,7 @@ $("demand").onclick = () => demandDialog();
 $("generate").onclick = run;
 $("diagnostic-bundle").onclick = () => diagnosticDialog();
 $("source").onchange = updateExportGroups;
-for (const format of ["csv", "xlsx"]) $(format).onclick = async () => {
+for (const format of ["csv", "xlsx", "audit-csv"]) $(format).onclick = async () => {
   try { $(format).disabled = true; await downloadRoster(exportRecord(), format, $("export-group").value); }
   catch (error) { notify("Export failed: " + error.message); }
   finally { $(format).disabled = false; }

@@ -243,3 +243,36 @@ a valid 10-person roster. Phase 1D reaches 60,001 steps and retains 100 of 310
 assignments; Phase 1E finds 310 of 310 with 100% minimum coverage, 40/40 paired
 weeks, confirmed leave intact, and zero blockers. The test logs elapsed times.
 This fixture proves a search limitation, not the cause of an unseen draft.
+
+## Phase 1F: Coverage recovery
+
+Preflight compares the exact working-day requirement in every seven-day window
+with the sum of daily capacity bounds. It uses eligible staff, retained cells,
+confirmed leave, and the effective maximum of each shift. For example, ten staff
+with two regular OFF days need 50 working slots before leave; six capped slots
+per day only permit 42. This is a proof of a contradiction, not a report of the
+last search branch. Passing the aggregate bound does not prove feasibility.
+
+In the coverage matrix, a blank maximum is unlimited; zero remains an explicit
+cap. Convert selected caps to targets in the form, then review and save. Existing
+saved caps are not changed by loading a draft.
+
+The Best Available Monthly Roster shows Recommended Adjustments before the
+roster grid. Auto Optimize Coverage first tests the affected caps as flexible
+targets, then uses a valid monthly pattern to determine which date-specific caps
+and targets to raise. Both variants retain minimums. Choose one coordinated
+plan, or select individual recommendations and test them together. The trial
+reports actual versus required coverage, blockers, paired OFF, confirmed leave,
+and PM staffing. Exact edits are expandable before approval. Apply Changes &
+Regenerate commits the verified settings and roster in one draft change; Undo
+Applied Changes restores both. Failed or discarded trials change nothing.
+
+An adjustment that does not help is not presented as a solution. The recovery
+screen points to coverage, staff eligibility, and Brand groups for manual
+review; transfers are not proposed automatically. Confirmed leave, locks,
+eligibility, and staff-level rules remain in force during trials. Full-month
+confirmation remains blocked until mandatory requirements are satisfied.
+
+The reported 10-staff OLD Brands totals are not an exact replay: no diagnostic
+bundle was supplied. Use the original browser's Diagnostic bundle export to
+verify its effective caps, locks, leave, and generation scope.

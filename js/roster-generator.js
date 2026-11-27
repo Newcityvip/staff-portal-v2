@@ -1,7 +1,7 @@
 import { dateAt, dayIndex, isLocked, key, totals, weekday, weekdays, datesFor, previousMonth } from "./roster-model.js";
 import { coverageKey, coverageReport, coverageRule, eligible, staffRules, validCoverage } from "./roster-policy.js";
 import { alignment, boundary, boundaryPhases, demandRule, desiredOff, endingPhase, offCapacity,
-  pairedPolicy, phaseIndices, phasesFor, validDemand } from "./roster-weekly.js";
+  pairedPolicy, pairNames, phaseIndices, phasesFor, validDemand, workloads } from "./roster-weekly.js";
 import { optimizeMonth } from "./roster-optimize.js";
 
 const time = value => {
@@ -100,7 +100,7 @@ function generationScope(context, { group = "", people } = {}) {
     .filter(id => !people || context.people.some(person => person.group === id && selected.has(person.id)));
   return { selected, groups };
 }
-function coversMinimums(slots, requirements) {
+function coverageMatching(slots, limits) {
   const matched = [];
   const assign = (shift, seen) => slots.some((slot, i) => {
     if (seen.has(i) || !slot.codes.includes(shift)) return false;
@@ -109,10 +109,14 @@ function coversMinimums(slots, requirements) {
     matched[i] = shift;
     return true;
   });
-  return requirements.every(({ id, min }) => {
-    for (let i = 0; i < min; i++) if (!assign(id, new Set())) return false;
-    return true;
-  });
+  let count = 0;
+  for (const { id, limit } of limits) {
+    for (let i = 0; i < Math.min(limit, slots.length); i++) {
+      if (!assign(id, new Set())) break;
+      count++;
+    }
+  }
+  return count;
 }
 function nextProblems(state, edges, rules) {
   const found = [];
@@ -261,7 +265,7 @@ export function diagnose(context, options = {}) {
       const rule = demandRule(context, group, date), settings = shifts.map(shift => coverageRule(context, group, date, shift.id));
       const slots = people.map(p => {
         const entry = fixed(p, date), mask = masks.get(p.id);
-        const codes = entry.leave ? [] : entry.retained ? [entry.saved] :
+        const codes = entry.leave && !entry.outside ? [] : entry.retained ? [entry.saved] :
           mask && !(mask & phasesFor(date, false)) ? [] :
           shifts.filter((s, i) => settings[i].enabled && eligible(staffRules(context, p.id), s)).map(s => s.id);
         const mandatoryOff = entry.retained ? entry.saved === "OFF" : mask && !(mask & phasesFor(date, false));
@@ -272,7 +276,19 @@ export function diagnose(context, options = {}) {
       const off = slots.filter(s => s.mandatoryOff).length;
       const ref = { group, date, setting: "demand", coverage: [group, date, "OFF"] };
       const cap = offCapacity(rule, people.filter(p => !fixed(p, date).leave).length, min);
-      days.push({ date, cap });
+      const valid = settings.every(validCoverage) && (!paired || validDemand(rule));
+      const permitted = valid ? coverageMatching(slots, shifts.map((s, i) => ({ id: s.id, limit: settings[i].max ?? available }))) : available;
+      const leave = people.filter(p => selected.has(p.id) && (() => {
+        const entry = fixed(p, date);
+        return entry.leave || entry.retained && catalog.get(entry.saved)?.kind === "leave";
+      })()).length;
+      const outsideWork = people.filter(p => !selected.has(p.id) && catalog.get(context.draft.cells[key(p.id, date)])?.kind === "work").length;
+      const floor = Math.max(min, rulesMinimum(paired, rule));
+      days.push({ date, cap, permitted, floor, leave, outsideWork, valid });
+      if (valid && floor > permitted && permitted < available) add("daily-work-capacity",
+        "Shift caps and eligibility permit fewer assignments than the daily minimum",
+        { group, date, setting: "coverage" }, floor + " required", permitted + " permitted (" + available + " potentially available)",
+        "Review the effective strict maximums and eligible shifts; a flexible target does not limit assignments.");
       if (paired && !validDemand(rule)) add("demand", "Invalid daily OFF or working rule", ref,
         "OFF cap " + (rule.maxOff ?? "unlimited") + " / preferred " + (rule.preferredOff ?? "auto") + " / work minimum " + rule.minWork,
         "Nonnegative whole numbers; preferred OFF cannot exceed the cap", "Review Weekly Demand & OFF Planning.");
@@ -288,7 +304,8 @@ export function diagnose(context, options = {}) {
         Math.max(min, rulesMinimum(paired, rule)), available, "Review eligibility, fixed cells, leave and brand allocation before changing minimums.");
       const requirements = shifts.map((s, i) => ({ id: s.id, min: settings[i].min }));
       if (min && min <= available && settings.every(validCoverage) &&
-        requirements.every(s => slots.filter(slot => slot.codes.includes(s.id)).length >= s.min) && !coversMinimums(slots, requirements)) {
+        requirements.every(s => slots.filter(slot => slot.codes.includes(s.id)).length >= s.min) &&
+        coverageMatching(slots, requirements.map(s => ({ id: s.id, limit: s.min }))) < min) {
         add("overlapping-eligibility", "Shift minimums compete for the same eligible staff",
           { ...ref, setting: "coverage", coverage: [group, date, ""], shift: requirements.filter(s => s.min).map(s => s.id).join(", ") },
           min + " minimum assignments", available + " possible workers, but no distinct eligible match",
@@ -320,11 +337,24 @@ export function diagnose(context, options = {}) {
         }
       });
     }
-    if (paired && people.every(p => selected.has(p.id))) for (let i = 0; i + 6 < days.length; i++) {
+    const selectedCount = people.filter(p => selected.has(p.id)).length;
+    if (paired && selectedCount) for (let i = 0; i + 6 < days.length; i++) {
       const week = days.slice(i, i + 7), capacity = week.reduce((sum, day) => sum + day.cap, 0);
-      if (capacity < people.length * 2) add("weekly-capacity", "Weekly capacity cannot accommodate two regular OFF days per staff member",
+      if (selectedCount === people.length && capacity < people.length * 2) add("weekly-capacity", "Weekly capacity cannot accommodate two regular OFF days per staff member",
         { group, date: week[0].date, end: week.at(-1).date, setting: "demand" }, people.length * 2, capacity,
         "Review daily OFF caps, working minimums, leave and shift coverage.");
+      if (!week.every(day => day.valid)) continue;
+      const sum = field => week.reduce((total, day) => total + day[field], 0);
+      const leave = sum("leave"), outside = sum("outsideWork"), required = selectedCount * 5 - leave + outside;
+      const permitted = sum("permitted"), floor = sum("floor");
+      const ref = { group, date: week[0].date, end: week.at(-1).date, setting: "coverage" };
+      if (permitted < required) add("weekly-work-capacity", "Weekly shift capacity contradicts paired OFF and required workdays", ref,
+        required + " working slots (" + selectedCount * 5 + " before " + leave + " leave / " + outside + " out-of-scope assignments)",
+        permitted + " permitted at most under caps, eligibility and retained cells",
+        "Test a coverage adjustment. Regular OFF days, leave, locks and shift eligibility stay unchanged.");
+      if (floor > required) add("weekly-minimum-capacity", "Weekly minimum coverage exceeds the available working assignments", ref,
+        floor + " required by coverage", required + " available with paired OFF and retained leave",
+        "Review minimums or brand staffing; raising caps alone cannot add working days.");
     }
   }
   return { issues, suggestions: [...suggestions.values()], people: selected, groups };
@@ -333,15 +363,20 @@ const rulesMinimum = (paired, rule) => paired ? rule.minWork : 0;
 
 export function adjustmentTrial(context, options, suggestions) {
   const trial = structuredClone(context), next = { ...options };
-  for (const item of suggestions) {
+  delete next.witness;
+  if (suggestions.length === 1 && suggestions[0].witness) next.witness = suggestions[0].witness;
+  for (const item of suggestions.flatMap(item => item.changes || [item])) {
     if (item.id === "refill") next.keepAssigned = false;
-    else if (item.field === "preferredOff" || item.field === "minWork") {
+    else if (item.field === "offPair" || item.field === "preferred") {
+      trial.draft.preferences[item.person] = { ...trial.draft.preferences[item.person], [item.field]: item.value };
+    } else if (item.field === "preferredOff" || item.field === "minWork") {
       trial.draft.demand[item.group + "|" + item.date] = {
         ...demandRule(trial, item.group, item.date), [item.field]: item.value
       };
     } else {
       const k = coverageKey(item.group, item.date, item.shift);
-      trial.draft.coverage[k] = { ...coverageRule(trial, item.group, item.date, item.shift), [item.field]: item.value };
+      const rule = coverageRule(trial, item.group, item.date, item.shift);
+      trial.draft.coverage[k] = { ...rule, ...(item.rule || { [item.field]: item.value }) };
     }
   }
   return { context: trial, options: next };
@@ -386,8 +421,79 @@ export function candidateMetrics(context, cells, scopePeople, scopeGroups, check
 const monthConstraints = { rulesFor, initialState, advance, nextProblems };
 const candidateOrder = (a, b) => a.metrics.staffBlockers - b.metrics.staffBlockers ||
   (a.metrics.shortfall + a.metrics.excess) - (b.metrics.shortfall + b.metrics.excess) || a.metrics.blockers - b.metrics.blockers;
-const stats = ({ assigned, expected, completion, coverage, shortfall, excess, blockers, staffBlockers, paired, windows, pm, work, fairness, met, needed }) =>
-  ({ assigned, expected, completion, coverage, shortfall, excess, blockers, staffBlockers, paired, windows, pm, work, fairness, met, needed });
+const stats = ({ assigned, expected, completion, coverage, shortfall, excess, blockers, staffBlockers, paired, windows, pm, work, fairness, met, needed,
+  leaveMet, leaveTotal }) =>
+  ({ assigned, expected, completion, coverage, shortfall, excess, blockers, staffBlockers, paired, windows, pm, work, fairness, met, needed,
+    leaveMet, leaveTotal });
+const impact = (best, candidate) => ({
+  before: stats(best.metrics), after: stats(candidate.metrics),
+  outcome: candidate.status === "feasible" ? "Resolves in this trial" :
+    candidateOrder(candidate, best) < 0 || candidate.metrics.assigned > best.metrics.assigned ? "Improves in this trial" : "No improvement alone"
+});
+
+function coveragePackages(context, best, issues, run) {
+  const affected = new Set([
+    ...best.metrics.overflow.filter(row => row.shift !== "OFF").map(row => row.group),
+    ...issues.filter(i => ["weekly-work-capacity", "daily-work-capacity"].includes(i.code)).map(i => i.group)
+  ]);
+  if (!affected.size) return [];
+  const caps = best.report.daily.filter(day => affected.has(day.group)).flatMap(day => day.shifts
+    .filter(s => s.enabled && Number.isInteger(s.max) && s.max >= 0 && validCoverage(s)).map(s => ({
+      group: day.group, date: day.date, shift: s.id, previous: { target: s.target, max: s.max },
+      rule: { target: Math.max(s.min, s.target, s.max), max: null }
+    })));
+  if (!caps.length) return [];
+  const converted = { id: "flexible-caps", title: "Convert strict caps to flexible targets", changes: caps,
+    effect: "Treat the affected caps as targets. Minimums, eligible shifts, leave, locks and OFF rules still apply." };
+  const relaxed = run(converted);
+  if (!relaxed) return [];
+  const counts = new Map(relaxed.report.daily.map(day => [day.group + "|" + day.date, day.counts]));
+  const changes = caps.flatMap(item => {
+    const assigned = counts.get(item.group + "|" + item.date)?.[item.shift] || 0;
+    return assigned > item.previous.max ? [{ ...item, rule: { target: assigned, max: assigned } }] : [];
+  });
+  const auto = { id: "optimize-caps", title: "Raise only the caps the optimized roster needs", changes, witness: relaxed.cells,
+    effect: "Uses the generated month to set new caps and targets on affected dates only. It does not lower minimums." };
+  const bounded = changes.length && run(auto);
+  return [...(bounded ? [{ ...auto, impact: impact(best, bounded) }] : []), { ...converted, impact: impact(best, relaxed) }];
+}
+
+function preferenceOptions(context, candidate, options, run) {
+  const row = candidate.metrics.shortages.find(item => item.shift !== "Working staff");
+  if (!row) return [];
+  const shift = context.catalog.find(s => s.id === row.shift);
+  const members = context.people.filter(p => p.group === row.group && candidate.scopePeople.includes(p.id) &&
+    eligible(staffRules(context, p.id), shift) && !isLocked(context, p.id, row.date) &&
+    !(options.keepAssigned && context.draft.cells[key(p.id, row.date)]));
+  const proposals = [];
+  const off = members.find(p => context.catalog.some(s => s.kind === "off" && s.id === candidate.cells[key(p.id, row.date)]));
+  if (off) {
+    const weekdayAt = weekday(row.date);
+    const weekStart = dayIndex(row.date) - weekdayAt;
+    const pair = pairNames.map((_, n) => n).filter(n => n !== weekdayAt && (n + 1) % 7 !== weekdayAt)
+      .sort((a, b) => {
+        const weight = n => [n, (n + 1) % 7].reduce((sum, day) =>
+          sum + workloads.indexOf(demandRule(context, row.group, dateAt(weekStart + day)).workload), 0);
+        return weight(b) - weight(a);
+      })[0];
+    const prior = context.draft.preferences[off.id]?.offPair;
+    if (pair !== prior) proposals.push({ id: "prefer-off|" + off.id, person: off.id, staff: off.name, group: row.group,
+      date: row.date, shift: "OFF", field: "offPair", value: pair, current: pairNames[prior] || "No preferred pair", proposed: pairNames[pair],
+      effect: "Prefers a quieter OFF pair without changing entitlement or locking new OFF dates." });
+  }
+  const worker = members.find(p => context.catalog.some(s => s.kind === "work" && s.id !== row.shift &&
+    s.id === candidate.cells[key(p.id, row.date)]) && staffRules(context, p.id).preferred !== row.shift);
+  if (worker) proposals.push({ id: "prefer-shift|" + worker.id, person: worker.id, staff: worker.name, group: row.group,
+    date: row.date, shift: row.shift, field: "preferred", value: row.shift,
+    current: staffRules(context, worker.id).preferred || "No preferred shift", proposed: row.shift,
+    effect: "Changes a soft shift preference only; eligibility and the required rest between shifts stay enforced." });
+  return proposals.flatMap(item => {
+    const trial = run(item);
+    if (!trial) return [];
+    const measured = impact(candidate, trial);
+    return measured.outcome === "No improvement alone" ? [] : [{ ...item, impact: measured }];
+  });
+}
 
 function generateMonthly(context, options, progress, check = diagnose(context, options)) {
   const { selected, groups } = generationScope(context, options);
@@ -397,6 +503,15 @@ function generateMonthly(context, options, progress, check = diagnose(context, o
   const primary = mode === "custom" ? "demand" : mode;
   const profiles = options.trial ? [primary] : [primary, ...["balanced", "pm", "demand"].filter(profile => profile !== primary)];
   const { candidates: plans, impossible } = optimizeMonth(context, options, { selected, groups }, monthConstraints, profiles, progress);
+  if (options.witness) {
+    const cells = { ...context.draft.cells };
+    for (const id of scopePeople) for (const date of context.dates) {
+      const k = key(id, date);
+      if (!(options.keepAssigned && cells[k])) cells[k] = options.witness[k];
+    }
+    const checked = validate(context, cells, { people: new Set(scopePeople), groups });
+    if (!checked.errors.length) plans.push({ cells, variant: plans.length, profile: "Tested coverage plan" });
+  }
   const seen = new Set();
   const candidates = plans.map(plan => {
     const scope = { people: new Set(scopePeople), groups }, checked = validate(context, plan.cells, scope);
@@ -411,7 +526,7 @@ function generateMonthly(context, options, progress, check = diagnose(context, o
     if (seen.has(signature)) return false;
     seen.add(signature);
     return true;
-  });
+  }).slice(0, 3);
   const feasible = candidates.some(plan => plan.status === "feasible");
   const issues = [...check.issues];
   for (const { person, group } of impossible) {
@@ -426,6 +541,10 @@ function generateMonthly(context, options, progress, check = diagnose(context, o
     reason: feasible ? "" : "The monthly optimizer found no fully valid plan under the current settings.", candidates, issues, suggestions: [] };
   if (options.trial || feasible || !candidates.length) return result;
   const best = candidates[0];
+  const run = item => {
+    const trial = adjustmentTrial(context, { ...options, retry: false, trial: true }, [item]);
+    return generateMonthly(trial.context, trial.options).candidates?.[0];
+  };
   const proposals = new Map(check.suggestions.map(s => [s.id, s]));
   const pushCoverage = (row, field, value, effect) => {
     const id = coverageKey(row.group, row.date, row.shift) + "|" + field;
@@ -454,13 +573,12 @@ function generateMonthly(context, options, progress, check = diagnose(context, o
   const pool = [...proposals.values()];
   const tested = pool.length <= 5 ? pool : [...pool.slice(0, 4), pool.at(-1)];
   for (const item of tested) {
-    const trial = adjustmentTrial(context, { ...options, retry: false, trial: true }, [item]);
-    const candidate = generateMonthly(trial.context, trial.options).candidates?.[0];
+    const candidate = run(item);
     if (!candidate) continue;
-    const improves = candidateOrder(candidate, best) < 0 || candidate.metrics.assigned > best.metrics.assigned;
-    result.suggestions.push({ ...item, impact: { before: stats(best.metrics), after: stats(candidate.metrics),
-      outcome: candidate.status === "feasible" ? "Resolves in this trial" : improves ? "Improves in this trial" : "No improvement alone" } });
+    result.suggestions.push({ ...item, impact: impact(best, candidate) });
   }
+  result.suggestions.unshift(...coveragePackages(context, best, issues, run));
+  result.suggestions.push(...preferenceOptions(context, best, options, run));
   return result;
 }
 

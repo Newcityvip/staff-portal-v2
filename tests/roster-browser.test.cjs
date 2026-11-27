@@ -326,8 +326,9 @@ test('mobile monthly recovery shows 100 percent assignment with cap conflicts an
     await dialog.getByRole('button', { name: 'Review monthly candidates' }).click();
     await dialog.getByRole('heading', { name: 'Best Available Monthly Roster' }).waitFor();
     await dialog.getByText(/Provisional plans cannot be applied/).waitFor();
-    await dialog.getByText(/100.0% assigned/).waitFor();
-    assert.equal(await dialog.getByRole('button', { name: /apply|confirm|publish/i }).count(), 0);
+    await dialog.getByText(/100.0% assigned/).first().waitFor();
+    assert.ok(await dialog.getByRole('button', { name: 'Apply Changes & Regenerate' }).isDisabled());
+    assert.equal(await dialog.getByRole('button', { name: /confirm|publish/i }).count(), 0);
     assert.ok(await dialog.evaluate(node => node.getBoundingClientRect().right <= innerWidth));
     if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-monthly-provisional-mobile.png') });
     await dialog.getByRole('button', { name: 'Back to diagnostics' }).click();
@@ -337,6 +338,88 @@ test('mobile monthly recovery shows 100 percent assignment with cap conflicts an
     await dialog.getByText(/Before trial:.*After trial:/).waitFor();
     await dialog.getByRole('button', { name: 'Discard candidates' }).click();
     assert.equal(await cell(page, 'SYN-002', '2026-12-07').textContent(), '-');
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+async function setWeeklyCaps(page) {
+  await page.evaluate(async () => {
+    const { seed, draftFor, save } = await import(new URL('js/roster-model.js', location.href));
+    const model = seed(), draft = draftFor(model, 'Affiliate', '2026-12');
+    for (const [shift, min, max] of [['AM', 2, 2], ['AM1', 1, 1], ['PM1', 1, 1], ['PM', 1, 2]]) {
+      draft.coverage['old|*|' + shift] = { min, target: min, max };
+    }
+    draft.cells['SYN-001|2026-12-07'] = 'PM'; draft.locks['SYN-001|2026-12-07'] = true;
+    save(localStorage, model, 'Affiliate', '2026-12');
+  });
+  await page.reload();
+  await page.selectOption('#group', 'old');
+  await page.selectOption('#scope', 'group');
+  await page.selectOption('#generation', 'pm');
+  await page.check('#empty-only');
+}
+
+test('desktop coordinated coverage trial exposes exact changes, applies only after approval, then undoes settings and assignments', async () => {
+  const { context, page, external, errors } = await open(1440, 980);
+  try {
+    await setWeeklyCaps(page);
+    const dialog = page.locator('#dialog'), revision = await page.locator('#summary').textContent();
+    await page.click('#generate');
+    await dialog.getByRole('button', { name: 'Review monthly candidates' }).click();
+    await dialog.getByRole('heading', { name: 'Recommended Adjustments' }).waitFor();
+    await dialog.getByText(/50 working slots.*42 permitted/).waitFor();
+    await dialog.getByRole('button', { name: 'Compare Alternatives' }).click();
+    await dialog.getByText('Tested recovery alternatives', { exact: true }).waitFor();
+    await dialog.getByRole('button', { name: 'Compare Alternatives' }).click();
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-coverage-recommendations-desktop.png') });
+    await dialog.getByRole('button', { name: 'Auto Optimize Coverage' }).click();
+    await dialog.getByRole('heading', { name: 'Review generated candidates' }).waitFor();
+    await dialog.getByText(/After trial:.*155\/155 required slots.*0 over caps.*0 blockers/).first().waitFor();
+    await dialog.locator('summary').filter({ hasText: /exact-date coverage changes/ }).click();
+    const apply = dialog.getByRole('button', { name: 'Apply Changes & Regenerate' });
+    assert.equal(await apply.isEnabled(), true);
+    assert.equal(await page.locator('#summary').textContent(), revision);
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-coverage-trial-desktop.png') });
+    await apply.click();
+    await dialog.getByRole('heading', { name: 'Coverage changes applied' }).waitFor();
+    assert.equal(await cell(page, 'SYN-001', '2026-12-07').textContent(), 'PM');
+    assert.equal(await cell(page, 'SYN-003', '2026-12-09').textContent(), 'AL');
+    assert.notEqual(await cell(page, 'SYN-002', '2026-12-07').textContent(), '-');
+    await dialog.getByRole('button', { name: 'Undo Applied Changes' }).click();
+    assert.equal(await page.locator('#summary').textContent(), revision);
+    assert.equal(await cell(page, 'SYN-002', '2026-12-07').textContent(), '-');
+    await page.click('#coverage');
+    assert.equal(await dialog.getByLabel('PM maximum', { exact: true }).inputValue(), '2');
+    assert.deepEqual(external, []);
+    assert.deepEqual(errors, []);
+  } finally { await context.close(); }
+});
+
+test('mobile selects multiple recommendations and can convert selected strict caps without changing other shifts', async () => {
+  const { context, page, external, errors } = await open(390);
+  try {
+    await setRecoveryDraft(page);
+    const dialog = page.locator('#dialog');
+    await page.click('#generate');
+    await dialog.getByRole('button', { name: 'Review monthly candidates' }).click();
+    await dialog.getByRole('heading', { name: 'Recommended Adjustments' }).waitFor();
+    assert.ok(await dialog.evaluate(node => node.getBoundingClientRect().right <= innerWidth));
+    if (artifacts) await page.screenshot({ path: path.join(artifacts, 'roster-coverage-recommendations-mobile.png') });
+    await dialog.getByLabel(/2026-12-07.*0 to 1/).check();
+    await dialog.getByLabel(/2026-12-08.*0 to 1/).check();
+    await dialog.getByRole('button', { name: 'Test Selected Recommendations' }).click();
+    await dialog.getByRole('button', { name: 'Apply Changes & Regenerate' }).waitFor();
+    await dialog.getByRole('button', { name: 'Discard changes' }).click();
+    await dialog.getByRole('button', { name: 'Edit Coverage Settings' }).click();
+    await dialog.getByRole('heading', { name: 'Coverage matrix' }).waitFor();
+    assert.equal(await dialog.getByLabel('PM maximum', { exact: true }).inputValue(), '0');
+    await dialog.getByLabel('PM select cap to convert').check();
+    await dialog.getByRole('button', { name: 'Convert selected caps to targets' }).click();
+    assert.equal(await dialog.getByLabel('PM maximum', { exact: true }).inputValue(), '');
+    assert.equal(await dialog.getByLabel('PM minimum', { exact: true }).inputValue(), '0');
+    await dialog.getByRole('button', { name: 'Save coverage' }).click();
+    await dialog.getByText('Coverage saved.', { exact: true }).waitFor();
     assert.deepEqual(external, []);
     assert.deepEqual(errors, []);
   } finally { await context.close(); }

@@ -204,6 +204,7 @@ function render() {
   $("demand").disabled = preview;
   $("groups").disabled = preview;
   $("undo").disabled = preview || !history.canUndo;
+  $("undo-recovery").hidden = preview || history.current !== lastRecovery;
   $("redo").disabled = preview || !history.canRedo;
   $("legend").replaceChildren(...current.catalog.map(shift => {
     const item = make("span");
@@ -343,10 +344,18 @@ function coverageDialog(initialGroup = group, initialPeriod = "*") {
   const table = make("table"), holder = make("div", "", { class: "dialog-table" });
   holder.append(table);
   const heading = table.createTHead().insertRow();
-  ["Shift", "Override", "Auto", "Min", "Target", "Max", "Priority"].forEach(text => heading.append(make("th", text)));
+  ["Shift", "Override", "Auto", "Min", "Target", "Max", "Priority", "Flex"].forEach(text => heading.append(make("th", text)));
   const feedback = make("p", "", { role: "status" });
   const summary = make("p", "", { class: "muted" });
   const entries = [];
+  const convert = button("Convert selected caps to targets", () => {
+    for (const e of entries.filter(entry => entry.enabled.checked && entry.flex.checked && entry.max.value !== "")) {
+      e.target.value = String(Math.max(+e.min.value, +e.target.value, +e.max.value));
+      e.max.value = ""; e.override.checked = true; e.flex.checked = false;
+    }
+    sync();
+    feedback.textContent = "Inputs updated. Review and save to change the draft.";
+  });
   const sync = () => {
     const min = entries.reduce((n, e) => n + Number(e.min.value || 0), 0);
     const target = entries.reduce((n, e) => n + Number(e.target.value || 0), 0);
@@ -374,19 +383,22 @@ function coverageDialog(initialGroup = group, initialPeriod = "*") {
       const field = (value, name) => input("number", value ?? "", { min: 0, max: 99, step: 1, "aria-label": shift.id + " " + name });
       const min = field(rule.min, "minimum"), target = field(rule.target, "target"), max = field(rule.max, "maximum");
       const priority = choose(priorities.map((name, i) => [String(i), name]), String(rule.priority));
+      const flex = input("checkbox", "", { "aria-label": shift.id + " select cap to convert" });
       priority.setAttribute("aria-label", shift.id + " priority");
       for (const control of [enabled, min, target, max, priority]) control.oninput = () => { override.checked = true; sync(); };
       override.onchange = sync;
       const tr = body.insertRow();
       tr.append(make("th", shift.id, { scope: "row" }));
-      for (const control of [override, enabled, min, target, max, priority]) tr.insertCell().append(control);
-      entries.push({ entryKey, shift, min, target, max, priority, enabled, override });
+      for (const control of [override, enabled, min, target, max, priority, flex]) tr.insertCell().append(control);
+      entries.push({ entryKey, shift, min, target, max, priority, enabled, override, flex });
     }
     sync();
   };
   scope.onchange = period.onchange = refresh;
   refresh();
-  openDialog("Coverage matrix", [row(label("Group", scope), label("Rule period", period)), summary, holder,
+  openDialog("Coverage matrix", [row(label("Group", scope), label("Rule period", period)), summary,
+    make("p", "Minimum is required. Target is a preference. Maximum is a strict limit; leave it blank for no cap beyond eligible staff."),
+    holder, row(convert),
     row(button("Save coverage", () => {
       const updates = entries.map(e => [e, { min: e.min.value === "" ? NaN : +e.min.value,
         target: e.target.value === "" ? NaN : +e.target.value, max: e.max.value === "" ? null : +e.max.value,
@@ -653,6 +665,97 @@ function renderReport(report, issues) {
 const percent = n => n.toFixed(1) + "%";
 const metricLine = m => percent(m.completion) + " assigned / " + percent(m.coverage) + " minimum coverage / " +
   m.met + "/" + m.needed + " required slots met / " + m.shortfall + " short / " + m.excess + " over caps / " + m.blockers + " blockers";
+const recoveryMetrics = m => metricLine(m) + " / OFF " + m.paired + "/" + m.windows +
+  " / Leave " + m.leaveMet + "/" + m.leaveTotal + " / PM " + m.pm + "/" + m.work;
+function coverageChangeTable(item) {
+  const changes = make("details"), names = new Map(groupPairs(current));
+  changes.append(make("summary", item.changes.length + " exact-date coverage changes"),
+    reportTable(["Group", "Date", "Shift", "Previous target / cap", "Proposed target / cap"], item.changes.map(c => [
+      names.get(c.group) || c.group, c.date, c.shift, c.previous.target + " / " + c.previous.max,
+      c.rule.target + " / " + (c.rule.max ?? "Unlimited")
+    ])));
+  return changes;
+}
+let lastRecovery;
+function undoRecovery() {
+  if (!lastRecovery || history.current !== lastRecovery) return notify("Use draft Undo for later changes first.");
+  history.undo();
+  lastRecovery = null;
+  render();
+  $("dialog").close();
+  notify("Restored coverage settings and assignments.");
+}
+
+function recommendationPanel(flow, guard) {
+  const { result, options } = flow, best = result.candidates?.[0], selected = [];
+  const names = new Map(groupPairs(current));
+  const alternatives = make("details"), list = make("div", "", { class: "recommendation-list" });
+  const stats = (item, name) => [name, item.impact?.outcome || "Not tested",
+    ...(item.impact ? [recoveryMetrics(item.impact.before), recoveryMetrics(item.impact.after)] : ["-", "-"])];
+  const test = (items) => {
+    if (!guard()) return notify("Draft changed. Generate again.");
+    if (!items.length) return;
+    $("dialog").close();
+    launchGeneration({ ...options, retry: true }, items, result.suggestions, best?.metrics, null, flow);
+  };
+  const auto = (result.suggestions || []).find(item => item.id === "optimize-caps" && item.impact.outcome !== "No improvement alone") ||
+    (result.suggestions || []).find(item => item.id === "flexible-caps" && item.impact.outcome !== "No improvement alone");
+  const autoButton = button("Auto Optimize Coverage", () => test([auto]), { class: "primary" });
+  const testButton = button("Test Selected Recommendations", () => test(selected.filter(entry => entry.control.checked).map(entry => entry.item)));
+  autoButton.disabled = !auto;
+  testButton.disabled = true;
+  for (const item of result.suggestions || []) {
+    const control = input("checkbox", "");
+    const name = item.title || [names.get(item.group) || item.group, item.staff, item.date, item.shift,
+      item.current + " to " + item.proposed].filter(Boolean).join(" / ");
+    control.onchange = () => {
+      if (control.checked) for (const entry of selected) if (entry.control !== control && (item.changes || entry.item.changes)) entry.control.checked = false;
+      testButton.disabled = !selected.some(entry => entry.control.checked);
+    };
+    selected.push({ item, control, name });
+    const section = make("section", "", { class: "recommendation-item" });
+    section.append(row(label(name, control)), make("p", item.effect));
+    if (item.impact) section.append(make("p", item.impact.outcome + ". Before: " + recoveryMetrics(item.impact.before) +
+      ". After: " + recoveryMetrics(item.impact.after) + "."));
+    if (item.changes) section.append(coverageChangeTable(item));
+    list.append(section);
+  }
+  alternatives.append(make("summary", "Tested recovery alternatives"),
+    reportTable(["Alternative", "Outcome", "Before", "After"], selected.map(({ item, name }) => stats(item, name))));
+  const edit = button("Edit Coverage Settings", () => {
+    const first = best?.metrics?.overflow.find(row => row.shift !== "OFF") || best?.metrics?.shortages[0];
+    coverageDialog(first?.group || options.group, first?.date || "*");
+  });
+  const pending = button("Apply Changes & Regenerate", () => {}, { disabled: "", title: "A verified trial is required" });
+  const undo = button("Undo Applied Changes", undoRecovery);
+  undo.disabled = !lastRecovery || history.current !== lastRecovery;
+  const packageNote = list.childElementCount ?
+    make("p", "Select individual recommendations together, or test one coordinated plan.") : null;
+  const improved = selected.some(entry => entry.item.impact && entry.item.impact.outcome !== "No improvement alone");
+  const solved = selected.some(entry => entry.item.impact?.outcome === "Resolves in this trial");
+  const compare = button("Compare Alternatives", () => {
+    alternatives.open = !alternatives.open;
+    if (alternatives.open) alternatives.scrollIntoView({ block: "nearest" });
+  });
+  compare.disabled = !selected.length;
+  return [
+    make("h3", "Main Constraint Conflicts"),
+    make("p", (result.issues || []).find(i => i.code === "weekly-work-capacity")?.reason ||
+      (result.issues || []).find(i => i.certainty === "Confirmed")?.reason || "No proven contradiction. The best generated plan still has blockers."),
+    ...((result.issues || []).some(i => i.code === "weekly-work-capacity") ? [make("p", (() => {
+      const i = result.issues.find(x => x.code === "weekly-work-capacity");
+      return [names.get(i.group), i.date + " to " + i.end, i.current, i.available].join(" / ");
+    })())] : []),
+    make("h3", "Recommended Adjustments"),
+    row(autoButton, testButton, compare, edit),
+    ...(!improved ? [make("p", "No tested change improved this plan. Review staff eligibility, retained assignments and required coverage. Temporary transfers can be reviewed in Brand groups."),
+      row(button("Review Brand Groups", groupsDialog), button("Review Staff Eligibility", () => preferencesDialog()))] : []),
+    ...(improved && !solved ? [make("p", "Some trials improved coverage, but none cleared all blockers. Review the remaining conflicts before changing requirements.")] : []),
+    ...(packageNote ? [packageNote, list, alternatives] : []),
+    row(pending, undo)
+  ];
+}
+
 function reviewCandidates(candidates, guard, trial, detail = {}) {
   const source = trial?.context || current;
   const pick = choose(candidates.map((c, i) => [String(i), c.profile || "Candidate " + (i + 1)]), "0");
@@ -671,7 +774,7 @@ function reviewCandidates(candidates, guard, trial, detail = {}) {
       people.reduce((n, p) => n + p.compliant, 0) + "/" + people.reduce((n, p) => n + p.weeks, 0),
       percent(c.report.pmPercent), Math.max(...people.map(p => p.work)) - Math.min(...people.map(p => p.work)), 0];
   }));
-  const apply = button(trial ? "Apply tested changes and candidate" : "Apply candidate", () => {
+  const apply = button(detail.approval ? "Apply Changes & Regenerate" : trial ? "Apply tested changes and candidate" : "Apply candidate", () => {
     const result = candidates[Number(pick.value)];
     if (detail.readOnly || result.status !== "feasible") return;
     if (!guard()) { $("dialog").close(); notify("Draft changed. Generate candidates again."); return; }
@@ -687,6 +790,14 @@ function reviewCandidates(candidates, guard, trial, detail = {}) {
     });
     $("results").open = true;
     notify("Generated " + result.selectedCount + " staff assignments; review " + result.warnings.length + " warnings.");
+    if (detail.approval) {
+      lastRecovery = history.current;
+      $("undo-recovery").hidden = false;
+      openDialog("Coverage changes applied", [
+        make("p", "The regenerated candidate and its tested settings were applied to the draft. Final confirmation still requires the complete roster."),
+        row(button("Undo Applied Changes", undoRecovery))
+      ]);
+    }
   }, { class: "primary" });
   const renderPreview = () => {
     const candidate = candidates[Number(pick.value)];
@@ -715,16 +826,23 @@ function reviewCandidates(candidates, guard, trial, detail = {}) {
       if (candidate.errors.length) nodes.push(validationSummary({ errors: candidate.errors, warnings: [] }));
     }
     selectedPreview.replaceChildren(make("p", candidate.warnings.length + " validation warnings in generation scope. " +
-      staff.length + "/" + source.people.length + " staff in scope; other rows are unchanged."), ...nodes, grid);
+      staff.length + "/" + source.people.length + " staff in scope; other rows are unchanged."), grid, ...nodes);
   };
   pick.onchange = renderPreview;
   renderPreview();
+  const actions = row(...(detail.readOnly ? [] : [apply]),
+    detail.back ? button(detail.approval ? "Discard changes" : "Back to diagnostics", detail.back) :
+      button("Discard candidates", () => { $("dialog").close(); notify("Draft unchanged."); }));
   openDialog(detail.readOnly ? "Best Available Monthly Roster" : "Review generated candidates", [
     ...(detail.readOnly ? [make("p", "Read-only. Provisional plans cannot be applied, confirmed or published. " + (detail.feasibility || ""))] :
       trial ? [make("p", "The trial produced a valid candidate for this scope. Review and apply to save the selected changes and assignments together.")] : []),
+    ...(detail.recovery ? [make("p", recoveryMetrics(candidates[0].metrics) + "."), ...recommendationPanel(detail.recovery, guard)] : []),
+    ...(detail.approval && detail.before ? [make("p", "Before trial: " + recoveryMetrics(detail.before) +
+      ". After trial: " + recoveryMetrics(candidates[0].metrics) + "."), actions,
+      ...detail.tested.flatMap(item => item.title ? [make("p", item.title), coverageChangeTable(item)] :
+        [make("p", [item.group, item.date, item.shift, item.current + " to " + item.proposed].filter(Boolean).join(" / "))])] : []),
     compare, row(label("Preview", pick)),
-    row(...(detail.readOnly ? [] : [apply]),
-      detail.back ? button("Back to diagnostics", detail.back) : button("Discard candidates", () => { $("dialog").close(); notify("Draft unchanged."); })),
+    ...(detail.approval && detail.before ? [] : [actions]),
     selectedPreview]);
 }
 
@@ -788,7 +906,7 @@ function recoveryDialog(result, options, guard, trial = null, before = null) {
     const control = input("checkbox", "");
     control.onchange = () => { apply.disabled = !selectedItems.some(entry => entry.control.checked); };
     selectedItems.push({ item, control });
-    list.append(row(label((item.group ? [names.get(item.group), item.date, item.shift].join(" / ") + ": " : "") +
+    list.append(row(label(item.title || (item.group ? [names.get(item.group), item.date, item.shift].join(" / ") + ": " : "") +
       item.current + " to " + item.proposed, control)), make("p", item.effect),
       ...(item.impact ? [make("p", item.impact.outcome + ". Before: " + metricLine(item.impact.before) +
         ". After: " + metricLine(item.impact.after) + ".")] : []));
@@ -797,6 +915,7 @@ function recoveryDialog(result, options, guard, trial = null, before = null) {
   controls.append(button("Diagnostic bundle", () => diagnosticDialog(options, () => recoveryDialog(result, options, guard, trial, before))));
   if (result.candidates?.length) controls.prepend(button("Review monthly candidates", () =>
     reviewCandidates(result.candidates, guard, trial, { readOnly: true, feasibility: result.feasibility, before,
+      recovery: { result, options },
       back: () => recoveryDialog(result, options, guard, trial, before) }), { class: "primary" }));
   if (result.best) controls.append(button("View Best Possible Draft", () => {
     const best = result.best;
@@ -886,7 +1005,7 @@ function run() {
   launchGeneration({ strategy, people: ids, group: scope === "group" ? group : "", keepAssigned: $("empty-only").checked });
 }
 
-function launchGeneration(options, proposals = [], availableProposals = [], baseline, replay) {
+function launchGeneration(options, proposals = [], availableProposals = [], baseline, replay, flow) {
   if (worker) return;
   const before = history.current, beforeTeam = team, beforeMonth = month;
   const unchanged = () => history.current === before && team === beforeTeam && month === beforeMonth && !preview;
@@ -921,9 +1040,16 @@ function launchGeneration(options, proposals = [], availableProposals = [], base
     }
     if (result.status === "feasible") {
       notify(result.candidates.length + " candidate(s) ready to review. Draft unchanged.");
-      reviewCandidates(result.candidates, unchanged, trial, { before: baseline });
+      reviewCandidates(result.candidates, unchanged, trial, { before: baseline, approval: Boolean(flow), tested: proposals,
+        back: flow && (() => reviewCandidates(flow.result.candidates, unchanged, null, { readOnly: true,
+          recovery: flow, feasibility: flow.result.feasibility })) });
     } else {
       notify("No candidate applied. Draft unchanged.");
+      if (flow && result.candidates?.length) {
+        reviewCandidates(result.candidates, unchanged, trial, { readOnly: true, recovery: flow, before: baseline,
+          feasibility: "The tested combination still has blockers. No settings or assignments were changed." });
+        return;
+      }
       // Do not offer partial trials computed with settings that were never committed.
       if (trial) {
         result.best = undefined;
@@ -966,6 +1092,7 @@ $("lock").onclick = () => editDraft(d => {
   for (const k of keys) { if (allLocked) delete d.locks[k]; else d.locks[k] = true; }
 });
 $("undo").onclick = () => { history.undo(); render(); };
+$("undo-recovery").onclick = undoRecovery;
 $("redo").onclick = () => { history.redo(); render(); };
 $("save").onclick = () => {
   try { save(localStorage, history.current, team, month); saved = JSON.stringify({ model: history.current, team, month }); render(); notify("Draft saved in this browser."); }

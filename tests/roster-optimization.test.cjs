@@ -47,7 +47,13 @@ test('dated OLD Brands constraints exceed the Phase 1D search budget but validat
     const start = performance.now(), result = fn(ctx, oldOptions);
     return { result, ms: Number((performance.now() - start).toFixed(1)) };
   };
-  const before = run(old.generateCandidates), after = run(generateCandidates);
+  // Drive the historical solver to its step limit independently of CPU contention.
+  const before = run((context, options) => {
+    const clock = t.mock.method(performance, 'now', () => 0);
+    try { return old.generateCandidates(context, options); }
+    finally { clock.mock.restore(); }
+  });
+  const after = run(generateCandidates);
   assert.equal(before.result.status, 'timeout');
   assert.equal(before.result.steps, 60001);
   assert.equal(after.result.status, 'feasible');

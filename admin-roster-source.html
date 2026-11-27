@@ -3,19 +3,26 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' https://staff-portal-api-v2.mdrobiulislam.workers.dev; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <link rel="stylesheet" href="css/admin-roster.css">
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <title>Roster Source Review | Staff Portal V2</title>
 </head>
 <body>
-  <header class="shell top"><h1>Roster Source Review</h1><span class="prototype">Sanitized fixtures only</span></header>
+  <header class="shell top"><h1>Roster Source Review</h1><span id="source-mode" class="prototype">Sanitized fixtures only</span></header>
   <main class="shell">
-    <div class="controls">
+    <form id="roster-login" class="controls" hidden>
+      <label>Admin Login ID <input name="login_id" autocomplete="username" maxlength="128" required></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" maxlength="256" required></label>
+      <button type="submit" class="primary">Sign In</button>
+    </form>
+    <div id="source-controls" class="controls">
       <label>Team <select id="source-team"><option value="Affiliate">Affiliate</option><option value="CSP">CSP</option></select></label>
       <label>Month <input id="source-month" type="month" value="2026-12" required></label>
       <button id="refresh-source" type="button" class="primary">Refresh Data</button>
       <a href="admin-roster.html">Synthetic roster demo</a>
+      <button id="roster-logout" type="button" hidden>Sign Out</button>
+      <button id="resume-editor" type="button" hidden>Return to Open Editor</button>
     </div>
     <p id="source-status" role="status" class="muted"></p>
     <section id="source-review" hidden aria-label="Source review">
@@ -34,6 +41,7 @@
         <button id="blank-source" type="button">Open New Draft</button>
       </div>
     </section>
+    <section id="source-editor" hidden aria-label="Local roster editor"></section>
   </main>
   <dialog id="source-dialog" aria-labelledby="source-dialog-title">
     <h2 id="source-dialog-title">Compare Local Draft</h2>

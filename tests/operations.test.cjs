@@ -56,8 +56,15 @@ test('protected production backend functions remain byte-identical', () => {
   const old = functions(phaseOne), next = functions(source);
   const changed = ['getScheduleForDate', 'resolveAttendanceSchedule', 'buildStaffAttendanceDashboard', 'getStaffAttendanceHistory',
     'getActiveBreakRows', 'getAdminDashboardFull', 'getTodaySummary', 'listScheduleRows'];
-  assert.deepEqual([...next.keys()], [...old.keys()]);
-  for (const [name, body] of old) if (!changed.includes(name)) assert.equal(next.get(name), body, name);
+  assert.deepEqual([...next.keys()].slice(0, old.size), [...old.keys()]);
+  assert.deepEqual([...next.keys()].slice(old.size), ['rosterHex', 'rosterMac', 'rosterEqual', 'rosterReply',
+    'rosterReadV1', 'rosterCredential', 'rosterVerifySession', 'rosterAdmit', 'rosterSheetValues',
+    'rosterAdminRecord', 'rosterColumns', 'rosterSnapshot']);
+  const rosterRoute = '      case "roster_v1":\n        return jsonOut(rosterReadV1(body));\n';
+  assert.equal(next.get('doPost').split(rosterRoute).length, 2, 'one additive roster dispatch only');
+  for (const [name, body] of old) if (!changed.includes(name)) {
+    assert.equal(name === 'doPost' ? next.get(name).replace(rosterRoute, '') : next.get(name), body, name);
+  }
 });
 test('attendance-first responses skip unrelated work and preserve legacy operations mode', t => {
   const before = backend(production), after = backend(source);

@@ -1,8 +1,8 @@
-# Phase 2A: Read-only roster discovery and fixture gate
+# Phase 2A: Read-only roster integration
 
-This branch contains a sanitized loopback fixture, not a live connector. It
-does not add an Apps Script action, publish a roster, read real staff data, or
-modify a spreadsheet. The normal roster demo does not invoke the fixture API.
+The isolated connector is implemented but disabled. The sanitized loopback
+fixture and the normal roster demo still operate without production data.
+This branch adds no roster publishing action and has not been deployed.
 The existing admin CSV form gains the requested acknowledgment. No legacy API
 contract or upload implementation changed; the checkbox is a client workflow
 gate, not authorization for direct API clients.
@@ -26,7 +26,7 @@ Run `node scripts/roster-preview.cjs --fixture 8770` and open
 must bind to loopback, serves only generated sanitized rows, and simulates an
 already authenticated admin. A normal preview does not serve this route. On a
 non-loopback static page, fixture requests are disabled. The repository
-contains no production roster URL, credentials, or writable roster endpoint.
+contains no production Apps Script deployment URL, credentials, or writable roster endpoint.
 
 The snapshot is one batched request for one team and month plus adjacent
 months. It uses a response-body deadline, defensive team checks, a scoped
@@ -53,44 +53,82 @@ No replacement writes the local saved draft until the admin explicitly saves.
 
 ## Authentication and deployment gate
 
-The existing admin helper can use a client role or fall back to SUPER_ADMIN;
-it is not a roster authorization boundary. Existing browser IP fields do not
-establish a trusted client IP. The fixture contract requires a verified
-gateway, a server-issued roster-read session (maximum ten minutes), an
-active server-derived admin role, and a trusted allowed IP before any read.
-It strips non-roster fields. Staff and unknown roles are denied; CSP Admin
-cannot read Affiliate even with a forged client role. This verifies gate
-behavior, not a deployed gateway or authenticated production session.
+The existing admin helper is not a roster authorization boundary. The new
+routes `POST /roster/v1/login` and `POST /roster/v1/snapshot` use independent
+authentication and strict server-derived roles: active SUPER_ADMIN can read
+Affiliate and CSP; active CSP_ADMIN can read CSP only. The Apps Script reads
+the existing admin rows and allowlist afresh. The IP must be on the active
+allowlist even when legacy IP security is disabled. Duplicate admin identities
+deny access. A signed ten-minute roster session is bound to the connecting IP
+and current account credentials and role. The browser keeps the bearer only
+in memory (cross-origin cookie behavior is not needed); sign-out clears this
+browser's session and rendered source, but does not immediately revoke a copied
+bearer. Account disablement, credential/role change or key rotation revokes
+it server-side on the next request.
 
-Before building or deploying the actual read endpoint, supply:
+The Worker accepts only the exact configured frontend origin on roster
+routes, uses edge `CF-Connecting-IP` (never JSON or XFF), and rejects marked
+Worker subrequests. It signs an IP-bound request with a timestamp and nonce.
+The origin verifies the signature before any sheet access; accepted nonces
+are checked under an Apps Script lock, with bounded Script Properties storage
+and a short signature window. The only runtime writes are replay and
+login-rate counters in Script Properties. There is no sheet write, audit
+append, attendance mutation, or roster publish action. Same-origin editor
+handoff is in memory and does not receive the bearer. Saving a draft stores
+staff IDs and assignments locally; use a trusted admin device, clear the
+roster draft storage on shared/retired devices, and do not use real credentials
+in the local preview.
 
-1. In Apps Script **Deploy > Manage deployments**, the active version and
-   execution/access mode for the existing production deployment; do not
-   include the deployment ID or any secrets.
-2. In Cloudflare, a redacted route/forwarding excerpt showing whether the
-   Worker derives the client IP from the trusted edge, strips client IP/role
-   claims, and how the upstream authenticates the Worker. Confirm whether the
-   Apps Script origin can be reached directly and how a roster-specific
-   origin would deny such requests. Do not include secrets, IP allowlist
-   values, or tokens.
-3. A read-only schema verification: exact shift header row, active-value and
-   Affiliate/CSP mapping, sanitized examples of a CSP overnight schedule and
-   OFF/AL/SL/UL statuses, and the current tab names. Confirm where server-side
-   active admin roles and roster exclusions should be resolved.
-4. Aggregate counts only: duplicate staff_id/date keys by team/month and
-   unknown/mismatched IDs, plus an inventory of processes that can write
-   Schedule Master. Do not share private records.
+## Local verification
 
-Prefer a separately authorized roster read gateway and private read-only
-origin. If Apps Script is used as that origin, require authenticated
-server-to-server requests with origin-bound verification and replay
-protection before Sheet access, including on the direct URL. Production
-sessions must bind the authenticated admin, trusted IP and roster audience;
-recheck revocation and role server-side, use HTTPS/secure HttpOnly cookies
-with an explicit origin policy, and deny on missing proof. Do not put secrets
-or tokens in frontend code, URLs or local storage. No deployment steps are
-authorized by this branch. Rollback for local evaluation is stopping the
-fixture server; no live production rollback is needed.
+Run `node --test tests/roster-live.test.cjs` with Playwright and Chrome
+available, or `node --test tests/*.test.cjs` for the full suite. The live
+browser test intercepts every remote call, overrides the disabled flag only
+inside that test, and uses mock credentials and records. To manually review
+the fixture UI, run the loopback command above. Opening the same source page
+with `?source=live` verifies the production-shaped UI stays disabled.
+
+## Pre-deployment gates and rollback
+
+Version 58 (execute as owner, access Anyone) and Worker revision `ad7c02f1`
+are owner-confirmed. No authenticated deployed-source hash or live integration
+verification is claimed. Before any approved rollout:
+
+1. Export and hash the deployed Version 58 source and compare it with the
+   pre-change source at `eb2711b10addd40fcc3f2de1cd2536d641b9bdf6`.
+   Verify the active Worker source against `ad7c02f1` and confirm that its
+   unchanged legacy target is the supplied deployment URL. Rebase the additive
+   changes if the deployed sources differ. Do not overwrite unrelated scripts.
+2. Confirm the deployed admin, IP, roster and shift schemas, per-team active
+   codes (including approved nonworking codes), exact stored IP representation,
+   exclusions, and representative CSP overnight/leave mappings. Resolve
+   duplicate/unknown or cross-team IDs before using a published copy.
+3. In approved staging only, configure Worker `GAS_URL` to its corresponding
+   Apps Script deployment and `ROSTER_ORIGIN` to the exact HTTPS origin (no
+   path). For production, `GAS_URL` must be the existing exact URL. Use
+   different random 32-byte hex values for `ROSTER_BRIDGE_KEY` (both sides) and
+   `ROSTER_SESSION_KEY` (Apps Script only). Configure `ROSTER_TEAM_SHIFT_CODES`
+   as JSON arrays keyed by Affiliate and CSP; optionally set
+   `ROSTER_EXCLUDED_STAFF_IDS` as a JSON array. Keep both `ROSTER_ENABLED`
+   flags and the frontend flag off until each planned stage is approved.
+4. Verify direct edge ingress and subrequest rejection on the actual hostname.
+   [Cloudflare documents](https://developers.cloudflare.com/fundamentals/reference/http-headers/#cf-connecting-ip-in-worker-subrequests)
+   that same-zone Worker subrequests can influence the IP header. Do not
+   enable live access unless untrusted Worker/service-binding paths cannot
+   reach the signer as a direct client. Check the configured origin, direct
+   Apps Script denial, authorized and forbidden team reads, origin and IP
+   denial, replay, role revocation, overnight data and legacy forwarding.
+   Measure source read and shared lock contention against existing traffic.
+5. Only with owner approval, enable the Apps Script and Worker roster flags
+   and the separately reviewed frontend `rosterLiveEnabled` flag. The
+   entry is `admin-roster-source.html?source=live`. No external leave
+   integration is authorized; the existing manual verification remains.
+
+Stop the preview server to roll back local testing. For an approved future
+production rollout, disable the roster flags, restore Worker `ad7c02f1` and
+the existing Apps Script deployment to Version 58, and revert the frontend
+release. Retire the new roster keys and namespaced counters only after
+rollback is verified. No roster sheet rollback is needed for Phase 2A.
 
 ## Phase 2B proposal (not implemented)
 

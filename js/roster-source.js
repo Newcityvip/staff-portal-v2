@@ -31,6 +31,11 @@ export function prepareRosterSource(payload, team, month) {
   }
   const issues = [], rows = [];
   const issue = (kind, date = "", staffId = "") => issues.push({ kind, date, staffId });
+  if (payload.suppressedTeamConflicts !== undefined &&
+    (!Number.isSafeInteger(payload.suppressedTeamConflicts) || payload.suppressedTeamConflicts < 0)) {
+    throw new Error("Invalid roster conflict count.");
+  }
+  if (payload.suppressedTeamConflicts) issue(payload.suppressedTeamConflicts + " schedule rows suppressed due to conflicting team assignments");
   const excluded = new Set((payload.excludedStaffIds || []).map(upper));
   const directory = uniqueRows(payload.staff, row => {
     const id = upper(row.staff_id);
@@ -71,7 +76,7 @@ export function prepareRosterSource(payload, team, month) {
     if (clean(row.schedule_month) !== date.slice(0, 7)) conflict = "Schedule month conflicts with date";
     else if (!shift) conflict = "Unknown or inactive shift";
     else if (shift.kind === "work" ? status !== "WORKING" || time(start) !== shift.start || time(end) !== shift.end :
-      !["OFF", code].includes(status) || start || end) conflict = "Published times or status differ from the fixture catalog";
+      !["OFF", code].includes(status) || start || end) conflict = "Published times or status differ from the source catalog";
     if (conflict) issue(conflict, date, id); else cells[k] = code;
     rows.push({ id, date, code, start, end, status, conflict });
   }
@@ -106,6 +111,7 @@ export function sourceDraft(source, include = [], usePublished = true, generatio
 }
 
 export const fixtureDraftKey = (...scope) => "spv2.roster.fixture-draft.v1." + scope.join(".");
+export const liveDraftKey = (...scope) => "spv2.roster.live-draft.v1." + scope.join(".");
 export const fixtureHandoffKey = "spv2.roster.fixture-handoff.v1";
 export function draftComparison(localCells, sourceCells, teamPeople, dates) {
   let added = 0, removed = 0, changed = 0;

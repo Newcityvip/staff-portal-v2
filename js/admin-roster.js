@@ -8,15 +8,34 @@ import { defaultDemand, demandKey, pairNames, validDemand, workloads } from "./r
 import { createDiagnosticBundle, diagnosticMaxBytes, readDiagnosticBundle } from "./roster-diagnostic-bundle.js";
 
 const $ = id => document.getElementById(id);
-const fixtureMode = new URLSearchParams(location.search).get("source") === "fixture";
-const fixtureTools = fixtureMode && location.protocol === "http:" && location.hostname === "127.0.0.1" ?
+const sourceMode = new URLSearchParams(location.search).get("source");
+const fixtureMode = sourceMode === "fixture", liveMode = sourceMode === "live";
+const loopback = location.protocol === "http:" && location.hostname === "127.0.0.1";
+const fixtureTools = (fixtureMode && loopback || liveMode && window.parent !== window && (loopback || location.protocol === "https:")) ?
   await import("./roster-source.js").catch(() => null) : null;
 let fixture = null;
-if (fixtureTools) {
+if (fixtureTools && fixtureMode) {
   try { fixture = JSON.parse(sessionStorage.getItem(fixtureTools.fixtureHandoffKey)); } catch {}
 }
-if (fixtureMode && (!fixture || fixture.model?.leaveOrigin !== "published")) {
-  location.replace("admin-roster-source.html");
+if (fixtureTools && liveMode) {
+  fixture = await new Promise(resolve => {
+    const timer = setTimeout(() => finish(null), 5000);
+    function receive(event) {
+      if (event.origin === location.origin && event.source === window.parent && event.data?.type === "roster-editor-model") finish(event.data.handoff);
+    }
+    function finish(value) {
+      clearTimeout(timer);
+      window.removeEventListener("message", receive);
+      resolve(value);
+    }
+    window.addEventListener("message", receive);
+    window.parent.postMessage({ type: "roster-editor-ready" }, location.origin);
+  });
+}
+if ((fixtureMode || liveMode) && (!fixture || fixture.model?.leaveOrigin !== "published")) {
+  if (liveMode && window.parent !== window) {
+    $("roster-mode").textContent = "Live editor unavailable. Return to source review.";
+  } else location.replace("admin-roster-source.html" + (liveMode ? "?source=live" : ""));
   await new Promise(() => {});
 }
 const initial = fixture || restore(localStorage);
@@ -26,12 +45,16 @@ let team = initial.team, month = initial.month, group = "", preview = false;
 let saved = JSON.stringify(initial), current, clipboard = [], selected = new Set(), anchor = "", worker;
 let showReport = false;
 if (fixture) {
-  $("roster-mode").textContent = "Fixture source / Publishing disabled";
+  $("roster-mode").textContent = (liveMode ? "Live read-only" : "Fixture source") + " / Publishing disabled";
   $("team").disabled = $("month").disabled = true;
   $("roster-mode").append(document.createTextNode(" / "));
   const back = document.createElement("a");
   back.href = "admin-roster-source.html?" + new URLSearchParams({ team, month });
   back.textContent = "Review source";
+  if (liveMode) back.onclick = event => {
+    event.preventDefault();
+    window.parent.postMessage({ type: "roster-editor-back" }, location.origin);
+  };
   $("roster-mode").append(back);
   $("override-leave").textContent = "Override Published Leave";
 }
@@ -339,7 +362,7 @@ function confirmLeaveOverride(changes, apply) {
     apply(note, new Date().toISOString());
   }, { class: "primary" });
   openDialog(fixture ? "Override published leave" : "Override approved leave", [
-    make("p", fixture ? "This changes the local fixture draft only, not a published schedule or leave record." :
+    make("p", fixture ? "This changes the local draft only, not a published schedule or leave record." :
       "This changes the synthetic roster only. The original leave record and the reason are kept in the draft audit."),
     reportTable(["Staff", "Date", "Original leave", "Proposed assignment"], changes.map(([k, value]) => {
       const [id, date] = k.split("|");
@@ -1223,7 +1246,8 @@ $("save").onclick = () => {
     if (fixture) {
       const { people, memberships, snapshots, transitions } = history.current;
       const draft = draftFor(history.current, team, month);
-      localStorage.setItem(fixtureTools.fixtureDraftKey(fixture.principal, team, month), JSON.stringify({
+      const sourceDraftKey = liveMode ? fixtureTools.liveDraftKey : fixtureTools.fixtureDraftKey;
+      localStorage.setItem(sourceDraftKey(fixture.principal, team, month), JSON.stringify({
         revision: fixture.revision, included: people.map(p => p.id), memberships, transitions,
         snapshots: snapshots.map(record => ({ ...record, people: record.people.map(p => ({ id: p.id, group: p.group })) })), draft
       }));

@@ -12,7 +12,7 @@ const assets = new Set([
   'vendor/exceljs-4.4.0/dist/exceljs.min.js'
 ]);
 
-const fixtureAssets = new Set(['admin-roster-source.html', 'js/roster-source.js', 'js/roster-source-preview.js']);
+const fixtureAssets = new Set(['admin-roster-source.html', 'js/roster-source.js', 'js/roster-source-preview.js', 'js/roster-live-config.js']);
 function startPreview(port = 8765, host = '127.0.0.1', options = {}) {
   if (options.fixture && host !== '127.0.0.1') throw new Error('The fixture adapter must stay on loopback.');
   const fixture = options.fixture ? require('./roster-fixture.cjs').fixtureHandler(options) : null;

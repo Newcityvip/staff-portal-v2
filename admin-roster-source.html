@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self'; script-src 'self'; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <link rel="stylesheet" href="css/admin-roster.css">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <title>Roster Source Review | Staff Portal V2</title>
+</head>
+<body>
+  <header class="shell top"><h1>Roster Source Review</h1><span class="prototype">Sanitized fixtures only</span></header>
+  <main class="shell">
+    <div class="controls">
+      <label>Team <select id="source-team"><option value="Affiliate">Affiliate</option><option value="CSP">CSP</option></select></label>
+      <label>Month <input id="source-month" type="month" value="2026-12" required></label>
+      <button id="refresh-source" type="button" class="primary">Refresh Data</button>
+      <a href="admin-roster.html">Synthetic roster demo</a>
+    </div>
+    <p id="source-status" role="status" class="muted"></p>
+    <section id="source-review" hidden aria-label="Source review">
+      <h2>Staff Directory</h2>
+      <div id="source-staff" class="dialog-table"></div>
+      <h2>Published Schedule</h2>
+      <p id="source-counts"></p>
+      <div id="source-schedule" class="dialog-table"></div>
+      <ul id="source-issues"></ul>
+      <h2>Prepare Local Draft</h2>
+      <p id="draft-info" role="status"></p>
+      <div id="source-shifts" class="check-grid"></div>
+      <div class="actions controls">
+        <button id="resume-source" type="button" hidden>Resume Local Draft</button>
+        <button id="copy-published" type="button">Open Published Copy</button>
+        <button id="blank-source" type="button">Open New Draft</button>
+      </div>
+    </section>
+  </main>
+  <dialog id="source-dialog" aria-labelledby="source-dialog-title">
+    <h2 id="source-dialog-title">Compare Local Draft</h2>
+    <p id="source-comparison"></p>
+    <form method="dialog"><button value="cancel">Cancel</button><button value="proceed">Open Draft</button></form>
+  </dialog>
+  <script type="module" src="js/roster-source-preview.js"></script>
+</body>
+</html>

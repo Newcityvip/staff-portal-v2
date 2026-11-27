@@ -78,6 +78,10 @@
                 <span>Schedule CSV</span>
                 <input id="scheduleFile" class="file-input" type="file" accept=".csv,text/csv">
               </label>
+              <label class="full-span">
+                <input id="scheduleLeaveAcknowledged" type="checkbox" required>
+                Please check the Future_Leave_Requests tab in the Staff Schedule &amp; Leave Management spreadsheet and ensure all approved leave requests for the selected month are included in the roster.
+              </label>
               <button class="primary-btn" type="submit">Upload Schedule</button>
               <button class="mini-btn" id="clearScheduleUpload" type="button">Clear</button>
               <div id="scheduleUploadState" class="inline-alert subtle full-span" hidden></div>

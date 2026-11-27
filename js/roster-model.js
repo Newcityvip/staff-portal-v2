@@ -90,7 +90,7 @@ export function contextFor(model, team, month) {
     for (const k of Object.keys(overrides || {})) delete leave[k];
   }
   return { team, month, dates: datesFor(month), people, groups: model.groups.filter(g => g.team === team),
-    catalog: model.catalogs[team], leave, approvedLeave: model.leave, draft,
+    catalog: model.catalogs[team], leave, approvedLeave: model.leave, leaveOrigin: model.leaveOrigin, draft,
     previous: recorded?.cells || model.drafts[draftKey(team, previous)]?.cells || {},
     previousCatalog: recorded?.catalog || model.catalogs[team],
     next: nextRecord?.cells || model.drafts[draftKey(team, following)]?.cells || {},

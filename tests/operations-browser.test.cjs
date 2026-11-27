@@ -584,3 +584,26 @@ test('mock browser measurement: baseline versus operations bootstrap', async t =
     }
   }
 });
+
+test('schedule CSV acknowledgment is mandatory and resets with a new file and submission', async () => {
+  const f = await fixture('admin');
+  try {
+    const file = { name: 'fixture.csv', mimeType: 'text/csv', buffer: Buffer.from(
+      'schedule_month,schedule_date,login_id,full_name,team,shift_code,start_time,end_time,status\n' +
+      '2026-12,2026-12-03,FIXTURE001,Fixture Staff,CSP,AM,06:30:00,15:30:00,WORKING\n') };
+    const ack = f.page.locator('#scheduleLeaveAcknowledged');
+    const uploads = () => f.requests.filter(r => r.action === 'upload_schedule_csv');
+    await f.page.locator('#scheduleFile').setInputFiles(file);
+    await f.page.locator('#scheduleUploadForm button[type=submit]').click();
+    assert.equal(uploads().length, 0);
+    await ack.check();
+    await f.page.locator('#scheduleFile').setInputFiles({ ...file, name: 'fixture-2.csv' });
+    assert.equal(await ack.isChecked(), false);
+    await ack.check();
+    await f.page.locator('#scheduleUploadForm button[type=submit]').click();
+    await f.page.getByText(/Schedule uploaded[.]/).waitFor();
+    assert.equal(uploads().length, 1);
+    assert.equal(uploads()[0].rows[0].login_id, 'FIXTURE001');
+    assert.equal(await ack.isChecked(), false);
+  } finally { await f.context.close(); }
+});

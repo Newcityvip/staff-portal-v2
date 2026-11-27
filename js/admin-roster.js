@@ -8,12 +8,33 @@ import { defaultDemand, demandKey, pairNames, validDemand, workloads } from "./r
 import { createDiagnosticBundle, diagnosticMaxBytes, readDiagnosticBundle } from "./roster-diagnostic-bundle.js";
 
 const $ = id => document.getElementById(id);
-const initial = restore(localStorage);
+const fixtureMode = new URLSearchParams(location.search).get("source") === "fixture";
+const fixtureTools = fixtureMode && location.protocol === "http:" && location.hostname === "127.0.0.1" ?
+  await import("./roster-source.js").catch(() => null) : null;
+let fixture = null;
+if (fixtureTools) {
+  try { fixture = JSON.parse(sessionStorage.getItem(fixtureTools.fixtureHandoffKey)); } catch {}
+}
+if (fixtureMode && (!fixture || fixture.model?.leaveOrigin !== "published")) {
+  location.replace("admin-roster-source.html");
+  await new Promise(() => {});
+}
+const initial = fixture || restore(localStorage);
 const loaded = structuredClone(initial.model);
 const history = createHistory(initial.model);
 let team = initial.team, month = initial.month, group = "", preview = false;
 let saved = JSON.stringify(initial), current, clipboard = [], selected = new Set(), anchor = "", worker;
 let showReport = false;
+if (fixture) {
+  $("roster-mode").textContent = "Fixture source / Publishing disabled";
+  $("team").disabled = $("month").disabled = true;
+  $("roster-mode").append(document.createTextNode(" / "));
+  const back = document.createElement("a");
+  back.href = "admin-roster-source.html?" + new URLSearchParams({ team, month });
+  back.textContent = "Review source";
+  $("roster-mode").append(back);
+  $("override-leave").textContent = "Override Published Leave";
+}
 const dirty = () => JSON.stringify({ model: history.current, team, month }) !== saved;
 const notify = text => { $("notice").textContent = text; };
 const make = (tag, text = "", attrs = {}) => {
@@ -162,7 +183,8 @@ function renderGrid(report) {
         const k = key(person.id, date), value = current.draft.cells[k] || "";
         const shift = current.catalog.find(s => s.id === value);
         const locked = isManualLock(current, person.id, date), source = assignmentSource(current, k);
-        const origin = { approved: "Imported approved leave", "manual-leave": "Manual leave", overridden: "Overridden approved leave",
+        const origin = { approved: current.leaveOrigin === "published" ? "Published leave assignment" : "Imported approved leave",
+          "manual-leave": "Manual leave", overridden: current.leaveOrigin === "published" ? "Overridden published leave" : "Overridden approved leave",
           generated: "Generated assignment", legacy: "Legacy assignment; source unknown", manual: "Manual assignment" }[source];
         const locks = [current.draft.staffLocks[person.id] && "Staff row locked", current.draft.locks[k] && "Cell locked"].filter(Boolean);
         const text = value || "-";
@@ -288,7 +310,8 @@ function focusIssue(issue) {
 function bulk(values) {
   const keys = [...selected];
   const editable = keys.filter(k => !importedLeave(current, k) && !isManualLock(current, ...k.split("|")));
-  const kept = [keys.some(k => importedLeave(current, k)) && "Use Override Approved Leave for imported leave",
+  const kept = [keys.some(k => importedLeave(current, k)) && (fixture ?
+    "Use Override Published Leave for published leave" : "Use Override Approved Leave for imported leave"),
     keys.some(k => isManualLock(current, ...k.split("|"))) && "Unlock locked cells or rows before editing"].filter(Boolean);
   if (!editable.length) return notify(kept.join(". ") + ".");
   const allowed = new Set(editable);
@@ -315,8 +338,9 @@ function confirmLeaveOverride(changes, apply) {
     $("dialog").close();
     apply(note, new Date().toISOString());
   }, { class: "primary" });
-  openDialog("Override approved leave", [
-    make("p", "This changes the synthetic roster only. The original leave record and the reason are kept in the draft audit."),
+  openDialog(fixture ? "Override published leave" : "Override approved leave", [
+    make("p", fixture ? "This changes the local fixture draft only, not a published schedule or leave record." :
+      "This changes the synthetic roster only. The original leave record and the reason are kept in the draft audit."),
     reportTable(["Staff", "Date", "Original leave", "Proposed assignment"], changes.map(([k, value]) => {
       const [id, date] = k.split("|");
       return [names.get(id), date, importedLeave(current, k), value || "Unassigned"];
@@ -664,6 +688,7 @@ function rulesDialog() {
     make("h3", "Team shift catalog"),
     row(label("Edit", catalogEntry), label("Code", id), label("Type", kind), label("Start", start), label("End", end), label("Color", color),
       button("Save shift", () => {
+        if (fixture) return;
         const code = id.value.trim().toUpperCase(), type = kind.value;
         if (!/^[A-Z][A-Z0-9]{0,7}$/.test(code) || (!catalogEntry.value && current.catalog.some(s => s.id === code)) ||
             (type === "off" && !catalogEntry.value) || (type === "work" && (!start.value || !end.value || start.value === end.value))) {
@@ -679,7 +704,7 @@ function rulesDialog() {
         render();
         rulesDialog();
         notify("Shift catalog updated.");
-      })),
+      }, fixture ? { disabled: "", title: "The source catalog is read-only" } : undefined)),
     feedback
   ]);
 }
@@ -699,7 +724,7 @@ function confirmDialog() {
   acknowledgement.onchange = () => { accept.disabled = !acknowledgement.checked || Boolean(issues.errors.length); };
   openDialog("Simulated final confirmation", [
     make("p", "Production publishing is unavailable in prototype mode."),
-    make("p", "Please check the Future_Leave_Requests tab and confirm that all approved leave requests for the selected roster month have been included before proceeding."),
+    make("p", "Please check the Future_Leave_Requests tab in the Staff Schedule & Leave Management spreadsheet and ensure all approved leave requests for the selected month are included in the roster."),
     row(label("I acknowledge the reminder", acknowledgement)),
     ...(issues.warnings.some(issue => issue.type === "boundary")
       ? [make("p", "Month-boundary data is incomplete. This synthetic snapshot is provisional.", { class: "warning" })] : []),
@@ -1194,7 +1219,18 @@ $("undo").onclick = () => { history.undo(); render(); };
 $("undo-recovery").onclick = undoRecovery;
 $("redo").onclick = () => { history.redo(); render(); };
 $("save").onclick = () => {
-  try { save(localStorage, history.current, team, month); saved = JSON.stringify({ model: history.current, team, month }); render(); notify("Draft saved in this browser."); }
+  try {
+    if (fixture) {
+      const { people, memberships, snapshots, transitions } = history.current;
+      const draft = draftFor(history.current, team, month);
+      localStorage.setItem(fixtureTools.fixtureDraftKey(fixture.principal, team, month), JSON.stringify({
+        revision: fixture.revision, included: people.map(p => p.id), memberships, transitions,
+        snapshots: snapshots.map(record => ({ ...record, people: record.people.map(p => ({ id: p.id, group: p.group })) })), draft
+      }));
+    } else save(localStorage, history.current, team, month);
+    saved = JSON.stringify({ model: history.current, team, month });
+    render(); notify("Draft saved in this browser.");
+  }
   catch { notify("Draft could not be saved. Browser storage may be unavailable or full."); }
 };
 $("preview").onclick = () => { preview = !preview; selected.clear(); anchor = ""; render(); };

@@ -12,12 +12,18 @@ const assets = new Set([
   'vendor/exceljs-4.4.0/dist/exceljs.min.js'
 ]);
 
-function startPreview(port = 8765, host = '127.0.0.1') {
+const fixtureAssets = new Set(['admin-roster-source.html', 'js/roster-source.js', 'js/roster-source-preview.js']);
+function startPreview(port = 8765, host = '127.0.0.1', options = {}) {
+  if (options.fixture && host !== '127.0.0.1') throw new Error('The fixture adapter must stay on loopback.');
+  const fixture = options.fixture ? require('./roster-fixture.cjs').fixtureHandler(options) : null;
   const server = http.createServer(async (req, res) => {
     try {
-      const file = new URL(req.url, 'http://localhost').pathname.replace(/^\/(?:staff-portal-v2\/)?/, '');
-      if (req.method !== 'GET' || !assets.has(file)) return res.writeHead(404).end();
+      const url = new URL(req.url, 'http://localhost');
+      const file = url.pathname.replace(/^\/(?:staff-portal-v2\/)?/, '');
+      if (fixture && file === 'roster-fixture/snapshot') return await fixture.read(req, res, url);
+      if (req.method !== 'GET' || !(assets.has(file) || fixture && fixtureAssets.has(file))) return res.writeHead(404).end();
       const body = await fs.readFile(path.join(root, file));
+      if (fixture && file === 'admin-roster-source.html') await fixture.issue(req, res);
       res.writeHead(200, { 'Content-Type': types[path.extname(file)], 'Cache-Control': 'no-store' });
       res.end(body);
     } catch { res.writeHead(404).end(); }
@@ -42,6 +48,12 @@ function previewOptions(args, interfaces = networkInterfaces()) {
 
 if (require.main === module) {
   Promise.resolve().then(async () => {
+    if (process.argv[2] === '--fixture') {
+      const { port } = previewOptions([process.argv[3] || '8770']);
+      const server = await startPreview(port, '127.0.0.1', { fixture: true });
+      console.log('http://127.0.0.1:' + server.address().port + '/admin-roster-source.html (sanitized fixtures only)');
+      return;
+    }
     const { lan, host, port } = previewOptions(process.argv.slice(2));
     const server = await startPreview(port, host);
     console.log('http://' + host + ':' + server.address().port + '/admin-roster.html');

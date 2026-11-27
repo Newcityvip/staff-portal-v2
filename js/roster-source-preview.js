@@ -7,7 +7,7 @@ const loopback = location.protocol === "http:" && location.hostname === "127.0.0
 const filters = new URLSearchParams(location.search);
 const live = filters.get("source") === "live";
 const publishFixture = loopback && !live && document.body.dataset.rosterPublishFixture === "enabled";
-const enabled = live && liveConfig.rosterLiveEnabled && (location.protocol === "https:" || loopback);
+const enabled = live && liveConfig.rosterLiveEnabled === true && location.origin === liveConfig.rosterLiveOrigin;
 const livePublishing = enabled && location.protocol === "https:" && liveConfig.rosterPublishEnabled === true;
 const draftKey = live ? liveDraftKey : fixtureDraftKey;
 let session, expiry, editor, handoff, reader;

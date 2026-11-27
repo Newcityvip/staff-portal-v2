@@ -322,7 +322,7 @@ test('live-shaped read projects authorized team, January window and overnight/le
   assert.equal(prepareRosterSource(conflict, 'CSP', '2027-01').usable, false);
 });
 
-test('live browser remains disabled by default and opens a read-only scoped editor with mocked sign-in', async () => {
+test('live browser stays disabled off the configured origin and opens a read-only scoped editor with mocked sign-in', async () => {
   const { chromium } = require('playwright');
   const { startPreview } = require('../scripts/roster-preview.cjs');
   const { fixtureRows } = require('../scripts/roster-fixture.cjs');
@@ -356,7 +356,8 @@ test('live browser remains disabled by default and opens a read-only scoped edit
     await page.getByText('Live roster access is disabled.').waitFor();
     assert.deepEqual(operations, []);
     await page.route('**/js/roster-live-config.js', route => route.fulfill({
-      contentType: 'text/javascript', body: 'export const rosterLiveEnabled=true, rosterWorker=' + JSON.stringify(worker) + ';'
+      contentType: 'text/javascript', body: 'export const rosterLiveEnabled=true, rosterLiveOrigin=' + JSON.stringify(base) +
+        ', rosterWorker=' + JSON.stringify(worker) + ';'
     }));
     await page.goto(base + '/admin-roster-source.html?source=live');
     await page.locator('#source-month').evaluate(input => { input.value = '2026-12'; });
@@ -405,7 +406,8 @@ test('HTTPS-shaped roster editor publishes once through the parent session to th
       const req = route.request(), url = new URL(req.url());
       if (url.origin === origin) {
         if (url.pathname.endsWith('/roster-live-config.js')) return route.fulfill({ contentType: 'text/javascript',
-          body: 'export const rosterLiveEnabled=true,rosterPublishEnabled=true,rosterWorker=' + JSON.stringify(worker) + ';' });
+          body: 'export const rosterLiveEnabled=true,rosterPublishEnabled=true,rosterLiveOrigin=' + JSON.stringify(origin) +
+            ',rosterWorker=' + JSON.stringify(worker) + ';' });
         const response = await fetch(local + url.pathname + url.search);
         return route.fulfill({ status: response.status, contentType: response.headers.get('Content-Type'), body: Buffer.from(await response.arrayBuffer()) });
       }
